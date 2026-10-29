@@ -65,11 +65,15 @@ export default {
       // 能看图时把原图放进工具结果（image 块），她当轮就能看见自己画了什么
       render: drawResultBlocks,
       execute: async ({ prompt, shape }) => {
-        if (api.config().imageGen.ownerOnly && !hub.turnSendersAllOwner(sessionId)) return { ok: false, message: '画图只给主人画哦' }
+        const cfg = api.config()
+        if (cfg.imageGen.ownerOnly && !hub.turnSendersAllOwner(sessionId)) return { ok: false, message: '画图只给主人画哦' }
         const startedAt = Date.now()
         const buf = await gen.generate(String(prompt || ''), { shape })
         const sent = await hub.sendSegments(chat.chatId, [{ type: 'image', data: { file: 'base64://' + buf.toString('base64') } }], `[生图] ${String(prompt).slice(0, 30)}`)
-        if (!sent) return { ok: false, message: '画好了，但没有发到 QQ（请检查试运行和网关）' }
+        // 调试 / 试运行下本来就不真发（sendSegments 只记日志、返回 null）：
+        // 这一轮仍算画好了 —— 存盘、给编号、能看图，只是 QQ 里收不到；不能当失败。
+        const simulated = !sent && Boolean(cfg.debug || cfg.dryRun)
+        if (!sent && !simulated) return { ok: false, message: '画好了，但没有发到 QQ（请检查网关）' }
         const saved = savePainting(buf, String(prompt || ''))
         if (saved) api.log.debug(`生图已存盘：${saved}`)
         try { memory.addEvent?.({ text: `按提示词画了一张图（不一定等于实际画面）：${String(prompt).slice(0, 120)}`, about: chat.kind === 'private' ? chat.userId : '', tags: ['画画'], importance: 0.4 }) }
@@ -105,6 +109,7 @@ export default {
           ...(saved ? { path: saved } : {}),
         }
         if (img) out.image = img
+        if (simulated) out.message += '\n（试运行/调试：这张图没真发到 QQ，只在本地存下了）'
         if (index && saved) out.message += `\n画作编号 #${index}（想换头像、收成表情时用这个编号）`
         // 只有**图真的交给模型了**才把本地路径告诉她（#59）：收录表情包 / 存素材 / qq_add_sticker 用；
         // 看不了图或开关关着时不给路径，免得她知道路径就去读图，绕开「不给看」的判断。
