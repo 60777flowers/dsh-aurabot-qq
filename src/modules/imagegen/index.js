@@ -30,10 +30,16 @@ export default {
     api.route('/image/codex/complete', accountAction(async (req) => {
       const body = await api.core.http.body(req)
       const credential = await auth.completeLogin(String(body?.input || ''))
+      // 登录状态变了：已经挂好的会话要重挂一次，工具里才能立刻用（面板直输不经过 mount）
+      try { hub.remountAll?.('ChatGPT 订阅已登录') } catch (error) { api.log.debug('重挂工具失败：', error.message) }
       return { ok: true, email: credential.email || '', accountId: credential.accountId || '' }
     }))
     api.route('/image/codex/cancel', accountAction(async () => ({ ok: true, ...auth.cancelLogin('已取消') })))
-    api.route('/image/codex/logout', accountAction(async () => ({ ok: true, ...auth.logout() })))
+    api.route('/image/codex/logout', accountAction(async () => {
+      const r = auth.logout()
+      try { hub.remountAll?.('ChatGPT 订阅已登出') } catch (error) { api.log.debug('重挂工具失败：', error.message) }
+      return { ok: true, ...r }
+    }))
 
     // 她的画作：面板底下的图库（直接读存图目录，可以单张删、开文件夹）
     api.route('/image/gallery', async (req) => {
@@ -53,7 +59,9 @@ export default {
     })
     api.route('/image/open-folder', async () => openPaintFolder())
 
-    api.tool(({ chat, sessionId }) => (gen.enabled() && chat.kind !== 'system' ? defineTool({
+    // 生图模块开着就把工具挂上；「没开启 / 没填地址 / Codex 没登录」在执行时再如实提示。
+    // 不能按登录状态决定挂不挂：Codex 订阅常是「先开会话、后登录」，那样工具会缺失（unknown tool）。
+    api.tool(({ chat, sessionId }) => (((api.config().imageGen.enabled || local?.active('image')) && chat.kind !== 'system') ? defineTool({
       name: 'qq_draw_image',
       description: '画一张图并发到当前 QQ 聊天里。prompt 详细描述画面，shape 可按用途选择方图、竖图、横图或宽幅；不填就沿用面板默认构图 / 图片尺寸。画好会直接发出去，并给你一个画作编号（换头像、收成表情时用这个编号）。回复里简单说一句就行。',
       properties: {
@@ -67,6 +75,8 @@ export default {
       execute: async ({ prompt, shape }) => {
         const cfg = api.config()
         if (cfg.imageGen.ownerOnly && !hub.turnSendersAllOwner(sessionId)) return { ok: false, message: '画图只给主人画哦' }
+        // 工具常驻，真正能不能画在执行时判断（Codex 登录状态可能刚变过）
+        if (!gen.enabled()) return { ok: false, message: gen.notReadyReason() || '生图还没配置好' }
         const startedAt = Date.now()
         const buf = await gen.generate(String(prompt || ''), { shape })
         const sent = await hub.sendSegments(chat.chatId, [{ type: 'image', data: { file: 'base64://' + buf.toString('base64') } }], `[生图] ${String(prompt).slice(0, 30)}`)

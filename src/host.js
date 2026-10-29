@@ -506,6 +506,9 @@ export function apply(ctx) {
     if (before.enabled && !cfg.enabled) onebot.stop()
     log.info(`设置已保存｜总开关 ${cfg.enabled ? '开' : '关'}｜试运行 ${cfg.dryRun && !cfg.debug ? '开' : '关'}｜调试 ${cfg.debug ? '开' : '关'}`)
     await mods.sync().catch(() => {})
+    // 模块启停 / 生图开关变化后工具清单可能变了：已挂载的会话重新挂一遍，
+    // 这样在 DSH 会话窗口直接打字（不触发 mount）也能立刻用上新工具 / 去掉旧工具。
+    try { hub.remountAll?.('设置已保存') } catch (error) { log.debug('重挂工具失败：', error.message) }
     if (pw && !pw.ok) return { ...(await overview()), ok: false, message: '其他设置保存了，但控制台密码没改：' + pw.message }
     // 一开调试就把主人私聊的调试会话建出来，省得你还得先发条 QQ 消息才有会话说
     let debugNote = ''

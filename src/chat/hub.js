@@ -559,9 +559,29 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     }
     // 按会话记（#90）：agent 对象换了也能认出这是同一个会话，下次 mount 把旧工具清掉重挂；
     // failed 时 toolsKey 置空，下一次一定会整套重挂（本地原有的兜底）。
-    const rec = { agent, chatId: chat.chatId, offs, toolsKey: failed ? null : toolsKey }
+    const rec = { agent, chat, level, chatId: chat.chatId, offs, toolsKey: failed ? null : toolsKey }
     mounted.set(sid, rec)
     mounts.add(rec)
+  }
+
+  /**
+   * 工具清单可能变了（生图登录/登出、模块启停、面板保存设置）：把已挂载的会话重新挂一遍。
+   * 正常消息进来时也会 mount，但「在 DSH 会话窗口直接打字」不经过 mount，那里需要靠这个补齐。
+   */
+  function remountAll(reason = '') {
+    if (disposed) return 0
+    let n = 0
+    for (const rec of [...mounts]) {
+      if (!rec || !rec.agent || !rec.chat) continue
+      try {
+        mount(rec.agent, rec.chat, rec.level)
+        n++
+      } catch (error) {
+        log.warn('重挂工具失败：', error.message)
+      }
+    }
+    if (n && reason) log.info(`重新挂了 ${n} 个会话的工具（${reason}）`)
+    return n
   }
 
   // ---------- 发到 QQ ----------
@@ -1809,6 +1829,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
 
   return {
     dispose,
+    remountAll,
     // 兼容上游仅关闭媒体缓存的调用；宿主卸载仍使用完整 dispose。
     disposeRecentMedia: () => recentMedia.dispose(),
     modelFor: targetModel,

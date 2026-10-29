@@ -183,10 +183,25 @@ export function createImageGen({ getConfig, log, local, dsh, fetchImpl, codexAut
     return c.provider === 'custom' ? Boolean(c.custom && c.custom.url) : Boolean(c.baseUrl && c.model)
   }
 
+  /**
+   * 没配好 / 没登录时给一句人话；工具本身照常挂着，执行时再提示。
+   * 这样 Codex 订阅「先开会话、后登录」时工具不会缺失，登录后下一句就能用。
+   */
+  const notReadyReason = () => {
+    if (local?.active('image')) return ''
+    const c = getConfig().imageGen
+    if (!c.enabled) return '生图还没开启：面板「生图」页右上角开关打开并保存'
+    if (c.provider === 'codex') {
+      return auth.status().loggedIn ? '' : 'ChatGPT 订阅还没登录：面板「生图」页 → Codex 订阅 → 登录'
+    }
+    if (c.provider === 'custom') return c.custom && c.custom.url ? '' : '自定义生图接口地址还没填（面板「生图」页）'
+    return c.baseUrl && c.model ? '' : '还没填生图服务地址或模型（面板「生图」页）'
+  }
+
   // 保留本地调用方的附件辅助接口，与模块工具共用同一份图片登记实现。
   const canSee = async () => Boolean(dsh && (await canSeeImages(dsh, getConfig())) === true)
   const toolImage = async (buf) => dsh ? imageToolBlock(dsh, buf, { ffmpegPath: getConfig().bili?.ffmpegPath, log }) : null
-  return { generate, canSee, toolImage, enabled, codexAuth: auth, dispose: () => auth.dispose?.() }
+  return { generate, canSee, toolImage, enabled, notReadyReason, codexAuth: auth, dispose: () => auth.dispose?.() }
 }
 
 /**

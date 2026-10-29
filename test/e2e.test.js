@@ -779,6 +779,40 @@ test('试运行/调试下生图仍算画好了：存盘、有编号，只是没�
   }
 })
 
+test('生图工具常驻：Codex 未登录时工具仍在，执行时提示去登录', async () => {
+  // 上一次生图那一轮的会话
+  const turn = [...fake.turns].reverse().find((t) => (t.toolCalls || []).some((c) => c.name === 'qq_draw_image'))
+  const agent = turn && fake.agents.get(turn.sessionId)
+  assert.ok(agent, '应该有已挂载的会话')
+  const prevProvider = (await fake.call('/state')).json().config.imageGen.provider || 'openai'
+  try {
+    await fake.call('/save', { imageGen: { enabled: true, provider: 'codex' } })
+    assert.ok(agent.tools.has('qq_draw_image'), 'Codex 没登录也要先挂上工具，不能报 unknown tool')
+    const before = fake.turns.length
+    mock.push(priv(OWNER, text('画一只鲸鱼')))
+    await until(() => fake.turns.slice(before).some((t) => (t.toolCalls || []).some((c) => c.name === 'qq_draw_image')), 15000)
+    const t = fake.turns.slice(before).find((x) => (x.toolCalls || []).some((c) => c.name === 'qq_draw_image'))
+    const call = t.toolCalls.find((c) => c.name === 'qq_draw_image')
+    assert.equal(call.result.ok, false, '没登录时调用应失败')
+    assert.match(String(call.result.message), /登录/, '要告诉她是去登录，而不是工具不存在')
+  } finally {
+    await fake.call('/save', { imageGen: { provider: prevProvider, enabled: true } })
+  }
+})
+
+test('面板保存设置后，已挂载会话的工具清单立即刷新（不用等新消息）', async () => {
+  const turn = [...fake.turns].reverse().find((t) => (t.toolCalls || []).some((c) => c.name === 'qq_draw_image'))
+  const agent = fake.agents.get(turn.sessionId)
+  try {
+    await fake.call('/save', { imageGen: { enabled: false } })
+    assert.ok(!agent.tools.has('qq_draw_image'), '关掉生图后，已挂会话里的工具应该立刻消失')
+    await fake.call('/save', { imageGen: { enabled: true } })
+    assert.ok(agent.tools.has('qq_draw_image'), '再打开后应该立刻回来，不用等新消息')
+  } finally {
+    await fake.call('/save', { imageGen: { enabled: true } })
+  }
+})
+
 test('换头像：主人发来的图也能用，不能被「她的画作」抢走', async () => {
   // 主人先发一张图（和画作不同的字节，能区分是哪张）
   const png = fakePng(300, 300, 11)
