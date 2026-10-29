@@ -38,6 +38,7 @@ async function brain({ preset, text, images, callTool }) {
   if (text.includes('查看QQ资料测试')) { const r = await callTool('qq_get_profile', {}); return r?.ok ? '资料查到了' : r ? r.message : '没这个工具' }
   if (text.includes('改昵称测试')) { const r = await callTool('qq_set_nickname', { name: '小鲸鱼' }); return r ? r.message : '没这个工具' }
   if (text.includes('改签名测试')) { const r = await callTool('qq_set_signature', { text: '今天也要开心' }); return r ? r.message : '没这个工具' }
+  if (text.includes('刚才那张换头像测试')) { const r = await callTool('qq_set_avatar', { image: 'last' }); return r ? r.message : '没这个工具' }
   if (text.includes('画作换头像测试')) { const r = await callTool('qq_set_avatar', { image: '#1' }); return r ? r.message : '没这个工具' }
   if (text.includes('收画作表情测试')) { const r = await callTool('qq_collect_sticker', { painting: '#1', name: '自画像', tags: ['画画'] }); return r ? r.message : '没这个工具' }
   if (text.includes('换头像测试')) { const r = await callTool('qq_set_avatar', { image: 'https://example.com/a.png' }); return r ? r.message : '没这个工具' }
@@ -684,6 +685,22 @@ test('画作编号：换头像 / 收表情都能用，而且不靠文件路径',
   const items = (await fake.call('/stickers')).json().items
   assert.equal(items.length, before + 1, '自己画的图能收进表情库')
   assert.ok(items.some((i) => i.name === '自画像'), '名字用她给的那个')
+})
+
+test('换头像：主人发来的图也能用（取图片字节，不依赖 QQ 链接）', async () => {
+  // 主人先发一张图
+  const png = fakePng(300, 300, 11)
+  mock.push(priv(OWNER, [{ type: 'image', data: { sub_type: 0, file: 'base64://' + png.toString('base64') } }]))
+  await until(() => fake.turns.at(-1)?.images === 1)
+
+  const n = mock.sent('set_qq_avatar').length
+  mock.push(priv(OWNER, text('刚才那张换头像测试')))
+  const c = await lastCall('刚才那张换头像测试')
+  assert.equal(c.result.ok, true, JSON.stringify(c.result))
+  assert.equal(mock.sent('set_qq_avatar').length, n + 1, '真的调了换头像')
+  const call = mock.sent('set_qq_avatar').at(-1)
+  // 用图片字节（base64）或临时文件，不再把 QQ 图片链接直接丢给网关
+  assert.match(String(call.params.file), /^base64:\/\/|avatar-/i, '应该交图片数据，而不是链接')
 })
 
 test('每日整理：往日的临时流水整理后清空，今天的保留；空间日记进了记忆库', async () => {

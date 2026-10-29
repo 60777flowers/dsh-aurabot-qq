@@ -2,14 +2,19 @@
 // 三个都是 SnowLuma 的扩展动作（不是标准 OneBot v11）：set_qq_profile / set_self_longnick / set_qq_avatar。
 // 每个操作单独一档权限（面板「权限」页）：off 关 / owner 仅主人私聊（默认）/ all 所有人。B 站签名在 bili 模块里。
 
-import { readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { defineTool, str } from '../../tools/tools.js'
 import { isOwner, profileToolVisible, profilePermits } from '../../chat/access.js'
 import { createQqProfile } from '../../features/qq-profile.js'
 import { resolvePainting } from '../../features/paintings.js'
+import { findFfmpeg, findSharp, shrinkImage, shrinkWithSharp } from '../../core/img.js'
+import { segmentBytes } from '../../core/net.js'
+import { dataDir } from '../../core/store.js'
 
 const NICK_MAX = 36
 const SIGN_MAX = 80
+const AVATAR_MAX_SIDE = 640
 const AVATAR_MAX_BYTES = 2 * 1024 * 1024
 
 export function profileResultBlocks(_args, value) {
@@ -18,12 +23,21 @@ export function profileResultBlocks(_args, value) {
   return blocks
 }
 
-/** 头像来源只收 http(s) 网址或「last」（这个聊天里最近一张图）；本地路径一律不收，免得被人拿去读电脑上的文件。 */
-export function avatarSource(input, lastUrl) {
+/** 头像来源只收 http(s) 网址；「刚才那张图」和「画作 #1」在工具里单独取字节，本地路径一律不收。 */
+export function avatarSource(input) {
   const s = String(input || '').trim()
-  if (!s || /^(last|刚才|上一张|最近)/i.test(s)) return lastUrl ? { ok: true, file: lastUrl } : { ok: false, message: '这个聊天里还没人发过图' }
   if (/^https?:\/\//i.test(s)) return { ok: true, file: s }
-  return { ok: false, message: '头像只能用网址图片，或者刚才发的那张图' }
+  return { ok: false, message: '头像只能用网址图片，或者「刚才那张图」/「画作 #1」' }
+}
+
+/** 换头像前把图压到 QQ 能收下：1MB 以内原样，大了先缩到 640 以内、JPEG。缩不了返回 null。 */
+async function smallerForAvatar (buf, cfg) {
+  if (buf.length <= 1024 * 1024) return buf
+  const ffmpeg = findFfmpeg(cfg && cfg.bili && cfg.bili.ffmpegPath)
+  let small = ffmpeg ? await shrinkImage(buf, AVATAR_MAX_SIDE, ffmpeg) : null
+  if (!small) small = await shrinkWithSharp(await findSharp(), buf, AVATAR_MAX_SIDE)
+  if (!small || small.length > AVATAR_MAX_BYTES) return null
+  return small
 }
 
 export default {
@@ -37,14 +51,33 @@ export default {
     const reader = createQqProfile({ getConfig: api.config, onebot, dsh: api.dsh, log: api.log, fetchAvatar, ask })
     api.onDispose(reader.dispose)
     api.rule((kind) => kind === 'private' ? '主人谈到你自己的 QQ 昵称、个性签名或头像时，可以主动用 qq_get_profile 查看当前资料，不必等主人明确说“查询”。例如“你现在叫什么”“签名是什么”“喜欢这个头像吗”。问头像画面时传 view_avatar=true，依据本次头像附件和描述回答；查不到就如实说明，不凭旧聊天记录猜。主人明确说“把现在头像发出来”“发你的头像给我”时，用 qq_send_avatar 直接发送，不必先识图；只有工具报告 sent=true 才能说发出去了，成功后不要再用链接或 Markdown 重复发图。查询不会发送图片或修改资料；普通无关聊天无需查询。' : '')
-    const lastImage = new Map() // chatId → 最近一张图的网址
 
-    api.on('message', (msg) => {
-      const seg = (msg.images || []).slice(-1)[0]
-      const url = seg?.data?.url
-      if (url && /^https?:\/\//i.test(url)) lastImage.set(msg.chatId, url)
-      return false
-    })
+    /** 真正换头像：图先压到 QQ 能收下，再依次试 base64、临时文件（网关可能不在同一台机器）。 */
+    const applyAvatar = async (buf, c, okMessage) => {
+      const small = await smallerForAvatar(buf, c)
+      if (!small) return { ok: false, message: `这张图太大（${Math.round(buf.length / 1024)} KB），换头像最多 2 MB，本机也没有 ffmpeg / sharp 可以缩小 —— 先裁小一点再试` }
+      if (c.dryRun) return { ok: true, message: `试运行：本来要换 QQ 头像（图片 ${Math.round(small.length / 1024)} KB）` }
+      const tmpDir = dataDir('tmp')
+      const tmp = join(tmpDir, `avatar-${process.pid}-${Date.now()}.jpg`)
+      let lastError = null
+      try {
+        mkdirSync(tmpDir, { recursive: true })
+        writeFileSync(tmp, small)
+        for (const file of [`base64://${small.toString('base64')}`, tmp]) {
+          try {
+            await onebot.call('set_qq_avatar', { file }, { timeoutMs: 30000 })
+            return { ok: true, message: okMessage }
+          } catch (error) {
+            lastError = error
+          }
+        }
+      } catch (error) {
+        lastError = error
+      } finally {
+        try { unlinkSync(tmp) } catch (error) {}
+      }
+      return { ok: false, message: '换头像失败：网关不接受这张图（' + (lastError && lastError.message ? lastError.message : '未知错误') + '）' }
+    }
 
     // 统一套路：dryRun 只说不做；执行前再按最新配置查一遍权限
     const guarded = (key, chat, sessionId, run) => async (args) => {
@@ -128,37 +161,37 @@ export default {
       }))
       if (profileToolVisible(cfg, 'qqAvatar', chat)) tools.push(defineTool({
         name: 'qq_set_avatar',
-        description: '换你自己的 QQ 头像。image 填图片网址；填 last 就用这个聊天里刚才别人发的那张图；填「画作 #1」就用你自己刚画的那张（画完时会告诉你编号）。',
+        description: '换你自己的 QQ 头像。image 填图片网址；填 last 就用这个聊天里刚才别人发的那张图；填「画作 #1」就用你自己刚画的那张（画完时会告诉你编号）。图太大会自动缩小。',
         properties: { image: str('图片网址（http/https）／last（刚才那张图）／画作编号（如 #1）') },
         required: ['image'],
         execute: guarded('qqAvatar', chat, sessionId, async ({ image }, c) => {
           const chatId = hub.chatOfSession(sessionId) || chat.chatId
-          // 自己画的图：内部按编号取文件，不让她接触路径
+          // ① 自己画的图：内部按编号取文件，不让她接触路径
           const painting = resolvePainting(chatId, image)
           if (painting) {
-            if (c.dryRun) return { ok: true, message: `试运行：本来要用画作「${painting.prompt || painting.file}」换 QQ 头像` }
             let buf
             try {
               buf = readFileSync(painting.path)
             } catch (error) {
               return { ok: false, message: '这张画的文件读不到了：' + error.message }
             }
-            if (buf.length > AVATAR_MAX_BYTES) {
-              return { ok: false, message: `这张画有 ${(buf.length / 1024 / 1024).toFixed(1)} MB，换头像最大只能用 2 MB 的图` }
-            }
-            // 网关可能和插件不在同一台机器：先试 base64（网关不用读本机文件），不行再试本机路径
-            let lastError = null
-            for (const file of [`base64://${buf.toString('base64')}`, painting.path]) {
-              try {
-                await onebot.call('set_qq_avatar', { file }, { timeoutMs: 30000 })
-                return { ok: true, message: 'QQ 头像换好了（用我自己画的那张）' }
-              } catch (error) {
-                lastError = error
-              }
-            }
-            return { ok: false, message: '换头像失败：网关不支持用本地图片换头像（' + (lastError && lastError.message ? lastError.message : '未知错误') + '）' }
+            return applyAvatar(buf, c, 'QQ 头像换好了（用我自己画的那张）')
           }
-          const src = avatarSource(image, lastImage.get(chatId))
+          // ② 刚才那张图（别人发来的）：直接拿图片字节 —— 不再依赖 QQ 图片链接能不能被网关拉到
+          if (/^(last|刚才|上一张|最近)/i.test(String(image || '').trim())) {
+            const list = hub.recentMedia(chatId)
+            const pick = list.filter((x) => !x.sticker).at(-1) || list.at(-1)
+            if (!pick) return { ok: false, message: '最近半小时这个聊天里没人发过图片，先把图发过来' }
+            let buf
+            try {
+              buf = await segmentBytes(pick.seg, onebot, { maxBytes: 10 * 1024 * 1024 })
+            } catch (error) {
+              return { ok: false, message: '这张图我拿不到：' + error.message }
+            }
+            return applyAvatar(buf, c, 'QQ 头像换好了（用刚才那张图）')
+          }
+          // ③ 显式网址：原样交给网关
+          const src = avatarSource(image)
           if (!src.ok) return src
           if (c.dryRun) return { ok: true, message: `试运行：本来要把 QQ 头像换成：${src.file}` }
           await onebot.call('set_qq_avatar', { file: src.file }, { timeoutMs: 30000 })
