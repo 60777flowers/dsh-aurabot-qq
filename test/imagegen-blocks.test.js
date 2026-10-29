@@ -95,12 +95,12 @@ test('defineTool：自定义 render 生效，默认 render 不变', () => {
   assert.deepEqual(plain.output.render({}, { ok: false, message: '坏了' }), [{ type: 'text', text: '✗ 坏了' }])
 })
 
-test('drawToolMessage：本地的三种情况（看过 / 能看但没给看 / 看不了图）', () => {
-  assert.match(drawToolMessage({ seen: '一只橘猫', visual: true, seeOwn: true }), /你自己看到的画面：一只橘猫/)
+test('drawToolMessage：三种情况（给看了 / 开关关着没给看 / 看不了图）', () => {
+  assert.equal(drawToolMessage({ visual: true, seeOwn: true }), '画好发出去了')
   const off = drawToolMessage({ visual: true, seeOwn: false })
   assert.match(off, /没把图给你看/)
-  assert.doesNotMatch(off, /你自己看到的画面/)
-  for (const msg of [drawToolMessage({ seen: 'x', visual: true }), off, drawToolMessage({ visual: false })]) {
+  assert.doesNotMatch(off, /你自己看到的画面/, '不再有「你自己看到的画面」那段描述')
+  for (const msg of [drawToolMessage({ visual: true }), off, drawToolMessage({ visual: false })]) {
     assert.doesNotMatch(msg, /存在\s*[A-Za-z]:[\\/]|\.png|读它/, '任何情况都不给文件路径')
   }
 })

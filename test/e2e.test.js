@@ -38,6 +38,8 @@ async function brain({ preset, text, images, callTool }) {
   if (text.includes('查看QQ资料测试')) { const r = await callTool('qq_get_profile', {}); return r?.ok ? '资料查到了' : r ? r.message : '没这个工具' }
   if (text.includes('改昵称测试')) { const r = await callTool('qq_set_nickname', { name: '小鲸鱼' }); return r ? r.message : '没这个工具' }
   if (text.includes('改签名测试')) { const r = await callTool('qq_set_signature', { text: '今天也要开心' }); return r ? r.message : '没这个工具' }
+  if (text.includes('画作换头像测试')) { const r = await callTool('qq_set_avatar', { image: '#1' }); return r ? r.message : '没这个工具' }
+  if (text.includes('收画作表情测试')) { const r = await callTool('qq_collect_sticker', { painting: '#1', name: '自画像', tags: ['画画'] }); return r ? r.message : '没这个工具' }
   if (text.includes('换头像测试')) { const r = await callTool('qq_set_avatar', { image: 'https://example.com/a.png' }); return r ? r.message : '没这个工具' }
   if (text.includes('本地头像测试')) { const r = await callTool('qq_set_avatar', { image: 'C:/Users/a/secret.png' }); return r ? r.message : '没这个工具' }
   if (text.includes('慢慢想') && !text.includes('补充')) { await sleep(2500); return '想好了' }
@@ -606,7 +608,8 @@ test('生图：主人让她画图，调生图服务并把图发出去', async ()
 
 test('生图工具结果：能看图时带 image 块，纯文本模型只给文字（#37）', async () => {
   const http = await import('node:http')
-  const png = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex')
+  // 用带尺寸的 PNG：画作之后还要被「收成表情」，表情库会校验宽高
+  const png = fakePng(240, 240, 7)
   const srv = http.createServer(async (req, res) => {
     for await (const _ of req) { /* 读完请求体 */ }
     res.setHeader('content-type', 'application/json')
@@ -637,7 +640,8 @@ test('生图工具结果：能看图时带 image 块，纯文本模型只给文�
   const blocks = (await import('../src/features/imagegen.js')).drawResultBlocks({}, withImg)
   assert.equal(blocks.length, 2)
   assert.equal(blocks[1].type, 'image')
-  assert.match(withImg.message, /你自己看到的画面/, '「画完看一眼」开着时会多一段描述')
+  assert.doesNotMatch(withImg.message, /你自己看到的画面/, '不再额外调模型写描述')
+  assert.match(withImg.message || '', /画作编号 #1/, '画完给一个画作编号，换头像／收表情时用')
   // #59：能看图的模型要拿到本地保存路径，方便她收录表情包 / 存素材
   assert.ok(withImg.path && /\.png$/.test(withImg.path), '能看图时要返回本地路径：' + JSON.stringify(withImg.path))
   assert.match(withImg.message || '', /已保存到本机：/, '路径写进工具结果文字里')
@@ -646,11 +650,11 @@ test('生图工具结果：能看图时带 image 块，纯文本模型只给文�
   assert.equal(withImg.prompt, '一只蓝色小鲸鱼', '带上原始提示词')
   assert.ok(Number(withImg.bytes) > 0 && Number(withImg.elapsedMs) >= 0, '带字节数和耗时')
 
-  // 关掉「画完自己看一眼」= 当没视觉能力处理：不给图、不描述、也不给路径
+  // 关掉「让她画完自己看一眼」= 不传图：不给图、不给路径，但画作编号仍然给（还能换头像／收表情）
   const noLook = await draw('on', false)
   assert.equal(noLook.image, undefined, '关掉看一眼就不该塞图')
-  assert.doesNotMatch(noLook.message || '', /你自己看到的画面/)
   assert.match(noLook.message || '', /没把图给你看/)
+  assert.match(noLook.message || '', /画作编号 #1/)
   assert.doesNotMatch(noLook.message || '', /已保存到本机/, '开关关着时也不给路径')
 
   // 手动声明「不支持」：纯文本模型，绝不能塞 image 块，而且要如实说
@@ -662,6 +666,24 @@ test('生图工具结果：能看图时带 image 块，纯文本模型只给文�
   // 恢复默认：auto + 看一眼
   await fake.call('/save', { model: { vision: 'auto' }, imageGen: { seeOwn: true } })
   srv.close()
+})
+
+test('画作编号：换头像 / 收表情都能用，而且不靠文件路径', async () => {
+  // 上一条用例在这个聊天里画过图，画作编号已经登记
+  mock.push(priv(OWNER, text('画作换头像测试')))
+  const a = await lastCall('画作换头像测试')
+  assert.equal(a.result.ok, true, JSON.stringify(a.result))
+  const call = mock.sent('set_qq_avatar').at(-1)
+  // 网关拿到的要么是 base64（网关不在同一台机器也能用），要么是画作目录里的真实文件
+  assert.match(String(call.params.file), /^base64:\/\/|imagegen/i, '用画作换头像：不该是模型给的路径')
+
+  const before = (await fake.call('/stickers')).json().items.length
+  mock.push(priv(OWNER, text('收画作表情测试')))
+  const b = await lastCall('收画作表情测试')
+  assert.equal(b.result.ok, true, JSON.stringify(b.result))
+  const items = (await fake.call('/stickers')).json().items
+  assert.equal(items.length, before + 1, '自己画的图能收进表情库')
+  assert.ok(items.some((i) => i.name === '自画像'), '名字用她给的那个')
 })
 
 test('每日整理：往日的临时流水整理后清空，今天的保留；空间日记进了记忆库', async () => {

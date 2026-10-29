@@ -2,7 +2,7 @@
 
 import { readFileSync } from 'node:fs'
 import { createImageGen, drawResultBlocks, drawToolMessage } from '../../features/imagegen.js'
-import { listPaintings, openPaintFolder, paintingPath, removePainting, savePainting } from '../../features/paintings.js'
+import { listPaintings, openPaintFolder, paintingPath, rememberPainting, removePainting, savePainting } from '../../features/paintings.js'
 import { defineTool, str } from '../../tools/tools.js'
 import { dataDir } from '../../core/store.js'
 import { mimeOf } from '../../chat/inbound.js'
@@ -63,7 +63,7 @@ export default {
 
     api.tool(({ chat, sessionId }) => (gen.enabled() && chat.kind !== 'system' ? defineTool({
       name: 'qq_draw_image',
-      description: '画一张图并发到当前 QQ 聊天里。prompt 用中文或英文详细描述画面（主体、动作、场景、风格）。shape 用来定画面比例：画立绘/壁纸用竖图，画风景/长卷用宽幅，表情/头像用方图；拿不准就不填，按内容自己定。画好会直接发出去；你自己能看图时会把原图一并给你，不能看图时给你一段画面描述。回复里简单说一两句就行。',
+      description: '画一张图并发到当前 QQ 聊天里。prompt 用中文或英文详细描述画面（主体、动作、场景、风格）。shape 用来定画面比例：画立绘/壁纸用竖图，画风景/长卷用宽幅，表情/头像用方图；拿不准就不填，按内容自己定。画好会直接发出去，并给你一个画作编号（换头像、收成表情时用这个编号）。回复里简单说一两句就行。',
       properties: {
         prompt: str('画面描述'),
         shape: {
@@ -89,14 +89,12 @@ export default {
           api.log.warn('生图已发送，但经历没记下来：', error.message)
         }
 
-        // 「画完自己看一眼」是总开关：关掉就当没视觉能力处理 —— 不给图、不调模型看图、也不给路径。
+        // 「让她画完自己看一眼」是总开关：关掉就当没视觉能力处理 —— 不给图、也不给路径。
         // 能看图时才把图缩好登记成附件块；图没登记成（缩图失败 / 没附件服务）同样按「没给看」算。
         const visual = (await hub.canSeeImages(chat)) === true
         const seeOwn = api.config().imageGen.seeOwn !== false
-        const allowLook = visual && seeOwn
-        const seen = allowLook ? await gen.look(buf, String(prompt || '')) : ''
         let img = null
-        if (allowLook) {
+        if (visual && seeOwn) {
           img = await gen.toolImage(buf)
           if (!img) api.log.debug('这次生图没把图交给模型（缩图/登记失败），只给文字')
         }
@@ -105,7 +103,11 @@ export default {
         if (!visual) message = drawToolMessage({ visual: false })
         else if (!seeOwn) message = drawToolMessage({ visual: true, seeOwn: false })
         else if (!img) message = drawToolMessage({ visual: false })
-        else message = drawToolMessage({ seen, visual: true, seeOwn: true })
+        else message = drawToolMessage({ visual: true, seeOwn: true })
+
+        // 画作编号：换头像 / 收表情时用编号，别用路径（路径只在图真的给出去时才附带）
+        const index = saved ? rememberPainting(chat.chatId, saved) : 0
+        if (index) message += `\n画作编号 #${index}（想换头像、收成表情时用这个编号）`
 
         const out = {
           ok: true,

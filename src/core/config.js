@@ -72,7 +72,7 @@ export const DEFAULTS = {
     size: '1024x1024',
     stylePrompt: '', // 每次生图自动加在前面的风格描述
     ownerOnly: true, // 只有主人能让她画
-    seeOwn: true, // 画完让能看图的模型看一眼，她才知道自己画成了什么（多一次调用）
+    seeOwn: true, // 「让她画完自己看一眼」：开着才把画好的图传给她看（不再额外调模型写描述）
   },
   persona: { current: 'dafeiyu' },
   group: {

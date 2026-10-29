@@ -7,7 +7,7 @@
 import { randomUUID } from 'node:crypto'
 import { fetchImage } from '../core/net.js'
 import { mimeOf } from '../chat/inbound.js'
-import { askModel, canSeeImages } from '../core/llm.js'
+import { canSeeImages } from '../core/llm.js'
 import { imageToolBlock } from '../core/img.js'
 export { imageToolBlock }
 import { createCodexAuth } from './codex-auth.js'
@@ -273,35 +273,6 @@ export function createImageGen({ getConfig, log, local, dsh, fetchImpl, codexAut
   }
 
   /**
-   * 画完自己看一眼：让能看图的模型描述一下成品，她才「知道」自己画成了什么，
-   * 用户追问「画得怎么样」时才有话说。模型看不了图就安静跳过。
-   */
-  async function look (buf, prompt) {
-    const c = getConfig().imageGen
-    if (!dsh || c.seeOwn === false) return ''
-    // 模型明确看不了图就别浪费一次调用
-    if ((await canSeeImages(dsh, getConfig())) === false) return ''
-    try {
-      const text = await askModel(dsh, {
-        cfg: getConfig(),
-        system: '你刚画完一张图，现在要跟朋友讲你画了什么。用第一人称，两三句话说清画面的主体、风格、颜色和细节，语气自然，别用「这张图片展示了」这种说法。',
-        text: `画这张图时用的提示词：${String(prompt || '').slice(0, 500)}`,
-        images: [{ data: buf.toString('base64'), mediaType: mimeOf(buf) }],
-        // ⚠ 别给太小：模型会先思考，预算太小会被思考吃光，正文就是空的（表情起名踩过）
-        maxTokens: 1000,
-        temperature: 0.5,
-      })
-      const t = String(text || '').trim()
-      if (t) log.info(`画完自己看了一眼：${t.slice(0, 60)}`)
-      else log.warn('画完想看自己画的图，但模型没返回文字')
-      return t
-    } catch (error) {
-      log.debug('画完看图失败（模型可能不支持看图）：', error.message)
-      return ''
-    }
-  }
-
-  /**
    * 当前模型能不能看图：面板「视觉能力」手动声明优先，其次看 DSH 声明的元数据。
    * 只有明确能看图才返回 true —— 拿不准就当不能，别把纯文本模型搞崩。
    */
@@ -327,21 +298,20 @@ export function createImageGen({ getConfig, log, local, dsh, fetchImpl, codexAut
     return c.provider === 'custom' ? Boolean(c.custom && c.custom.url) : Boolean(c.baseUrl && c.model)
   }
 
-  return { generate, look, canSee, toolImage, enabled, codexAuth: auth }
+  return { generate, canSee, toolImage, enabled, codexAuth: auth }
 }
 
 /**
  * qq_draw_image 工具结果里那句话。三种情况分别说清楚，别让她瞎猜画面里有什么：
- * - 看过（有描述）：把描述带回去
- * - 能看图但「画完自己看一眼」关着：这次没给图，别描述
+ * - 图真的交给她看了：只说画好了
+ * - 能看图但「让她画完自己看一眼」关着：这次没给图，别描述
  * - 模型看不了图（或图没登记成功）：如实说没看到，别让她照着提示词编画面细节
  *
  * 这个函数只回一句话，不带文件路径；能不能把「已保存到本机：路径」告诉她，由调用方决定：
  * 只有**确实把图交出去**（能看图、开关开着、附件登记成功）时才给路径（#59：能看图的模型
  * 要路径来收录表情包 / 存素材）；看不了图时给路径等于让她绕过「不给看」的开关自己去读图。
  */
-export function drawToolMessage ({ seen = '', visual = false, seeOwn = true } = {}) {
-  if (seen) return `画好发出去了。你自己看到的画面：${seen}`
+export function drawToolMessage ({ visual = false, seeOwn = true } = {}) {
   if (!visual) return '画好发出去了，但这次没能把图片交给你看；别描述画面里有什么'
   if (!seeOwn) return '画好发出去了。这次没把图给你看，别描述画面里有什么'
   return '画好发出去了'

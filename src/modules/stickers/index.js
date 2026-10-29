@@ -5,6 +5,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { createStickerStore, stickerPath } from '../../features/stickers.js'
 import { defineTool, str, int } from '../../tools/tools.js'
 import { fetchImage, segmentBytes } from '../../core/net.js'
+import { resolvePainting } from '../../features/paintings.js'
 
 export default {
   id: 'stickers',
@@ -69,17 +70,40 @@ export default {
           },
         }),
       ]
-      // 「她挑」模式：聊天里刚收到的表情，喜欢就凭编号收下（各档位都能用）
+      // 「她挑」模式：聊天里刚收到的表情，喜欢就凭编号收下（各档位都能用）；也能收自己刚画的图
       tools.push(defineTool({
         name: 'qq_collect_sticker',
-        description: '悄悄把聊天里刚出现的表情收进自己的表情库（喜欢才收，不喜欢就别调）。index 从 1 开始；name 是你给它起的名字。收表情是你自己的小习惯，通常不用跟对方说你收没收到。主人让你收哪张，你收哪张（「只听主人的」模式下，也只有主人让你收时才能收）。',
+        description: '悄悄把聊天里刚出现的表情收进自己的表情库（喜欢才收，不喜欢就别调）。index 从 1 开始；name 是你给它起的名字。收表情是你自己的小习惯，通常不用跟对方说你收没收到。主人让你收哪张，你收哪张（「只听主人的」模式下，也只有主人让你收时才能收）。传 painting（画作编号，如 #1）时，收的是你自己刚画的那张图，不是聊天里的表情。',
         properties: {
           index: int('第几张表情（从 1 开始，默认 1）'),
           name: str('给它起的名字（≤12 字）'),
           tags: { type: 'array', items: { type: 'string' }, description: '标签，如 开心/委屈' },
+          painting: str('画作编号（如 #1）：收你自己刚画的图时填，和 index 二选一'),
         },
         required: [],
-        execute: async ({ index, name, tags }) => {
+        execute: async ({ index, name, tags, painting }) => {
+          // 收自己的画：不受「只听主人的」限制（这是她自己画的，不是别人的表情）
+          if (painting) {
+            const p = resolvePainting(chat.chatId, painting)
+            if (!p) return { ok: false, message: `找不到画作 ${painting}（可能是编号过期了，先让我画一张？）` }
+            let buf
+            try {
+              buf = readFileSync(p.path)
+            } catch (error) {
+              return { ok: false, message: '这张画的文件读不到了：' + error.message }
+            }
+            const r = await store.addFromBuffer(buf, {
+              name: String(name || '').trim().slice(0, 12),
+              tags: Array.isArray(tags) ? tags.slice(0, 3) : [],
+              from: 'painting',
+            })
+            if (!r.ok) return { ok: false, message: r.reason || '没存成' }
+            if (r.existed) {
+              const label = r.item.name ? `「${r.item.name}」` : '（还没起名）'
+              return { ok: true, message: `库里本来就有${label}${r.touched ? '，名字补上了' : ''}` }
+            }
+            return { ok: true, message: `收进库了：「${r.item.name || '未命名'}」（${p.prompt ? '画的是' + p.prompt : '自己画的'}）` }
+          }
           // 「只听主人的」：别人在场时不能自己收，得等主人发话
           const mode = (api.config().stickers.collectMode || 'ask')
           if (mode === 'owner' && !hub.turnSendersAllOwner(sessionId)) {
