@@ -237,6 +237,22 @@ test('Windows 打开浏览器不能走 cmd（URL 里的 & 会被截断）', () =
   assert.equal(calls[2].bin, 'xdg-open')
 })
 
+test('整合 #81：订阅接法保留构图优先级，通过提示词引导，尺寸仍由服务端选择', async () => {
+  const seen = [], cfg = normalize({ imageGen: { enabled: true, provider: 'codex', shape: 'wide' } })
+  const gen = createImageGen({ getConfig: () => cfg, log: silent,
+    fetchImpl: async (_url, init) => { seen.push(JSON.parse(init.body)); return new Response(JSON.stringify({ data: [{ b64_json: b64 }] })) },
+    codexAuth: { status: () => ({ loggedIn: true }), ensureAccess: async () => ({ access: 'test-access', accountId: 'test-account' }) },
+  })
+  await gen.generate('猫', { shape: 'portrait' })
+  assert.match(seen[0].prompt, /2:3/)
+  await gen.generate('猫')
+  assert.match(seen[1].prompt, /16:9/)
+  cfg.imageGen.shape = 'her'
+  await gen.generate('猫')
+  assert.equal(seen[2].prompt, '猫')
+  assert.ok(seen.every((body) => body.size === 'auto'))
+})
+
 test('构图：她选竖图就加构图描述（Codex 不认尺寸）', async () => {
   const seen = []
   const fetchImpl = async (url, init) => {
@@ -250,7 +266,7 @@ test('构图：她选竖图就加构图描述（Codex 不认尺寸）', async ()
     codexAuth: { status: () => ({ loggedIn: true }), ensureAccess: async () => ({ access: 'T', accountId: 'A' }) },
   })
   await gen.generate('一只猫', { shape: 'portrait' })
-  assert.match(seen[0].prompt, /竖版构图（3:4）/)
+  assert.match(seen[0].prompt, /竖版构图（2:3）/)
   assert.equal(seen[0].size, 'auto')
   await gen.generate('一只猫', { shape: 'wide' })
   assert.match(seen[1].prompt, /宽幅横版构图（16:9）/)
@@ -266,7 +282,7 @@ test('构图：面板钉死比例时，她没指定也按钉死的来；让她�
     codexAuth: { status: () => ({ loggedIn: true }), ensureAccess: async () => ({ access: 'T', accountId: 'A' }) },
   })
   await mk('square').generate('猫')
-  assert.match(seen[0].prompt, /方版构图（1:1）/)
+  assert.match(seen[0].prompt, /方图构图（1:1）/)
   await mk('her').generate('猫')
   assert.equal(seen[1].prompt, '猫', '让她自己定时不硬塞构图描述')
 })

@@ -47,6 +47,56 @@ const event = (text = '你好', extra = []) => ({
   message: [{ type: 'text', data: { text } }, ...extra],
 })
 
+for (const stop of ['dispose', 'turn/end']) test(`慢工具在 ${stop} 后不再发送迟到进度提示`, async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const work = deferred()
+  t.after(() => work.resolve({ ok: true }))
+  let started = false
+  const sent = []
+  const s = setup(t, {
+    brain: async ({ callTool }) => { await callTool('slow-probe', {}); return '' },
+    hooks: { send: async (segments, info) => { sent.push(info.note); return segments } },
+    buildTools: () => [{ name: 'slow-probe', slow: '进度探针', execute: async () => { started = true; return work.promise } }],
+  })
+  await s.hub.onMessage(event())
+  await settle()
+  assert.equal(started, true)
+  if (stop === 'dispose') s.hub.dispose()
+  else {
+    const agent = [...s.fake.agents.values()][0]
+    s.hub.onSessionEvent(agent.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+  }
+  t.mock.timers.tick(2000)
+  await settle()
+  assert.equal(sent.some((x) => x.includes('进度探针')), false)
+})
+
+test('慢工具提示等待发送挂钩时轮次结束，不再投递到 QQ', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const work = deferred(), sending = deferred()
+  t.after(() => { work.resolve({ ok: true }); sending.resolve() })
+  let entered = false
+  const s = setup(t, {
+    cfg: config({ dryRun: false }),
+    brain: async ({ callTool }) => { await callTool('slow-probe', {}); return '' },
+    hooks: { send: async (segments, info) => {
+      if (info.note.includes('进度探针')) { entered = true; await sending.promise }
+      return segments
+    } },
+    buildTools: () => [{ name: 'slow-probe', slow: '进度探针', execute: () => work.promise }],
+  })
+  await s.hub.onMessage(event())
+  await settle()
+  t.mock.timers.tick(1501)
+  await settle()
+  assert.equal(entered, true)
+  const agent = [...s.fake.agents.values()][0]
+  s.hub.onSessionEvent(agent.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+  sending.resolve()
+  await settle()
+  assert.equal(s.calls.some((x) => x.action === 'send_private_msg'), false)
+})
+
 function config(patch = {}) {
   return normalize({ enabled: true, dryRun: true, setupDone: true, ownerQQ: OWNER, botQQ: BOT,
     allow: { private: [OTHER], groups: [] }, voice: { enabled: false }, merge: { enabled: false },

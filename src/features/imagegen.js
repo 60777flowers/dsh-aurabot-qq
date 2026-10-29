@@ -1,16 +1,16 @@
-// 生图：三种接法
-//   ① openai —— 兼容 OpenAI /v1/images/generations 的服务（硅基流动、通义兼容层、ComfyUI/SD WebUI 的 OpenAI 代理……）
-//   ② custom —— 自己填接口：GET/POST、URL 模板（{prompt} 占位）、自定义参数名
-//   ③ codex  —— ChatGPT 订阅（OAuth 登录，走 chatgpt.com 的 Codex 生图端点，不花 API 额度）
+// 生图：OpenAI 兼容、自定义接口，以及实验性 Codex 订阅接法。
+//   ① openai —— 兼容 OpenAI /v1/images/generations 的服务（硅基流动、通义万相兼容层、本地 ComfyUI / SD WebUI 的 OpenAI 代理……）
+//   ② custom —— 自己填接口：GET / POST、URL 模板（{prompt} 占位）、自定义参数名、从返回 JSON 里按路径取图
 // 地址和密钥由主人在面板里填；生成结果统一成 Buffer 交给 QQ 发出。
 
-import { randomUUID } from 'node:crypto'
 import { fetchImage } from '../core/net.js'
-import { mimeOf } from '../chat/inbound.js'
-import { canSeeImages } from '../core/llm.js'
-import { imageToolBlock } from '../core/img.js'
-export { imageToolBlock }
 import { createCodexAuth } from './codex-auth.js'
+import { createCodexImage } from './codex-image.js'
+import { mimeOf } from '../chat/inbound.js'
+import { imageToolBlock } from '../core/img.js'
+import { canSeeImages } from '../core/llm.js'
+import { imageSizeFor } from './image-shape.js'
+export { imageToolBlock }
 
 /** 把模板里的 {占位符} 替换掉；不认识的占位符原样留着。 */
 function fill (tpl, vars) {
@@ -101,75 +101,59 @@ async function valueToBuffer (v) {
   throw new Error('生图接口返回的既不是图片地址也不是图片')
 }
 
-/** 画面比例 → 各家的实际尺寸（OpenAI 兼容 / 自定义接口用） */
-export const SHAPE_SIZE = {
-  square: '1024x1024',
-  portrait: '1024x1536',
-  landscape: '1536x1024',
-  wide: '1536x864',
-}
-
-/**
- * 画面比例 → 给模型的构图提示。
- * Codex 订阅那条路**不认 size 参数**（实测请求 1024×1536 也会被它改成自己的尺寸），
- * 但提示词里的构图描述是认的：写「竖版构图（3:4）」出 1086×1448，写「宽幅（16:9）」出 1672×941。
- */
-export const SHAPE_HINT = {
-  square: '方版构图（1:1），主体居中',
-  portrait: '竖版构图（3:4），主体居中',
-  landscape: '横版构图（3:2），两侧留出环境',
-  wide: '宽幅横版构图（16:9），两侧留出环境',
-}
-
-/** 这次用哪个比例：她指定的 > 面板默认的（her = 让她自己按画面定）。 */
-export function pickShape (shape, c) {
-  const ok = ['square', 'portrait', 'landscape', 'wide']
-  if (ok.includes(shape)) return shape
-  const def = c && c.shape
-  return ok.includes(def) ? def : 'her'
-}
-
 export function createImageGen({ getConfig, log, local, dsh, fetchImpl, codexAuth }) {
-  const fetch = fetchImpl || ((...a) => globalThis.fetch(...a))
-  const auth = codexAuth || createCodexAuth({ log, fetchImpl: fetchImpl })
-
+  const fetch = fetchImpl || ((...args) => globalThis.fetch(...args))
+  const auth = codexAuth || createCodexAuth({ log, fetchImpl: fetch })
+  const viaCodex = createCodexImage({ auth, fetchImpl: fetch, log })
   async function generate(prompt, { shape } = {}) {
-    const c = getConfig().imageGen
-    const picked = pickShape(shape, c)
-    const size = SHAPE_SIZE[picked] || c.size
-    const hint = SHAPE_HINT[picked] || ''
+    const config = getConfig().imageGen
+    const c = { ...config, size: imageSizeFor(shape, config) }
     // 本地接口接管：用用户自己电脑上的画图服务
     if (local?.active('image')) {
       const { toImageBuffer } = await import('../local/local.js')
       const t = Date.now()
-      const buf = await toImageBuffer(await local.call('image', { prompt: [c.stylePrompt, prompt, hint].filter(Boolean).join('，'), size }))
+      const buf = await toImageBuffer(await local.call('image', { prompt: [c.stylePrompt, prompt].filter(Boolean).join('，'), size: c.size }))
       log.info(`本地画好了一张图（${Math.round(buf.length / 1024)}KB，${Math.round((Date.now() - t) / 1000)}s）：${prompt.slice(0, 40)}`)
       return buf
     }
     if (!c.enabled) throw new Error('生图还没开启')
-    let full = [c.stylePrompt, prompt].filter(Boolean).join('，')
+    const full = [c.stylePrompt, prompt].filter(Boolean).join('，')
     const t = Date.now()
-    let buf
-    if (c.provider === 'custom') buf = await viaCustom(c, full, size)
-    else if (c.provider === 'codex') {
-      // 这条路的 size 不管用，构图要靠提示词
-      if (hint) full += '，' + hint
-      buf = await viaCodex(c, full)
-    } else {
-      full += hint ? '，' + hint : ''
-      buf = await viaOpenAI(c, full, size)
-    }
+    const buf = c.provider === 'codex' ? await viaCodex(c, full, { shape }) : c.provider === 'custom' ? await viaCustom(c, full) : await viaOpenAI(c, full)
     if (!buf || !buf.length) throw new Error('生图接口没有返回图片')
     if (!String(mimeOf(buf)).startsWith('image/')) throw new Error('生图接口返回的不是图片')
     log.info(`画好了一张图（${Math.round(buf.length / 1024)}KB，${Math.round((Date.now() - t) / 1000)}s）：${prompt.slice(0, 40)}`)
     return buf
   }
 
+  /** OpenAI 兼容接口。 */
+  async function viaOpenAI (c, prompt) {
+    const base = String(c.baseUrl || '').replace(/\/+$/, '')
+    if (!base || !c.model) throw new Error('还没填生图服务地址或模型')
+    const headers = { 'content-type': 'application/json' }
+    if (c.apiKey) headers.authorization = `Bearer ${c.apiKey}`
+    const r = await fetch(`${base}/images/generations`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ model: c.model, prompt, size: c.size, n: 1, response_format: 'b64_json', image_size: c.size }),
+      signal: AbortSignal.timeout(180000),
+    })
+    const j = await r.json().catch(() => ({}))
+    if (!r.ok) throw new Error(j?.error?.message || j?.message || `HTTP ${r.status}`)
+    const item = (j.data || j.images || [])[0] || {}
+    let buf
+    if (item.b64_json) buf = Buffer.from(item.b64_json, 'base64')
+    // 有的服务返回 CDN 链接，下载可能要几十秒（实测 22 秒），默认 20 秒会误判成失败
+    else if (item.url) buf = await fetchImage(item.url, { maxBytes: 20 * 1024 * 1024, allowLocal: false, timeoutMs: 120000 })
+    else throw new Error('生图服务没有返回图片')
+    return buf
+  }
+
   /** 自定义接口：GET 直接把参数拼在地址上，POST 放进 JSON / 表单。 */
-  async function viaCustom (c, prompt, size) {
+  async function viaCustom (c, prompt) {
     const cp = c.custom || {}
     if (!cp.url) throw new Error('还没填自定义生图接口地址')
-    const req = customRequest(size ? { ...c, size } : c, prompt)
+    const req = customRequest(c, prompt)
     log.info(`生图请求：${req.method} ${req.url.slice(0, 160)}`)
     const r = await fetch(req.url, {
       method: req.method,
@@ -191,125 +175,25 @@ export function createImageGen({ getConfig, log, local, dsh, fetchImpl, codexAut
     return valueToBuffer(v)
   }
 
-  /**
-   * ChatGPT 订阅生图（Codex 端点）。
-   * 走订阅额度，不用 API Key；令牌来自生图页里的 OAuth 登录。
-   */
-  async function viaCodex (c, prompt) {
-    const cx = c.codex || {}
-    const body = {
-      prompt,
-      model: String(cx.model || 'gpt-image-2'),
-      quality: String(cx.quality || 'auto'),
-      size: 'auto', // 实测这条端点不认尺寸，改由提示词里的构图描述引导
-      background: String(cx.background || 'auto'),
-    }
-    const once = async (access, accountId) => fetch('https://chatgpt.com/backend-api/codex/images/generations', {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${access}`,
-        'chatgpt-account-id': accountId,
-        accept: 'application/json',
-        'content-type': 'application/json',
-        originator: 'pi',
-        'x-codex-image-turn-id': randomUUID(),
-        'user-agent': 'aurabot-qq',
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(180000),
-    })
-    let { access, accountId } = await auth.ensureAccess()
-    // 图片端点必须带 chatgpt-account-id；没有就说明登录拿到的 token 不对，别拿 401 当"过期"
-    if (!accountId) throw new Error('登录信息里没有账号 ID，去生图页重新登录一次 ChatGPT')
-    log.info(`生图走 ChatGPT 订阅：${body.model} / ${body.size} / 质量 ${body.quality}`)
-    let r = await once(access, accountId)
-    // 令牌可能刚好过期：刷一次再试
-    if (r.status === 401) {
-      try { ({ access, accountId } = await auth.ensureAccess({ force: true })) } catch (error) {
-        throw new Error('订阅登录已过期，去生图页重新登录 ChatGPT')
-      }
-      r = await once(access, accountId)
-    }
-    const text = await r.text().catch(() => '')
-    let j = null
-    try { j = JSON.parse(text) } catch (error) {}
-    if (!r.ok) {
-      if (r.status === 401) throw new Error('订阅登录已失效，去生图页重新登录 ChatGPT')
-      if (r.status === 403) throw new Error('这个订阅 / 工作区不能用生图（HTTP 403）')
-      if (r.status === 429) throw new Error('订阅生图用得太频繁或额度用完了（HTTP 429）')
-      const msg = (j && (j.error?.message || j.message || j.detail)) || text.slice(0, 200)
-      throw new Error(`订阅生图失败（HTTP ${r.status}）${msg ? '：' + msg : ''}`)
-    }
-    const item = (j && Array.isArray(j.data) ? j.data[0] : null) || {}
-    if (typeof item.b64_json === 'string' && item.b64_json) return Buffer.from(item.b64_json, 'base64')
-    if (typeof item.url === 'string' && item.url) return fetchImage(item.url, { maxBytes: 20 * 1024 * 1024, allowLocal: false })
-    const v = j ? findImage(j) : null
-    if (v) return valueToBuffer(v)
-    throw new Error('订阅生图没有返回图片')
-  }
-
-  /** OpenAI 兼容接口。 */
-  async function viaOpenAI (c, prompt, size) {
-    const base = String(c.baseUrl || '').replace(/\/+$/, '')
-    if (!base || !c.model) throw new Error('还没填生图服务地址或模型')
-    const headers = { 'content-type': 'application/json' }
-    if (c.apiKey) headers.authorization = `Bearer ${c.apiKey}`
-    const r = await fetch(`${base}/images/generations`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ model: c.model, prompt, size: size || c.size, n: 1, response_format: 'b64_json', image_size: size || c.size }),
-      signal: AbortSignal.timeout(180000),
-    })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(j?.error?.message || j?.message || `HTTP ${r.status}`)
-    const item = (j.data || j.images || [])[0] || {}
-    if (item.b64_json) return Buffer.from(item.b64_json, 'base64')
-    // 有的服务返回 CDN 链接，下载可能要几十秒（实测 22 秒），默认 20 秒会误判成失败
-    if (item.url) return fetchImage(item.url, { maxBytes: 20 * 1024 * 1024, allowLocal: false, timeoutMs: 120000 })
-    // 有的服务把地址放在别处，兜一下
-    const v = findImage(j)
-    if (v) return valueToBuffer(v)
-    throw new Error('生图服务没有返回图片')
-  }
-
-  /**
-   * 当前模型能不能看图：面板「视觉能力」手动声明优先，其次看 DSH 声明的元数据。
-   * 只有明确能看图才返回 true —— 拿不准就当不能，别把纯文本模型搞崩。
-   */
-  async function canSee () {
-    if (!dsh) return false
-    return (await canSeeImages(dsh, getConfig())) === true
-  }
-
-  /**
-   * 工具结果里要带的那张图：直接复用模块级的 imageToolBlock（本地/上游一份实现）。
-   * 缩图大小之类的细节由 imageToolBlock 自己打日志。
-   */
-  async function toolImage (buf) {
-    if (!dsh) return null
-    return imageToolBlock(dsh, buf, { ffmpegPath: getConfig().bili && getConfig().bili.ffmpegPath, log })
-  }
-
   const enabled = () => {
     if (local?.active('image')) return true
     const c = getConfig().imageGen
     if (!c.enabled) return false
-    if (c.provider === 'codex') return Boolean(auth.status().loggedIn)
+    if (c.provider === 'codex') return auth.status().loggedIn
     return c.provider === 'custom' ? Boolean(c.custom && c.custom.url) : Boolean(c.baseUrl && c.model)
   }
 
-  return { generate, canSee, toolImage, enabled, codexAuth: auth }
+  // 保留本地调用方的附件辅助接口，与模块工具共用同一份图片登记实现。
+  const canSee = async () => Boolean(dsh && (await canSeeImages(dsh, getConfig())) === true)
+  const toolImage = async (buf) => dsh ? imageToolBlock(dsh, buf, { ffmpegPath: getConfig().bili?.ffmpegPath, log }) : null
+  return { generate, canSee, toolImage, enabled, codexAuth: auth, dispose: () => auth.dispose?.() }
 }
 
 /**
- * qq_draw_image 工具结果里那句话。三种情况分别说清楚，别让她瞎猜画面里有什么：
- * - 图真的交给她看了：只说画好了
- * - 能看图但「让她画完自己看一眼」关着：这次没给图，别描述
- * - 模型看不了图（或图没登记成功）：如实说没看到，别让她照着提示词编画面细节
- *
- * 这个函数只回一句话，不带文件路径；能不能把「已保存到本机：路径」告诉她，由调用方决定：
- * 只有**确实把图交出去**（能看图、开关开着、附件登记成功）时才给路径（#59：能看图的模型
- * 要路径来收录表情包 / 存素材）；看不了图时给路径等于让她绕过「不给看」的开关自己去读图。
+ * qq_draw_image 工具结果里那句话。
+ * 看不了图、或者「让她画完自己看一眼」关着时，都要如实说，否则她会照着提示词编画面细节。
+ * 这里只回一句话，不带文件路径；能不能把「已保存到本机：路径」告诉她，由调用方按
+ * 「这张图有没有真的交出去」决定（能看图 + 开关开着 + 附件登记成功才给）。
  */
 export function drawToolMessage ({ visual = false, seeOwn = true } = {}) {
   if (!visual) return '画好发出去了，但这次没能把图片交给你看；别描述画面里有什么'

@@ -94,6 +94,10 @@ cordis.patch.yml       插件与两个 preset 的挂载声明
 test/                  单元测试 + 端到端测试（假 DSH 宿主 + 模拟 OneBot）
 ```
 
+## 可选扩展
+
+[逛贴吧（只读）](extensions/tieba-reader/README.md) 支持搜索、看帖、首页推荐／热门、配置贴吧定时浏览和给主人分享。以独立用户模块构建安装，自动浏览默认关闭，不提供发帖、回帖或点赞接口。
+
 ## 测试
 
 ```
@@ -103,6 +107,11 @@ npm test
 ## 数据位置
 
 `%USERPROFILE%\.dsh\plugins-data\aurabot\`：配置、人格、表情库、日记、记忆、日志，还有自己写的模块（`modules/`）和本地接口脚本（`local/`）。重装、升级插件都不会丢。
+
+## 联系我们
+
+- **协作 / 交流 QQ 群**：**554850395**（项目维护和想法讨论都在这里；装不上、报错了也可以进来问，尽量先带上面板「日志」里的报错和版本号）
+- **GitHub**：[issue](https://github.com/accomplish07zrh-eng/dsh-aurabot-qq/issues) 报 bug / 提需求，[PR](https://github.com/accomplish07zrh-eng/dsh-aurabot-qq/pulls) 提代码；提之前先翻一下有没有重复。贡献者名单见版本说明和 PR 记录。
 
 ## 致谢
 

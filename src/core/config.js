@@ -14,6 +14,7 @@ export const DEFAULTS = {
     // SSRF 防护强度：strict = 解析结果里只要有一个内网地址就拒绝（服务器部署用）；
     // loose = 全部解析结果都是内网才拒绝（本机 DNS 会同时返回公网地址和 IPv6 ULA 时用）
     ssrfMode: 'strict',
+    dangerConfirm: false,
   },
   setupDone: false, // 首次使用向导走完了没有
   botQQ: '', // 机器人 QQ 号（向导里填）
@@ -30,6 +31,8 @@ export const DEFAULTS = {
   // 发文件（#52）：默认开但限制很多——她只能把 QQ 工作区（workspaceDir）和 dirs 里列的目录中的文件当文件发出去；
   // 单个文件有大小上限；只有主人私聊里能触发（可以发给白名单里的人和群）。日志里会记下发了什么。
   files: { enabled: true, maxMB: 50, dirs: [] },
+  // 危险命令确认（可选保护，默认关）：她在私聊里执行删根目录/格式化/关机/下载后直接执行等
+  // 终端命令前，先发 QQ 私聊问主人，回复「确认」才执行；超时或「取消」就拦下。
   snowluma: {
     dir: 'C:\\Aurabot\\snowluma', // 主人自己下载解压到这里（EULA 不允许自动部署）
     autoStart: true, // 随 DSH 启动它（只启动主人已安装并同意过协议的副本）
@@ -48,39 +51,25 @@ export const DEFAULTS = {
   merge: { enabled: true, waitSec: 2.5, maxSec: 8, groupWaitSec: 5, groupMaxSec: 15 }, // 连发合并：对方停顿 waitSec 秒再一起回，最多等 maxSec 秒；群里等得久一点，把一段话攒齐
   imageGen: {
     enabled: false,
-    provider: 'openai', // openai = 兼容 OpenAI /v1/images/generations 的服务；custom = 自己填接口；codex = ChatGPT 订阅（OAuth）
-    custom: {
-      method: 'GET', // GET：参数拼在地址上；POST：参数放进请求体
-      url: '', // 接口地址模板，可用占位符 {prompt} {model} {size} {width} {height}
-      params: [], // [{ key, value }] 自定义参数名和值，值里也能用 {prompt}
-      bodyType: 'json', // POST 时的请求体格式：json | form
-      responsePath: '', // 返回 JSON 时从哪儿取图，如 data.0.url；留空自动找
-    },
-    // ChatGPT 订阅生图（登录态在 data/codex-auth.json，不写进配置）
-    codex: {
-      model: 'gpt-image-2',
-      quality: 'auto', // auto / low / medium / high（2.5 的型号还有 xhigh / max）
-      background: 'auto', // auto / transparent / opaque
-    },
-    // 画面比例：her = 让她按画面自己定（提示词里带构图描述）；也可以钉死成方图/竖图/横图/宽幅
-    shape: 'her',
-    // 面板「她的画作」里最多显示几张（图本身一直存着，插件不自动删）
-    galleryShown: 20,
+    provider: 'openai', // openai / custom；codex = 实验性订阅接法（需单独登录）
     baseUrl: '',
     apiKey: '',
     model: '',
     size: '1024x1024',
+    shape: 'her', // 工具可选构图；her 时未指定就沿用 size
     stylePrompt: '', // 每次生图自动加在前面的风格描述
     ownerOnly: true, // 只有主人能让她画
-    seeOwn: true, // 「让她画完自己看一眼」：开着才把画好的图传给她看（不再额外调模型写描述）
+    seeOwn: true, // 「让她画完自己看一眼」：开着才把画好的图交给她看
+    galleryShown: 20, // 面板「她的画作」显示最近几张（1~50；只影响显示，不删文件）
+    // 自定义接法：url 里可以用 {prompt} {model} {size} {width} {height}；params 是参数名/值（值里也能用这些占位符）
+    custom: { method: 'GET', url: '', bodyType: 'json', responsePath: '', params: [] },
+    // 实验性订阅接法；登录令牌独立保存在数据目录，不进入配置。
+    codex: { model: 'gpt-image-2', quality: 'auto', background: 'auto' },
   },
   persona: { current: 'dafeiyu' },
-  group: {
-    ...DEFAULT_GROUP_POLICY,
-    overrides: {},
-    // 主人在私聊里问起群里的事时，把今天的群聊记录当成她自己的见闻补进上下文
-    ownerBrief: { enabled: true, lines: 24, groups: [] },
-  },
+  group: { ...DEFAULT_GROUP_POLICY, overrides: {}, ownerBrief: { enabled: true, lines: 24, groups: [] } },
+  // 按群头衔不回：勾选的群里，专属头衔正好是 title 的成员（一般是别的机器人）说话、戳她都不理。没勾群就不起作用
+  titleFilter: { enabled: true, groups: [], title: '大肥鱼' },
   voice: {
     enabled: true,
     // auto = 先 edge-tts，不行用 Windows 语音；edge / windows / cosyvoice / gptsovits / http = 指定引擎（失败都会退回 Windows 语音）
@@ -271,6 +260,8 @@ export function normalize(raw) {
   c.allow = { private: qqList(c.allow.private), groups: qqList(c.allow.groups) }
   // 发文件：开关、大小上限、额外允许的目录（只认绝对路径；空行忽略）
   if (!isObj(c.files)) c.files = {}
+  if (!isObj(c.security)) c.security = {}
+  c.security.dangerConfirm = bool(c.security.dangerConfirm, false)
   c.files.enabled = bool(c.files.enabled, true)
   c.files.maxMB = num(c.files.maxMB, 50, 1, 2048)
   c.files.dirs = (Array.isArray(c.files.dirs) ? c.files.dirs : String(c.files.dirs || '').split(/[\n,，;；]+/))
@@ -380,6 +371,9 @@ export function normalize(raw) {
   c.merge.maxSec = Math.max(c.merge.waitSec, num(c.merge.maxSec, 8, 0, 60))
   c.merge.groupWaitSec = num(c.merge.groupWaitSec, 5, 0, 60)
   c.merge.groupMaxSec = Math.max(c.merge.groupWaitSec, num(c.merge.groupMaxSec, 15, 0, 120))
+  c.titleFilter.enabled = bool(c.titleFilter.enabled, true)
+  c.titleFilter.groups = qqList(c.titleFilter.groups) // 和群白名单同一套规则
+  c.titleFilter.title = String(c.titleFilter.title ?? '').replace(/[​-‍﻿]/g, '').trim().slice(0, 30) || '大肥鱼'
   g.burstMax = num(g.burstMax, 8, 1, 50)
   g.burstWindowSec = num(g.burstWindowSec, 120, 10, 3600)
   if (!['auto', 'edge', 'windows', 'cosyvoice', 'gptsovits', 'http'].includes(c.voice.engine)) c.voice.engine = 'auto'

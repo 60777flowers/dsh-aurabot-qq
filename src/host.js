@@ -30,6 +30,7 @@ import { parseCommand, runCommand, createMutes, commandList } from './chat/comma
 import { listPersonas, readPersona, savePersona, deletePersona, currentPersonaText, rulesText, seedPersonas } from './persona/personas.js'
 import { createModules, API_VERSION } from './core/modules.js'
 import { createBridge } from './core/bridge.js'
+import { createDangerGuard } from './security/danger.js'
 import { BUILTINS } from './modules/index.js'
 
 export const name = 'aurabot'
@@ -84,7 +85,13 @@ export function apply(ctx) {
   // 扩展模块能整段改写人格和规则（同步：提示词变量不能等）
   const rewrite = (event, text, ...args) => { const r = mods ? mods.filterSync(event, text, ...args) : text; return typeof r === 'string' ? r : r === null ? '' : text }
   variable('aurabot_persona', () => rewrite('persona', currentPersonaText(cfg.persona.current)))
-  variable('aurabot_rules_private', () => rewrite('rules', rulesText('private', cfg, rulesOpts('private')), 'private'))
+  variable('aurabot_rules_private', () => {
+    const base = rewrite('rules', rulesText('private', cfg, rulesOpts('private')), 'private')
+    // 危险命令确认开着时补一句：被拦下要如实告诉主人，别绕着写
+    return base + (cfg.security && cfg.security.dangerConfirm
+      ? '\n【危险命令】终端命令如果被安全策略拦下（删根目录/格式化/关机/下载后直接执行等），把命令原文和原因如实告诉主人，等主人回复「确认」后再重试；不要换一种写法绕过。'
+      : '')
+  })
   variable('aurabot_rules_social', () => rewrite('rules', rulesText('social', cfg, rulesOpts('social')), 'social'))
 
   // ---------- QQ 网关 ----------
@@ -114,6 +121,7 @@ export function apply(ctx) {
   let verifying = false
   let pendingEvents = []
   let hub = null
+  let dangerGuard = null // 危险命令确认（security.dangerConfirm 开着才生效）
   async function checkLogin() {
     if (disposed) return
     verifying = true
@@ -156,7 +164,16 @@ export function apply(ctx) {
     // 模块能看到所有原始事件（加群、撤回、好友申请……），只看不拦
     mods?.emit('onebot', ev)
     if (ev.post_type === 'message' || ev.post_type === 'message_sent') {
-      if (ev.post_type === 'message') hub.onMessage(ev).catch((error) => log.error('处理消息出错：', error.message))
+      if (ev.post_type === 'message') {
+        // 危险命令确认：主人的「确认 / 取消」回复先在这里截住，不交给聊天中枢
+        if (dangerGuard && ev.message_type === 'private') {
+          const text = Array.isArray(ev.message)
+            ? ev.message.filter((seg) => seg && seg.type === 'text').map((seg) => String(seg.data?.text || '')).join('')
+            : ''
+          if (dangerGuard.handleReply(`private:${ev.user_id}`, ev.user_id, text)) return
+        }
+        hub.onMessage(ev).catch((error) => log.error('处理消息出错：', error.message))
+      }
     } else if (ev.post_type === 'notice' && ev.notice_type === 'notify' && ev.sub_type === 'poke') {
       hub.onPoke(ev).catch((error) => log.error('处理戳一戳出错：', error.message))
     }
@@ -255,6 +272,8 @@ export function apply(ctx) {
     isMuted: (chatId) => mutes.muted(chatId),
     moodEffects: () => use('mood')?.effects?.() ?? null,
     availableModels: () => modelCache,
+    // 模块（重）启动代际：模块热重载后工具名没变、但实例换了，hub 要据此重挂工具（issue #73）
+    toolsGeneration: () => (mods ? mods.generation?.() || 0 : 0),
     hooks: {
       message: (msg) => mods.claim('message', msg),
       reply: (text, info) => mods.filter('reply', text, info),
@@ -333,6 +352,21 @@ export function apply(ctx) {
   bridge = createBridge({ ctx, getConfig, setConfig, hub, mods, log: logger.child('bridge'), version: VERSION, apiVersion: API_VERSION, overview: () => overview() })
   core.bridge = bridge
   core.modules = mods
+  // 危险命令确认（可选保护）：DSH 在真正执行终端工具前会走 tools/pre-execute；
+  // 这里只拦 bash / pwsh 的危险命令，其它工具和普通命令原样放行。
+  dangerGuard = createDangerGuard({
+    getConfig,
+    log: logger.child('危险命令'),
+    deliver: (chatId, text) => hub.sendText(chatId, text),
+    chatOfSession: (sessionId) => { try { return hub.chatOfSession?.(sessionId) || '' } catch (error) { return '' } },
+    ownerQQ: () => cfg.ownerQQ,
+  })
+  core.dangerGuard = dangerGuard
+  ctx.effect(() => {
+    let off = null
+    try { off = ctx.on('tools/pre-execute', (exec, next) => dangerGuard.preExecute(exec, next)) } catch (error) { log.debug('挂危险命令确认失败：', error.message) }
+    return () => { try { if (typeof off === 'function') off() } catch (error) {} }
+  }, 'aurabot: 危险命令确认')
   const booted = mods.boot()
   booted.then(() => {
     // 模块初始化可能跨过卸载时刻，结束后仍要撤掉它创建的资源。
@@ -397,7 +431,7 @@ export function apply(ctx) {
     pendingEvents = []
     verifying = false
     loginOk = false
-    for (const cleanup of [() => hub.dispose(), () => bridge.dispose(), () => mods.dispose(), () => onebot.stop(), () => snowluma.dispose()]) {
+    for (const cleanup of [() => dangerGuard?.dispose(), () => hub.dispose(), () => bridge.dispose(), () => mods.dispose(), () => onebot.stop(), () => snowluma.dispose()]) {
       try { cleanup() } catch (error) { log.warn('卸载清理失败：', error.message) }
     }
   }, 'aurabot: 收尾')
@@ -628,6 +662,41 @@ export function apply(ctx) {
     setConfig({ ...cfg, persona: { current: b.id } })
     log.info(`切换人格 → ${b.id}`)
     return { ok: true, current: b.id, message: '切换好了，下一轮回复起生效' }
+  })
+  // 人格页「AI 润色」：只改面板上这一节的文字，不保存；用不用由主人在面板里选
+  route('/persona/polish', async (req) => {
+    const b = await readBody(req)
+    const title = String(b.title || '').slice(0, 30) || '开场（她是谁）'
+    const text = String(b.text || '').slice(0, 4000)
+    const others = (Array.isArray(b.others) ? b.others : []).map((x) => String(x).slice(0, 30)).slice(0, 20)
+    const system = '你在帮人改一个 QQ 聊天角色的人设。人设按【标题】分节，你一次只改其中一节。' +
+      '只输出这一节改好后的正文：不要写标题，不要加粗、不要 Markdown 标题，不要任何解释。原来是「- 」开头的条目就继续用条目，一条一行、短句。'
+    const ask = [
+      `角色：${String(b.name || '她').slice(0, 30)}`,
+      `要改的这一节：${title}`,
+      `人设里另外几节：${others.join('、') || '无'}（只是让你知道还有哪些，别把它们的内容写进这一节）`,
+      text.trim()
+        ? '要求：保留原来的设定和事实，不编新的身份信息；说得更具体、更像真人；删掉重复和空话；长度别超过原来的 1.5 倍。'
+        : '要求：这一节还是空的，按这个角色和这一节的标题写 4 到 8 条。',
+      text.trim() ? `原文：\n${text}` : '',
+    ].filter(Boolean).join('\n')
+    try {
+      const out = String(await askModel(ctx, { cfg: getConfig(), system, text: ask, maxTokens: 1500, temperature: 0.6 }) || '')
+        .replace(/^```[a-z]*\n?|\n?```$/g, '').replace(new RegExp('^【' + title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '】\\s*'), '').trim()
+      return out ? { ok: true, text: out } : { ok: false, message: '模型没给出内容，再试一次' }
+    } catch (error) {
+      return { ok: false, message: '润色没成功：' + error.message }
+    }
+  })
+
+  // 按群头衔不理：白名单里的群（带群名）+ 这些群里现有的头衔，面板里点一个就设成要过滤的那类
+  route('/groups/titles', async () => {
+    const gids = (cfg.allow.groups || []).map(String)
+    const groups = await Promise.all(gids.map(async (gid) => ({ groupId: gid, name: await hub.groupName(gid) })))
+    if (!gids.length) return { ok: true, groups, titles: [], failed: [] }
+    const { titles, failed } = await hub.titleFilter.titlesIn(gids)
+    hub.titleFilter.clear()
+    return { ok: true, groups, titles, failed, message: failed.length ? `有 ${failed.length} 个群的成员没拉到（她在群里吗？）` : '' }
   })
 
   // 本地接口

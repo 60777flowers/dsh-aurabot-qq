@@ -20,6 +20,7 @@ test('B站头像：last / 最近图片 / 网址、主人权限和开关在模块
   assert.ok(avatar)
   assert.match((await avatar.execute({ image: 'last' })).message, /还没人发过/)
   events.get('message')({ chatId: chat.chatId, images: [{ data: { url: 'https://image.example/owner.png' } }] })
+  events.get('message')({ chatId: 'group:123', images: [{ data: { url: 'https://image.example/other.png' } }] })
   for (const image of ['last', '刚才那张图', '最近的图片']) {
     const r = await avatar.execute({ image })
     assert.equal(r.ok, true, r.message)
@@ -29,6 +30,9 @@ test('B站头像：last / 最近图片 / 网址、主人权限和开关在模块
   const explicit = await avatar.execute({ image: 'https://image.example/explicit.png' })
   assert.equal(explicit.ok, true)
   assert.match(explicit.message, /explicit\.png/)
+  hub.chatOfSession = () => chat.chatId
+  const restored = builders[1]({ chat: { ...chat, chatId: 'private:stale' }, sessionId: 'restored' }).find((t) => t.name === 'bili_set_avatar')
+  assert.match((await restored.execute({ image: 'last' })).message, /owner\.png/, '使用会话映射的聊天图片，不串到其他聊天')
   assert.equal((await avatar.execute({ image: '#1' })).ok, false, 'B站不把画作编号当网址')
   assert.equal((await avatar.execute({ image: 'C:\\private.png' })).ok, false)
   owner = false

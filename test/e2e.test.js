@@ -1,7 +1,7 @@
 // 端到端：假 DSH 宿主 + 假 QQ 网关，跑通 Aurabot 整条链路。
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, readdirSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { startMockOneBot } from './helpers/mock-onebot.js'
@@ -29,7 +29,10 @@ function fakePng(w, h, salt = 0) {
 }
 
 // 「模型」脚本
-async function brain({ preset, text, images, callTool }) {
+async function brain({ preset, inputText: text, images, callTool }) {
+  if (text.includes('at+表情测试')) return '<at:10000001> 看这个<sticker:开心>'
+  if (text.includes('热重载探针')) { const r = await callTool('probe73', {}); return r ? '探针:' + r.message : '没有探针工具' }
+  if (text.includes('慢工具测试')) { const r = await callTool('slow74', {}); return r ? '慢工具好了' : '没有慢工具' }
   if (text.includes('【空间互动')) { qzonePrompts.push(text); return '哈哈好看' }
   if (/^【(私聊|群聊)/.test(text) && text.includes('戳了戳你')) return '干嘛戳我<poke>'
   if (/^【私聊/.test(text) && text.includes('表情改名测试')) { const m = text.match(/把「(.+?)」/); const r = await callTool('qq_edit_sticker', { sticker: m[1], new_name: '改过的名字', tags: ['开心'] }); return r.message }
@@ -113,7 +116,9 @@ before(async () => {
     setupDone: true,
     botQQ: BOT,
     ownerQQ: OWNER,
-    allow: { private: [OWNER], groups: ['555', '557', '558', '559'] },
+    allow: { private: [OWNER], groups: ['555', '556', '557', '558', '559'] },
+    // 556 专门测按头衔不理
+    titleFilter: { enabled: true, groups: ['556'], title: '大肥鱼' },
     snowluma: { autoStart: false, autoAttach: false, httpUrl: mock.httpUrl, wsUrl: mock.wsUrl, httpToken: mock.token, wsToken: mock.token, dir: join(dataDir, 'no-snowluma') },
     voice: { engine: 'windows', autoChance: 0 },
     stickers: { autoChance: 0, collectMode: 'auto' },
@@ -267,6 +272,20 @@ test('群管：她在群里只是普通成员时，主人要求也做不了，�
   } finally {
     delete mock.state.roles['555']
   }
+})
+
+test('按头衔不理：勾选的群里头衔是「大肥鱼」的成员 @ 她、戳她都不交给模型；没头衔的照常回', async () => {
+  const at = (t) => [{ type: 'at', data: { qq: BOT } }, { type: 'text', data: { text: ' ' + t } }]
+  const titled = (uid, t) => ({ ...grp('556', uid, at(t), '另一只鱼'), sender: { user_id: Number(uid), nickname: '另一只鱼', card: '', role: 'member', title: '大肥鱼' } })
+  const turns = fake.turns.length
+  mock.push(titled('880', '你好呀'))
+  mock.push({ post_type: 'notice', notice_type: 'notify', sub_type: 'poke', group_id: 556, user_id: 880, target_id: Number(BOT), self_id: Number(BOT) })
+  await sleep(1500)
+  assert.equal(fake.turns.length, turns, '机器人的消息和戳一戳都没交给她')
+  mock.push(grp('556', '881', at('在吗'), '普通群友'))
+  await until(() => fake.turns.length > turns)
+  assert.match(fake.turns.at(-1).userText, /在吗/)
+  assert.doesNotMatch(fake.turns.at(-1).userText, /你好呀/, '被过滤的那条也没进群聊上下文')
 })
 
 test('QQ 命令：主人 /silent 后群里 @ 她也不回，/active 恢复；群友发命令不算', async () => {
@@ -794,12 +813,12 @@ test('翻聊天记录：读当前聊天更早的消息', async () => {
   assert.match(fake.turns.at(-1).toolCalls[0].result.message, /老张：上周说好去吃火锅/)
 })
 
-const lastCall = (word) => until(() => { const t = fake.turns.at(-1); return t?.userText.includes(word) && t.toolCalls.length ? t.toolCalls[0] : null })
+const lastCall = (word) => until(() => { const t = fake.turns.at(-1); return t?.inputText.includes(word) && t.toolCalls.length ? t.toolCalls[0] : null })
 
 test('#6 改资料：默认仅主人私聊，昵称 / 签名 / 头像走 SnowLuma 对应动作', async () => {
   mock.push(priv(OWNER, text('改昵称测试')))
   let c = await lastCall('改昵称测试')
-  assert.equal(c.result.ok, true)
+  assert.equal(c.result.ok, true, c.result.message)
   assert.deepEqual(mock.sent('set_qq_profile').at(-1).params, { nickname: '小鲸鱼' })
   mock.push(priv(OWNER, text('改签名测试')))
   c = await lastCall('改签名测试')
@@ -963,4 +982,81 @@ test('#58 在 DSH 会话窗口里直接打字：这一轮按主人说的算（�
   api.hub.onSessionEvent({ id: sid }, { type: 'turn/end', data: { turn: 999999, reason: { kind: 'completed' } } })
   api.hub.onSessionEvent({ id: sid }, { type: 'user/message', data: { role: 'user', source: { kind: 'aurabot' }, content: [{ type: 'text', text: 'x' }] } })
   assert.equal(api.hub.turnSendersAllOwner(sid), false, 'QQ 转进来的不标成主人直输')
+})
+
+test('模块热重载后：已有会话下一轮会重挂新实例的工具（issue #73）', async () => {
+  const modsDir = join(dataDir, 'modules', 'probe73')
+  mkdirSync(modsDir, { recursive: true })
+  const writeProbe = (v) => writeFileSync(join(modsDir, 'index.mjs'), `export default {
+  id: 'probe73', name: '探针', api: 1,
+  setup(api) {
+    api.tool(({ chat, level }) => level === 'chat' ? [] : [api.defineTool({
+      name: 'probe73', description: '探针', properties: {},
+      execute: async () => ({ ok: true, message: ${JSON.stringify(v)} }),
+    })])
+  },
+}`)
+  const ask = async () => {
+    const n = fake.turns.length
+    mock.push(priv(OWNER, text('热重载探针')))
+    await until(() => fake.turns.length > n)
+    return String(fake.turns.at(-1).reply || '')
+  }
+  writeProbe('v1')
+  // 等模块被 watcher 加载（每 3 秒扫一次），最多 20 秒
+  const first = await until(async () => { const r = await ask(); return r.includes('v1') ? r : null }, 20000)
+  assert.match(first, /v1/)
+  writeProbe('v2') // 改文件触发热重载
+  const second = await until(async () => { const r = await ask(); return r.includes('v2') ? r : null }, 20000)
+  assert.match(second, /v2/, '热重载后会话应重挂新实例的工具，而不是继续用旧闭包')
+  rmSync(modsDir, { recursive: true, force: true })
+})
+
+test('#77 群里 at 标签和表情包同时出现：at 是真 @，表情包单独一条', async () => {
+  const up = (await fake.call('/sticker/upload', { data: fakePng(200, 200, 7).toString('base64'), name: '开心' })).json()
+  assert.equal(up.ok, true)
+  const before = mock.calls.length
+  mock.push(grp('557', '999', text('at+表情测试'), 'xiaoming'))
+  await until(() => mock.calls.slice(before).filter((c) => c.action === 'send_group_msg').length >= 2, 12000)
+  const sent = mock.calls.slice(before).filter((c) => c.action === 'send_group_msg').map((c) => c.params.message)
+  const atMsg = sent.find((m) => m.some((s) => s.type === 'at'))
+  assert.ok(atMsg, '要有真 @ 消息：' + JSON.stringify(sent))
+  assert.ok(atMsg.some((s) => s.type === 'at' && String(s.data.qq) === OWNER), 'at 目标是主人：' + JSON.stringify(atMsg))
+  assert.ok(sent.some((m) => m.some((s) => s.type === 'image')), '表情包要单独一条：' + JSON.stringify(sent))
+  assert.ok(!sent.some((m) => m.some((s) => s.type === 'text' && /@10000001/.test(s.data.text))), '不能把 at 降级成文字：' + JSON.stringify(sent))
+})
+
+test('慢工具卡住超过 1.5 秒先发一条「正在做」提示，不让主人干等整轮（issue #74）', async () => {
+  const modsDir = join(dataDir, 'modules', 'slow74')
+  mkdirSync(modsDir, { recursive: true })
+  writeFileSync(join(modsDir, 'index.mjs'), `export default {
+  id: 'slow74', name: '慢工具探针', api: 1,
+  setup(api) {
+    api.tool(({ chat, level }) => level === 'chat' ? [] : [api.defineTool({
+      name: 'slow74', description: '慢工具探针',
+      slow: '还在忙，稍等一会儿～',
+      properties: {},
+      execute: async () => { await new Promise((r) => setTimeout(r, 1800)); return { ok: true, message: '慢的好了' } },
+    })])
+  },
+}`)
+  const before = mock.calls.length
+  const turn = async () => {
+    const n = fake.turns.length
+    mock.push(priv(OWNER, text('慢工具测试')))
+    await until(() => fake.turns.length > n, 15000)
+    return fake.turns.at(-1)
+  }
+  const t = await until(async () => { const x = await turn(); return x.reply === '慢工具好了' ? x : null }, 25000)
+  assert.equal(t.reply, '慢工具好了')
+  // 模型结束事件与 OneBot HTTP 回执是两段异步流程，等网关实际收到最终回复再比较顺序。
+  await until(() => mock.calls.slice(before).some((c) => c.action === 'send_private_msg'
+    && c.params.message.some((s) => s.type === 'text' && s.data.text.includes('慢工具好了'))))
+  const sent = mock.calls.slice(before).filter((c) => c.action === 'send_private_msg').map((c) => c.params.message)
+  const texts = sent.map((m) => (m || []).filter((s) => s.type === 'text').map((s) => s.data.text).join(''))
+  const noticeAt = texts.findIndex((x) => /还在忙/.test(x))
+  const doneAt = texts.findIndex((x) => /慢工具好了/.test(x))
+  assert.ok(noticeAt >= 0, '慢工具卡住时要先发提示：' + JSON.stringify(texts))
+  assert.ok(doneAt > noticeAt, '提示要比最终回复先到：' + JSON.stringify(texts))
+  rmSync(modsDir, { recursive: true, force: true })
 })

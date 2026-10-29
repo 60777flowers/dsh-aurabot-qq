@@ -75,6 +75,7 @@ export function createFakeDsh({ brain }) {
           turn++
           const myTurn = turn
           const text = msg.content.filter((c) => c.type === 'text').map((c) => c.text).join('\n')
+          const inputText = msg.content.filter((c) => c.type === 'text').at(-1)?.text || ''
           const images = msg.content.filter((c) => c.type === 'image')
           const ctxText = [...contexts.values()].map((c) => c.text()).filter(Boolean).join('\n')
           const persona = variables.get('aurabot_persona')?.() || ''
@@ -86,8 +87,8 @@ export function createFakeDsh({ brain }) {
             calls.push({ name, args, result })
             return result
           }
-          const reply = await brain({ preset, text, images, ctxText, persona, callTool, toolNames: [...tools.keys()] })
-          turns.push({ sessionId, preset, userText: text, images: images.length, reply, toolCalls: calls, ctxText })
+          const reply = await brain({ preset, text, inputText, images, ctxText, persona, callTool, toolNames: [...tools.keys()] })
+          turns.push({ sessionId, preset, userText: text, inputText, images: images.length, reply, toolCalls: calls, ctxText })
           emit('session/event', session, { type: 'assistant/message', data: { turn: myTurn, message: { content: [{ type: 'text', text: reply }] } } })
           emit('session/event', session, { type: 'turn/end', data: { turn: myTurn, reason: { kind: 'completed' } } })
         })

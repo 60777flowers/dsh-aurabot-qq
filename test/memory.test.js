@@ -74,7 +74,8 @@ test('主人私聊里问起群里的事：才补今天的群聊记录，并标�
 
   // 提到了群 → 带上，而且写清「是她的见闻、不是主人的话」
   hubState.text = '群里刚才聊什么了'
-  const hit = m2.contextFor(priv('10000001'), 'sid')
+  const hit = m2.recallHint(priv('10000001'), hubState.text)
+  assert.doesNotMatch(m2.contextFor(priv('10000001'), 'sid'), /最近群里的情况/, '动态群摘要不再进入常驻快照')
   assert.match(hit, /最近群里的情况/)
   assert.match(hit, /不是主人发给你的消息/)
   assert.match(hit, /阿花：今天去看了海/)
@@ -82,14 +83,14 @@ test('主人私聊里问起群里的事：才补今天的群聊记录，并标�
 
   // 没提群 → 一个字都不加
   hubState.text = '今天晚饭吃什么'
-  assert.doesNotMatch(m2.contextFor(priv('10000001'), 'sid'), /群聊记录/)
+  assert.doesNotMatch(m2.recallHint(priv('10000001'), hubState.text), /群聊记录/)
 
   // 不是主人 → 不加
   hubState.text = '群里聊什么了'
-  assert.doesNotMatch(m2.contextFor(priv('99999999'), 'sid'), /群聊记录/)
+  assert.doesNotMatch(m2.recallHint(priv('99999999'), hubState.text), /群聊记录/)
 
   // 群里说话 → 不加（这是群聊本身，不需要背景）
-  assert.doesNotMatch(m2.contextFor({ kind: 'group', groupId: '1129624985', chatId: 'group:1129624985' }, 'sid'), /群聊记录/)
+  assert.doesNotMatch(m2.recallHint({ kind: 'group', groupId: '1129624985', chatId: 'group:1129624985' }, hubState.text), /群聊记录/)
 })
 
 test('群聊摘要：开关 / 每个群条数 / 群白名单 / 带上群名', () => {
@@ -108,21 +109,21 @@ test('群聊摘要：开关 / 每个群条数 / 群白名单 / 带上群名', ()
   })
 
   // 关掉 → 什么都不加
-  assert.doesNotMatch(mk({ enabled: false }).contextFor(priv, 'sid'), /最近群里的情况/)
+  assert.doesNotMatch(mk({ enabled: false }).recallHint(priv, hubState.text), /最近群里的情况/)
 
   // 打开、每个群 3 条 → 只出现最后 3 条，并带上群名
-  const out = mk({ enabled: true, lines: 3 }).contextFor(priv, 'sid')
+  const out = mk({ enabled: true, lines: 3 }).recallHint(priv, hubState.text)
   assert.match(out, /群「肥鱼群」（1129624985）/)
   assert.match(out, /甲群消息40/)
   assert.doesNotMatch(out, /甲群消息37/, '超过条数的不要')
 
   // 白名单只留一个群 → 另一个群不出现
-  const only = mk({ enabled: true, lines: 5, groups: ['1129624985'] }).contextFor(priv, 'sid')
+  const only = mk({ enabled: true, lines: 5, groups: ['1129624985'] }).recallHint(priv, hubState.text)
   assert.match(only, /甲群消息40/)
   assert.doesNotMatch(only, /乙群消息/)
 
   // 上限 30：填 999 会被夹到 30
-  const capped = mk({ enabled: true, lines: 999 }).contextFor(priv, 'sid')
+  const capped = mk({ enabled: true, lines: 999 }).recallHint(priv, hubState.text)
   assert.match(capped, /最近 30 条/)
 })
 
@@ -181,8 +182,13 @@ test('经历：她做过的事常驻上下文；群里优先想起正在说话�
   hubState.text = '今天吃什么'
   hubState.speakers = ['30000003']
   const g = mem.contextFor({ kind: 'group', groupId: '555', chatId: 'group:555' }, 's2')
-  assert.match(g, /阿花最近在减肥/)
-  assert.doesNotMatch(g.split('你记得这些事')[1] || '', /小幸运/, '最近经历已经列过的不重复')
+  // #79：随消息变化的相关记忆不再进每轮都会追加的上下文快照，改由 recallHint 跟着当轮用户消息走
+  assert.doesNotMatch(g, /阿花最近在减肥/)
+  assert.doesNotMatch(g, /你记得这些事/)
+  const hint = mem.recallHint({ kind: 'group', groupId: '555', chatId: 'group:555' }, '阿花最近在减肥吗')
+  assert.match(hint, /阿花最近在减肥/)
+  assert.doesNotMatch(hint, /小幸运/, '最近经历已经列过的不重复')
+  assert.ok(hint.length <= 350, '相关记忆提示要短，实际 ' + hint.length)
   hubState.text = ''
   hubState.speakers = []
 })
@@ -217,13 +223,13 @@ test('想起来的记忆带时间；最近想起了什么有记录（含想不�
   assert.equal(whenText(now - 3 * 86400_000, now), '3 天前')
   assert.equal(whenText(now - 400 * 86400_000, now).startsWith('去年'), true)
   hubState.text = '阿花最近怎么样'
-  const ctx = mem.contextFor({ kind: 'private', userId: '30000003', chatId: 'private:30000003' }, 's3')
-  assert.ok(ctx.includes('[今天] [阿花] 阿花'), ctx)
+  const hint = mem.recallHint({ kind: 'private', userId: '30000003', chatId: 'private:30000003' }, '阿花最近怎么样')
+  assert.ok(hint.includes('[今天] [阿花] 阿花'), hint)
   const log = mem.recalls()[0]
   assert.equal(log.where, 'private:30000003')
   assert.ok(log.hits.length && log.hits[0].why.length)
   hubState.text = '完全无关的量子力学'
-  mem.contextFor({ kind: 'group', groupId: '9', chatId: 'group:9' }, 's4')
+  mem.recallHint({ kind: 'group', groupId: '9', chatId: 'group:9' }, '完全无关的量子力学')
   assert.equal(mem.recalls()[0].hits.length, 0)
   hubState.text = ''
 })
@@ -265,7 +271,7 @@ test('整理时比对旧记忆：新事实说明旧的过时了，旧的标过�
   assert.equal(was.supersededText, '小明戒辣了')
   assert.equal(all.at(-1).id, old.id, '过时的排在最后')
   hubState.text = '吃辣'
-  const ctx = mem.contextFor({ kind: 'private', userId: '10000001', chatId: 'private:10000001' }, 's5')
+  const ctx = mem.recallHint({ kind: 'private', userId: '10000001', chatId: 'private:10000001' }, '吃辣')
   assert.ok(ctx.includes('小明戒辣了') && !ctx.includes('小明喜欢吃辣'), ctx)
   assert.equal(mem.stats().outdated, 1)
   assert.equal(mem.restore(old.id).ok, true)
@@ -294,9 +300,15 @@ test('人物小档案：按这个人的记忆写，聊天时常驻；群里带�
 test('短句（「嗯嗯」）想不起东西时，连上一句一起找', () => {
   hubState.text = '嗯嗯'
   hubState.prev = '你还记得阿强喜欢干啥吗 钓鱼'
-  const ctx = mem.contextFor({ kind: 'group', groupId: '8', chatId: 'group:8' }, 's8')
+  const ctx = mem.recallHint({ kind: 'group', groupId: '8', chatId: 'group:8' }, '嗯嗯', '你还记得阿强喜欢干啥吗 钓鱼')
   assert.match(ctx, /阿强喜欢钓鱼/)
   assert.ok(mem.recalls()[0].hits.some((h) => h.why.includes('（上一句）')))
   hubState.text = ''
   hubState.prev = ''
+})
+
+test('相关记忆提示有长度上限（#79：上下文增长优化）', () => {
+  for (let i = 0; i < 20; i++) mem.add({ text: '测试记忆第' + i + '条，内容是阿花喜欢的东西和周末计划', about: '30000003', aboutName: '阿花', importance: 0.5, source: 'tool' })
+  const hint = mem.recallHint({ kind: 'group', groupId: '555', chatId: 'group:555' }, '阿花喜欢什么 周末计划')
+  assert.ok(hint.length > 0 && hint.length <= 350, 'hint 长度 ' + hint.length)
 })
