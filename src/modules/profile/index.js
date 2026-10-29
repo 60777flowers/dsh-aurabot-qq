@@ -161,24 +161,15 @@ export default {
       }))
       if (profileToolVisible(cfg, 'qqAvatar', chat)) tools.push(defineTool({
         name: 'qq_set_avatar',
-        description: '换你自己的 QQ 头像。image 填图片网址；填 last 就用这个聊天里刚才别人发的那张图；填「画作 #1」就用你自己刚画的那张（画完时会告诉你编号）。图太大会自动缩小。',
+        description: '换你自己的 QQ 头像。image 填图片网址；主人刚发来一张图、说「用我刚才发的 / 刚才那张」换头像时，填 last（不是画作编号）；填「画作 #1」才是用你自己画的那张（画完时会告诉你编号）。图太大会自动缩小。',
         properties: { image: str('图片网址（http/https）／last（刚才那张图）／画作编号（如 #1）') },
         required: ['image'],
         execute: guarded('qqAvatar', chat, sessionId, async ({ image }, c) => {
           const chatId = hub.chatOfSession(sessionId) || chat.chatId
-          // ① 自己画的图：内部按编号取文件，不让她接触路径
-          const painting = resolvePainting(chatId, image)
-          if (painting) {
-            let buf
-            try {
-              buf = readFileSync(painting.path)
-            } catch (error) {
-              return { ok: false, message: '这张画的文件读不到了：' + error.message }
-            }
-            return applyAvatar(buf, c, 'QQ 头像换好了（用我自己画的那张）')
-          }
-          // ② 刚才那张图（别人发来的）：直接拿图片字节 —— 不再依赖 QQ 图片链接能不能被网关拉到
-          if (/^(last|刚才|上一张|最近)/i.test(String(image || '').trim())) {
+          const raw = String(image || '').trim()
+          // ① 刚才那张图（别人发来的）：直接拿图片字节 —— 不再依赖 QQ 图片链接能不能被网关拉到。
+          // ⚠ 这里必须排在画作前面：'last' 是「别人发的图」，不能被她自己的画作别名抢走。
+          if (!raw || /^(last|刚才|上一张|最近)/i.test(raw)) {
             const list = hub.recentMedia(chatId)
             const pick = list.filter((x) => !x.sticker).at(-1) || list.at(-1)
             if (!pick) return { ok: false, message: '最近半小时这个聊天里没人发过图片，先把图发过来' }
@@ -190,12 +181,31 @@ export default {
             }
             return applyAvatar(buf, c, 'QQ 头像换好了（用刚才那张图）')
           }
-          // ③ 显式网址：原样交给网关
-          const src = avatarSource(image)
-          if (!src.ok) return src
-          if (c.dryRun) return { ok: true, message: `试运行：本来要把 QQ 头像换成：${src.file}` }
-          await onebot.call('set_qq_avatar', { file: src.file }, { timeoutMs: 30000 })
-          return { ok: true, message: 'QQ 头像换好了' }
+          // ② 显式网址：原样交给网关（.png 结尾的网址也是网址，不能被当成画作文件名）
+          if (/^https?:\/\//i.test(raw)) {
+            const src = avatarSource(raw)
+            if (!src.ok) return src
+            if (c.dryRun) return { ok: true, message: `试运行：本来要把 QQ 头像换成：${src.file}` }
+            await onebot.call('set_qq_avatar', { file: src.file }, { timeoutMs: 30000 })
+            return { ok: true, message: 'QQ 头像换好了' }
+          }
+          // ③ 自己画的图：只认「画作」「画作 #1」「#1」或完整文件名；绝对路径一律不认
+          const paintingRef = /^画作/i.test(raw) ? (raw.replace(/^画作\s*[:：#]?\s*/i, '').trim() || '画作') : raw
+          const looksLikePath = /^[a-zA-Z]:[\\/]|^\/(?!\/)|^file:|^base64:/i.test(raw)
+          const isPainting = !looksLikePath && (/^#?\d{1,2}$/.test(paintingRef) || /^画作$/i.test(paintingRef) || /\.(png|jpe?g|webp|gif)$/i.test(paintingRef))
+          if (isPainting) {
+            const painting = resolvePainting(chatId, paintingRef)
+            if (!painting) return { ok: false, message: `找不到画作 ${raw}（编号可能过期了，先让我画一张？）` }
+            let buf
+            try {
+              buf = readFileSync(painting.path)
+            } catch (error) {
+              return { ok: false, message: '这张画的文件读不到了：' + error.message }
+            }
+            return applyAvatar(buf, c, 'QQ 头像换好了（用我自己画的那张）')
+          }
+          // ④ 其它（本地路径、base64 等）一律不收
+          return { ok: false, message: '头像只能用网址图片、「刚才那张图」或「画作 #1」' }
         }),
       }))
       return tools

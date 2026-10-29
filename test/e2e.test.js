@@ -687,8 +687,8 @@ test('画作编号：换头像 / 收表情都能用，而且不靠文件路径',
   assert.ok(items.some((i) => i.name === '自画像'), '名字用她给的那个')
 })
 
-test('换头像：主人发来的图也能用（取图片字节，不依赖 QQ 链接）', async () => {
-  // 主人先发一张图
+test('换头像：主人发来的图也能用，不能被「她的画作」抢走', async () => {
+  // 主人先发一张图（和画作不同的字节，能区分是哪张）
   const png = fakePng(300, 300, 11)
   mock.push(priv(OWNER, [{ type: 'image', data: { sub_type: 0, file: 'base64://' + png.toString('base64') } }]))
   await until(() => fake.turns.at(-1)?.images === 1)
@@ -699,8 +699,14 @@ test('换头像：主人发来的图也能用（取图片字节，不依赖 QQ �
   assert.equal(c.result.ok, true, JSON.stringify(c.result))
   assert.equal(mock.sent('set_qq_avatar').length, n + 1, '真的调了换头像')
   const call = mock.sent('set_qq_avatar').at(-1)
+  const file = String(call.params.file)
   // 用图片字节（base64）或临时文件，不再把 QQ 图片链接直接丢给网关
-  assert.match(String(call.params.file), /^base64:\/\/|avatar-/i, '应该交图片数据，而不是链接')
+  assert.match(file, /^base64:\/\/|avatar-/i, '应该交图片数据，而不是链接')
+  // 必须是主人发的那张：'last' 不能被画作别名顶替
+  const sent = file.startsWith('base64://')
+    ? Buffer.from(file.slice('base64://'.length), 'base64')
+    : readFileSync(file)
+  assert.deepEqual(sent, png, '换上去的是主人发的那张图，不是她自己的画')
 })
 
 test('每日整理：往日的临时流水整理后清空，今天的保留；空间日记进了记忆库', async () => {
