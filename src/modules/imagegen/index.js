@@ -77,6 +77,7 @@ export default {
       render: drawResultBlocks,
       execute: async ({ prompt, shape }) => {
         if (api.config().imageGen.ownerOnly && !hub.turnSendersAllOwner(sessionId)) return { ok: false, message: '画图只给主人画哦' }
+        const startedAt = Date.now()
         const buf = await gen.generate(String(prompt || ''), { shape: String(shape || '') })
         const sent = await hub.sendSegments(chat.chatId, [{ type: 'image', data: { file: 'base64://' + buf.toString('base64') } }], `[生图] ${String(prompt).slice(0, 30)}`)
         if (!sent) return { ok: false, message: '画好了，但没有发到 QQ（请检查试运行和网关）' }
@@ -88,22 +89,36 @@ export default {
           api.log.warn('生图已发送，但经历没记下来：', error.message)
         }
 
-        // 「画完自己看一眼」是总开关：关掉就当没视觉能力处理 —— 既不给图，也不调模型看图。
-        // 不然会出现「模型能看图、图也塞了、但没描述」的模糊中间态（#37 反馈）。
+        // 「画完自己看一眼」是总开关：关掉就当没视觉能力处理 —— 不给图、不调模型看图、也不给路径。
+        // 能看图时才把图缩好登记成附件块；图没登记成（缩图失败 / 没附件服务）同样按「没给看」算。
         const visual = (await hub.canSeeImages(chat)) === true
         const seeOwn = api.config().imageGen.seeOwn !== false
         const allowLook = visual && seeOwn
         const seen = allowLook ? await gen.look(buf, String(prompt || '')) : ''
-
-        // 不把存盘路径告诉她：知道路径她就会自己去读图，绕开「不给看」的开关（图已经发到聊天里了）
-        const out = { ok: true, message: drawToolMessage({ seen, visual, seeOwn }) }
-        // 图要先缩、再登记成 DSH 附件块 —— 直接塞 base64 会让下一轮请求整轮失败（实测）
+        let img = null
         if (allowLook) {
-          const img = await gen.toolImage(buf)
-          if (img) out.image = img
-          // 图没给成：如实说没看到，别让她照着提示词编画面细节
-          else out.message = drawToolMessage({ visual: false })
+          img = await gen.toolImage(buf)
+          if (!img) api.log.debug('这次生图没把图交给模型（缩图/登记失败），只给文字')
         }
+
+        let message
+        if (!visual) message = drawToolMessage({ visual: false })
+        else if (!seeOwn) message = drawToolMessage({ visual: true, seeOwn: false })
+        else if (!img) message = drawToolMessage({ visual: false })
+        else message = drawToolMessage({ seen, visual: true, seeOwn: true })
+
+        const out = {
+          ok: true,
+          message,
+          prompt: String(prompt || ''),
+          bytes: buf.length,
+          elapsedMs: Date.now() - startedAt,
+          ...(saved ? { path: saved } : {}),
+        }
+        if (img) out.image = img
+        // 只有**图真的交给模型了**才把本地路径告诉她（#59）：收录表情包 / 存素材 / qq_add_sticker 用；
+        // 看不了图或开关关着时不给路径，免得她知道路径就去读图，绕开「不给看」的判断。
+        if (img && saved) out.message += `\n已保存到本机：${saved}（要收录表情包、存素材时可以用这个路径）`
         return out
       },
     }) : []))

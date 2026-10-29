@@ -850,12 +850,16 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     turnState.set(key, st)
     // 在侧栏会话里直接打字（比如调试面板里问她「群里聊了什么」）也要记住这句话：
     // 面板上下文（记忆召回、群聊摘要）靠 lastText 判断这一轮在说什么
+    // 同时（#58）主人在 DSH 会话窗口里直接打字 = 只有主人能操作 DSH，这一轮按「主人说的」算，
+    // 不然重开会话后在面板里让她改资料会报没权限
     if (event.type === 'user/message') {
       const t = textOf((event.data || {}).message)
       if (t) {
         if (st.lastText) st.prevText = st.lastText
         st.lastText = t.slice(-600)
       }
+      const src = event.data && event.data.source
+      if (src && src.kind === 'user') st.directOwner = true
       return
     }
     if (event.type === 'assistant/message') {
@@ -880,6 +884,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       st.autoReply = null
       st.text = ''
       st.senders = new Set()
+      st.directOwner = false
       st.system = null
       st.wantVoice = false
       if (sys) {
@@ -1599,11 +1604,13 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
   /** 这一轮里主人说过话（群里常有别人插话，不要求每条都是主人）。 */
   function turnHasOwner(sessionId) {
     const st = turnState.get(sessionKey(sessionId))
+    if (st && st.directOwner) return true // 主人在 DSH 面板里直接打字
     return Boolean(st && [...st.senders].some((u) => isOwner(getConfig(), u)))
   }
 
   function turnSendersAllOwner(sessionId) {
     const st = turnState.get(sessionKey(sessionId))
+    if (st && st.directOwner) return true // 主人在 DSH 面板里直接打字
     if (!st || !st.senders.size) return false
     return [...st.senders].every((u) => isOwner(getConfig(), u))
   }
