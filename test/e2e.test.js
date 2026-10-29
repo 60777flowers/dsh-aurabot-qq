@@ -41,6 +41,8 @@ async function brain({ preset, text, images, callTool }) {
   if (text.includes('刚才那张换头像测试')) { const r = await callTool('qq_set_avatar', { image: 'last' }); return r ? r.message : '没这个工具' }
   if (text.includes('画作换头像测试')) { const r = await callTool('qq_set_avatar', { image: '#1' }); return r ? r.message : '没这个工具' }
   if (text.includes('收画作表情测试')) { const r = await callTool('qq_collect_sticker', { painting: '#1', name: '自画像', tags: ['画画'] }); return r ? r.message : '没这个工具' }
+  if (text.includes('存画作表情测试')) { const r = await callTool('qq_save_sticker', { painting: '#1', name: '自画像', tags: ['画画'] }); return r ? r.message : '没这个工具' }
+  if (text.includes('不存在画作表情测试')) { const r = await callTool('qq_save_sticker', { painting: '#99', name: '不存在的画' }); return r ? r.message : '没这个工具' }
   if (text.includes('换头像测试')) { const r = await callTool('qq_set_avatar', { image: 'https://example.com/a.png' }); return r ? r.message : '没这个工具' }
   if (text.includes('本地头像测试')) { const r = await callTool('qq_set_avatar', { image: 'C:/Users/a/secret.png' }); return r ? r.message : '没这个工具' }
   if (text.includes('慢慢想') && !text.includes('补充')) { await sleep(2500); return '想好了' }
@@ -676,7 +678,7 @@ test('画作编号：换头像 / 收表情都能用，而且不靠文件路径',
   assert.equal(a.result.ok, true, JSON.stringify(a.result))
   const call = mock.sent('set_qq_avatar').at(-1)
   // 网关拿到的要么是 base64（网关不在同一台机器也能用），要么是画作目录里的真实文件
-  assert.match(String(call.params.file), /^base64:\/\/|imagegen/i, '用画作换头像：不该是模型给的路径')
+  assert.match(String(call.params.file), /^base64:\/\/|avatar-/i, '用画作换头像：交的是图片数据或专用临时文件')
 
   const before = (await fake.call('/stickers')).json().items.length
   mock.push(priv(OWNER, text('收画作表情测试')))
@@ -685,6 +687,14 @@ test('画作编号：换头像 / 收表情都能用，而且不靠文件路径',
   const items = (await fake.call('/stickers')).json().items
   assert.equal(items.length, before + 1, '自己画的图能收进表情库')
   assert.ok(items.some((i) => i.name === '自画像'), '名字用她给的那个')
+  mock.push(priv(OWNER, text('存画作表情测试')))
+  const saved = await lastCall('存画作表情测试')
+  assert.equal(saved.result.ok, true, JSON.stringify(saved.result))
+  assert.ok(saved.args.painting, '上游 save 工具也支持显式画作参数')
+  mock.push(priv(OWNER, text('不存在画作表情测试')))
+  const missing = await lastCall('不存在画作表情测试')
+  assert.equal(missing.result.ok, false, '编号不存在时不能退回最近收到的图片')
+  assert.match(missing.result.message, /找不到画作/)
 })
 
 test('换头像：主人发来的图也能用，不能被「她的画作」抢走', async () => {
