@@ -1,7 +1,7 @@
 // 截图库 + 让她发截图这两条链路的测试。每条用例用自己的临时数据目录，互不干扰。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, existsSync, readdirSync } from 'node:fs'
+import { mkdtempSync, readFileSync, existsSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -176,4 +176,124 @@ test('config：shotChance 默认 0.35，越界会被夹住', () => {
   assert.equal(normalize({ bili: { shotChance: 2 } }).bili.shotChance, 1)
   assert.equal(normalize({ bili: { shotChance: -1 } }).bili.shotChance, 0)
   assert.equal(normalize({ bili: { shotChance: 'abc' } }).bili.shotChance, 0.35)
+})
+
+test('截图库：损坏索引中的路径不能越过图库访问或删除文件', () => {
+  freshDir()
+  const store = createShotStore()
+  const real = store.put(Buffer.from('real'), { title: '真实截图' })
+  const outside = join(process.env.AURABOT_DATA_DIR, 'outside.jpg')
+  writeFileSync(outside, 'keep')
+  writeFileSync(join(process.env.AURABOT_DATA_DIR, 'bili-shots/index.json'), JSON.stringify({ items: [
+    { file: '../outside.jpg', title: '外部' }, null, real,
+  ] }))
+  assert.equal(store.path({ file: '../outside.jpg' }), '')
+  assert.equal(store.exists({ file: '../outside.jpg' }), false)
+  assert.equal(store.remove('../outside.jpg').ok, false)
+  assert.deepEqual(store.list(), [real])
+  assert.equal(readFileSync(outside, 'utf8'), 'keep')
+})
+
+test('sendShot：关闭和试运行不发送、不记成功；发送失败如实返回', async () => {
+  for (const mode of ['disabled', 'biliOff', 'dry', 'null', 'empty', 'sim', 'throw']) {
+    freshDir()
+    const { bili, sent, cfg } = makeBili()
+    createShotStore().put(Buffer.from('pic'), { title: '猫' })
+    if (mode === 'disabled') cfg.enabled = false
+    if (mode === 'biliOff') cfg.bili.enabled = false
+    if (mode === 'dry') cfg.dryRun = true
+    // 对失败的 hub 单独建实例，确保发送结果决定返回值。
+    const target = ['null', 'empty', 'sim', 'throw'].includes(mode) ? createBili({
+      getConfig: () => cfg, log: { info() {}, debug() {} },
+      hub: { sendImage: async () => { if (mode === 'throw') throw new Error('网关断开'); return mode === 'empty' ? {} : mode === 'sim' ? { message_id: 'sim-1' } : null } }, api: {},
+    }) : bili
+    const result = await target.sendShot({ chatId: 'private:10000001' })
+    assert.equal(result.sent, false, mode)
+    assert.equal(result.ok, mode === 'dry' || mode === 'sim', mode)
+    if (mode === 'dry') assert.match(result.message, /未实际发送/)
+    assert.equal(target.state().history.length, 0, mode)
+    assert.equal(sent.length, 0, mode)
+  }
+})
+
+function browsing({ dryRun = false, sendResult = { message_id: 1 }, failVision = false } = {}) {
+  const cfg = normalize({ enabled: true, dryRun, ownerQQ: '10000001', bili: { enabled: true, vision: true, shotChance: 1, perRun: 1 } })
+  const sent = []
+  const info = { bvid: 'BV1aaaaaaaaa', cid: 1, aid: 1, title: '猫的视频', duration: 60 }
+  const bili = createBili({
+    getConfig: () => cfg, log: { info() {}, debug() {}, warn() {} },
+    api: { view: async () => info, subtitle: async () => '文本字幕', comments: async () => [], search: async () => [{ ...info, play: 100000 }], popular: async () => [] },
+    vision: async () => { if (failVision) throw new Error('坏流'); return { text: '猫在吃饭', frames: [{ sec: 10, buf: Buffer.from('frame') }] } },
+    hub: {
+      runSystemTurn: async (_id, _name, prompt) => prompt.includes('挑 3 个') ? '["猫"]' : '[{"i":1,"feeling":"好可爱"}]',
+      sendImage: async (chatId, path) => { sent.push({ chatId, path }); return sendResult },
+      sendText: async () => ({}),
+    },
+  })
+  return { bili, sent }
+}
+
+test('watch：画面和字幕进入阅读结果并存图，视觉失败仍返回文字', async () => {
+  freshDir()
+  const { bili } = browsing()
+  const r = await bili.watch('BV1aaaaaaaaa')
+  assert.equal(r.ok, true)
+  assert.match(r.message, /文本字幕/)
+  assert.match(r.message, /猫在吃饭/)
+  assert.equal(bili.libraryShots().items.length, 1)
+  freshDir()
+  const fallback = await browsing({ failVision: true }).bili.watch('BV1aaaaaaaaa')
+  assert.equal(fallback.ok, true)
+  assert.match(fallback.message, /文本字幕/)
+  assert.ok(!fallback.message.includes('画面（抽帧）'))
+})
+
+test('自动截图：只发主人私聊、使用真实文件路径，试运行和失败不计发送', async () => {
+  for (const mode of ['sent', 'dry', 'failed']) {
+    freshDir()
+    const { bili, sent } = browsing({ dryRun: mode === 'dry', sendResult: mode === 'failed' ? null : { message_id: 1 } })
+    const r = await bili.run({ force: true })
+    assert.equal(r.ok, true, r.message)
+    assert.equal(r.shots, mode === 'sent' ? 1 : 0, mode)
+    assert.equal(bili.state().history.filter((i) => i.kind === 'shot').length, r.shots)
+    assert.equal(sent.length, mode === 'dry' ? 0 : 1)
+    if (sent.length) {
+      assert.equal(sent[0].chatId, 'private:10000001')
+      assert.equal(readFileSync(sent[0].path, 'utf8'), 'frame')
+    }
+  }
+})
+
+test('B 站模块：截图库路由预览 / 删除、工具固定发当前会话、关闭后隐藏', async () => {
+  freshDir()
+  const { default: module } = await import('../src/modules/bili/index.js')
+  const { cfg, sent } = makeBili()
+  const routes = new Map(), builders = []
+  const fake = {
+    config: () => cfg, lazy: () => null, log: { info() {}, warn() {}, debug() {} },
+    on() {}, every() {}, tool: (build) => builders.push(build), route: (p, handler) => routes.set(p, handler),
+    core: {
+      hub: { sendImage: async (chatId, src) => { sent.push({ chatId, src }); return { message_id: 8 } } },
+      http: { query: (req) => req.query, body: async (req) => req.body, send: (_res, status, body, type) => ({ status, body, type }) },
+    },
+  }
+  module.setup(fake)
+  const shot = createShotStore().put(Buffer.from('preview'), { title: '预览' })
+  const list = await routes.get('/bili/shots')()
+  assert.equal(list.items[0].file, shot.file)
+  const image = await routes.get('/bili/shot/image')({ query: { file: shot.file } }, {})
+  assert.equal(image.type, 'image/jpeg')
+  assert.equal(image.body.toString(), 'preview')
+  assert.equal((await routes.get('/bili/shot/image')({ query: { file: '../outside' } }, {})).status, 404)
+  const tools = builders[0]({ chat: { kind: 'group', chatId: 'group:123' } })
+  const tool = tools.find((t) => t.name === 'qq_send_shot')
+  assert.deepEqual(Object.keys(tool.parameters.properties), ['query'])
+  assert.equal((await tool.execute({})).sent, true)
+  assert.equal(sent[0].chatId, 'group:123')
+  cfg.bili.enabled = false
+  assert.deepEqual(builders[0]({ chat: { kind: 'private' } }), [])
+  assert.equal((await tool.execute({})).ok, false, '旧工具也复查开关')
+  const deleted = await routes.get('/bili/shot/delete')({ body: { file: shot.file } })
+  assert.equal(deleted.ok, true)
+  assert.equal((await routes.get('/bili/shot/image')({ query: { file: shot.file } }, {})).status, 404)
 })

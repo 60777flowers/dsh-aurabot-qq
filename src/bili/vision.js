@@ -1,14 +1,14 @@
 // 看画面：从 B 站 DASH 流里按时间点抽几帧，交给视觉模型描述画面。
 //
-// 只依赖 ffmpeg —— 直接对着 CDN 地址做 HTTP range 抽帧，不下载整段视频（一帧 1~3 秒，几十 KB）。
-// 任何一环不满足（没开开关 / 没 ffmpeg / 没 cid / 流地址取不到 / 模型不支持图片）都返回 ''，
+// ffmpeg 直接读取 CDN 流并定位抽帧；下载量和耗时取决于视频与 CDN 的 seek 支持。
+// 没开开关 / 没 ffmpeg / 没 cid / 流地址取不到 / 模型明确不支持图片时跳过，
 // 不影响原来「标题 + 简介 + 字幕 + 热评」的文本流程。
 
 import { spawn } from 'node:child_process'
-import { join } from 'node:path'
 import { UA } from './api.js'
-import { askModel } from '../core/llm.js'
+import { askModel, canSeeImages } from '../core/llm.js'
 import { findFfmpeg } from '../core/img.js'
+import { assertPublicUrl } from '../core/net.js'
 
 // ffmpeg 的查找已经抽到 core/img.js（生图那边也要用），这里保留导出，老的引用不受影响
 export { findFfmpeg }
@@ -16,7 +16,7 @@ export { findFfmpeg }
 /** 抽帧时间点（秒）：跳过开头结尾各 5%，中间均匀铺开。 */
 export function frameTimes(durationSec, count) {
   const d = Number(durationSec) || 0
-  if (!(d > 0)) return []
+  if (!Number.isFinite(d) || !(d > 0)) return []
   const n = Math.max(1, Math.min(12, Math.round(Number(count) || 6)))
   const out = []
   for (let i = 0; i < n; i++) {
@@ -37,16 +37,19 @@ export function pickVideoStream(list = []) {
 }
 
 /** 从流里抽一帧（JPEG）。失败返回 null，不抛。 */
-export function grabFrame(ffmpeg, url, at, { width = 512, timeoutMs = 45000 } = {}) {
+export function grabFrame(ffmpeg, url, at, { width = 512, timeoutMs = 15000, maxBytes = 2 * 1024 * 1024 } = {}) {
   return new Promise((resolve) => {
     let settled = false
-    const finish = (v) => { if (!settled) { settled = true; resolve(v) } }
+    let timer
+    const finish = (v) => { if (!settled) { settled = true; clearTimeout(timer); resolve(v) } }
     let proc
     try {
       proc = spawn(ffmpeg, [
         '-hide_banner', '-loglevel', 'error', '-nostdin',
         // B 站 CDN 要 Referer，否则 403
         '-headers', `Referer: https://www.bilibili.com/\r\nUser-Agent: ${UA}\r\n`,
+        '-rw_timeout', String(timeoutMs * 1000),
+        '-protocol_whitelist', 'http,https,tcp,tls,crypto',
         '-ss', String(at), '-i', url,
         '-frames:v', '1', '-an', '-vf', `scale=${width}:-2`,
         '-q:v', '3', '-f', 'image2', '-c:v', 'mjpeg', 'pipe:1',
@@ -55,14 +58,21 @@ export function grabFrame(ffmpeg, url, at, { width = 512, timeoutMs = 45000 } = 
       return finish(null)
     }
     const out = []
-    const timer = setTimeout(() => { try { proc.kill() } catch (error) {} finish(null) }, timeoutMs)
-    proc.stdout.on('data', (d) => out.push(d))
+    let bytes = 0
+    const stop = () => { try { proc.kill() } catch (error) {} finish(null) }
+    timer = setTimeout(stop, timeoutMs)
+    proc.stdout.on('data', (d) => {
+      if (settled) return
+      bytes += d.length
+      if (bytes > maxBytes) return stop()
+      out.push(d)
+    })
     proc.stderr.on('data', () => {}) // 只用来占位，别让管道堵住
     proc.on('error', () => { clearTimeout(timer); finish(null) })
-    proc.on('close', () => {
+    proc.on('close', (code) => {
       clearTimeout(timer)
       const buf = Buffer.concat(out)
-      finish(buf.length > 500 && buf[0] === 0xff && buf[1] === 0xd8 ? buf : null)
+      finish(code === 0 && buf.length > 500 && buf[0] === 0xff && buf[1] === 0xd8 ? buf : null)
     })
   })
 }
@@ -77,7 +87,7 @@ export async function describeFrames(dsh, { info, frames, cfg }) {
     system: SYSTEM,
     text: `这些截图来自视频《${info.title}》（UP主 ${info.author || '?'}，时长 ${Math.round(Number(info.duration) || 0)} 秒），按时间先后排列，大致分布在全片 5%~95% 的位置。\n把它们当成「我看到了什么」如实记下来。`,
     images,
-    maxTokens: 700,
+    maxTokens: 1000,
     temperature: 0.3,
   })
   return String(text || '').trim()
@@ -90,37 +100,90 @@ export function visionState(biliCfg) {
 }
 
 /**
+ * 没有 DASH 时用渐进式 MP4（durl）的几段来抽帧：每段带 length（毫秒），按顺序拼起来是全片。
+ * 返回 [{ url, startMs, endMs }]；length 未知时这一段算到结尾。
+ */
+export function progressiveWindows(list = []) {
+  let start = 0
+  const out = []
+  for (const x of list || []) {
+    if (!x || !x.url) continue
+    const lenMs = Number(x.length) || 0
+    out.push({ url: x.url, startMs: start, endMs: lenMs > 0 ? start + lenMs : Infinity })
+    if (!(lenMs > 0)) break
+    start += lenMs
+  }
+  return out
+}
+
+/** 第 sec 秒落在哪一段 durl 里。 */
+export function windowAt(windows, sec) {
+  const ms = Math.max(0, Number(sec) || 0) * 1000
+  if (!windows || !windows.length) return null
+  return windows.find((w) => ms >= w.startMs && ms < w.endMs) || windows[windows.length - 1]
+}
+
+/**
  * 看画面主流程：取流 → 抽帧 → 视觉描述。
  * 返回 { text, frames }：text 是画面描述（不可用时为空串），frames 是 [{sec, buf}] 抽到的帧
  * （调用方可以存下来当截图用；关掉看画面时两个都为空）。
  */
-export async function lookWithVision({ dsh, api, info, getConfig, log, maxFrames = 8 }) {
+export async function lookWithVision({ dsh, api, info, getConfig, log, deps = {} }) {
   const empty = { text: '', frames: [] }
   const full = getConfig()
   const c = (full && full.bili) || {}
   if (!c.vision || !dsh || !api || typeof api.playurl !== 'function') return empty
   if (!info || !info.cid) return empty
-  const ffmpeg = findFfmpeg(c.ffmpegPath)
+  const ffmpeg = (deps.findFfmpeg || findFfmpeg)(c.ffmpegPath)
   if (!ffmpeg) {
     log?.debug('看画面跳过：没找到 ffmpeg')
     return empty
   }
-  const pu = await api.playurl({ bvid: info.bvid, aid: info.aid, cid: info.cid })
-  const stream = pickVideoStream(pu && pu.video)
-  if (!stream) {
-    log?.debug('看画面跳过：拿不到可抽帧的流地址')
-    return empty
-  }
-  const times = frameTimes(info.duration, c.visionFrames).slice(0, maxFrames)
+  const assertUrl = deps.assertPublicUrl || assertPublicUrl
   const frames = []
-  for (const t of times) {
-    const buf = await grabFrame(ffmpeg, stream.baseUrl, t)
-    if (buf) frames.push({ sec: t, buf })
+  try {
+    if (await (deps.canSeeImages || canSeeImages)(dsh, full) === false) {
+      log?.debug('看画面跳过：当前模型不支持图片')
+      return empty
+    }
+    const pu = await api.playurl({ bvid: info.bvid, aid: info.aid, cid: info.cid })
+    // 优先 DASH；很多账号 / 视频只回 durl（渐进式 MP4），这时按段落定位照样能抽帧。
+    const stream = pickVideoStream(pu && pu.video)
+    const windows = stream ? [] : progressiveWindows(pu && pu.durl)
+    if (stream) await assertUrl(stream.baseUrl)
+    else if (windows.length) await assertUrl(windows[0].url)
+    else {
+      log?.debug('看画面跳过：拿不到可抽帧的流地址')
+      return empty
+    }
+    // durl 有时只覆盖前面一段（常见：一段 MP4 十几分钟），在这一段里均匀抽，别把时间点丢到没覆盖的地方。
+    const covered = windows.length ? windows[windows.length - 1].endMs : Infinity
+    const span = Number.isFinite(covered) ? Math.min(Number(info.duration) || 0, covered / 1000) : Number(info.duration)
+    // 整段抽帧最多 60 秒，避免坏流按帧数倍增等待时间。
+    const deadline = Date.now() + 60_000
+    for (const t of frameTimes(span > 0 ? span : info.duration, c.visionFrames)) {
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) break
+      let url = stream && stream.baseUrl
+      let at = t
+      if (!url) {
+        const win = windowAt(windows, t)
+        if (!win) continue
+        url = win.url
+        at = Math.max(0, t - win.startMs / 1000) // 段内相对时间
+        await assertUrl(url)
+      }
+      const buf = await (deps.grabFrame || grabFrame)(ffmpeg, url, at, { timeoutMs: Math.min(15000, remaining) })
+      if (buf) frames.push({ sec: t, buf })
+    }
+    if (!frames.length) {
+      log?.debug('看画面跳过：一帧都没抽出来')
+      return empty
+    }
+    const text = await (deps.describeFrames || describeFrames)(dsh, { info, frames: frames.map((f) => f.buf), cfg: full })
+    return { text: String(text || '').trim(), frames }
+  } catch (error) {
+    log?.debug('看画面失败，退回文字：', error.message)
+    return { text: '', frames }
   }
-  if (!frames.length) {
-    log?.debug('看画面跳过：一帧都没抽出来')
-    return empty
-  }
-  const text = await describeFrames(dsh, { info, frames: frames.map((f) => f.buf), cfg: full })
-  return { text, frames }
 }

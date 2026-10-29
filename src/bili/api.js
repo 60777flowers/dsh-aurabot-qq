@@ -1,6 +1,6 @@
 // B 站网页端接口：搜视频、看视频信息 / 字幕 / 评论、发评论、看别人的回复。
 // 登录靠用户在面板里填的 Cookie（SESSDATA、bili_jct）；部分接口要 WBI 签名，buvid3 没有就自己申请一个。
-// 支持看、评论和修改自己的签名 / 头像；改资料的权限由模块层校验，不做关注、私信。
+// 只做看和评论，不碰改资料、关注、私信这类账号层面的操作。
 
 import { createHash } from 'node:crypto'
 
@@ -138,19 +138,22 @@ export function createBiliApi({ getCookie, log, fetchImpl = fetch }) {
     }
   }
 
-  /**
-   * DASH 流地址（抽帧用）：{video:[{id,width,height,codecs,bandwidth,baseUrl}], audio:[...]}。
-   * 这些地址两小时左右就失效，所以每次要看画面时现取，不缓存。
-   */
+  /** DASH / 渐进式音视频流地址，视频流供 ffmpeg 定位抽帧。 */
   async function playurl({ bvid, aid, cid, qn = 64 }) {
     await ensureBuvid()
+    // fnval 4048 = DASH + HDR + 4K + 杜比等全要；很多账号 / 视频现在只回 durl（渐进式 MP4），所以两种都带出去。
     const d = await req(await signed('https://api.bilibili.com/x/player/wbi/playurl', {
-      ...(bvid ? { bvid } : { aid }), cid, qn, fnval: 16, fnver: 0, fourk: 0,
+      ...(bvid ? { bvid } : { aid }), cid, qn, fnval: 4048, fnver: 0, fourk: 1,
     }))
     const one = (x) => (x ? { id: x.id, width: x.width, height: x.height, codecs: x.codecs || '', bandwidth: x.bandwidth || 0, baseUrl: x.baseUrl || x.base_url || '' } : null)
+    // 没有 DASH 时退回 durl：每段是渐进式 MP4，length 是这一段的毫秒数（按顺序拼起来是全片）。
+    const durl = (d.durl || [])
+      .map((x) => ({ order: Number(x.order) || 0, url: x.url || '', length: Number(x.length) || 0, size: Number(x.size) || 0 }))
+      .filter((x) => x.url)
     return {
       video: (d.dash?.video || []).map(one).filter((v) => v && v.baseUrl),
       audio: (d.dash?.audio || []).map(one).filter((v) => v && v.baseUrl),
+      durl,
     }
   }
 

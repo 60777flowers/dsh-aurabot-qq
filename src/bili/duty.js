@@ -39,7 +39,7 @@ export function digestOf(v, { subtitle = '', comments = [], vision = '' } = {}) 
   ].filter(Boolean).join('\n')
 }
 
-export function createBili({ getConfig, hub, memory, log, dsh, api: injected }) {
+export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vision: see = lookWithVision }) {
   const cfg = () => getConfig().bili
   const api = injected || createBiliApi({ getCookie: () => cfg().cookie, log })
   const shots = createShotStore({ max: () => getConfig().bili.shotLibrary })
@@ -101,7 +101,7 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected }) 
     const c = cfg()
     if (c.vision) {
       try {
-        const r = await lookWithVision({ dsh, api, info, getConfig, log })
+        const r = await see({ dsh, api, info, getConfig, log })
         vision = r.text || ''
         if (vision) log.debug(`看了《${info.title}》的画面：${vision.slice(0, 40)}…`)
         // 抽到的帧顺手存进截图库：之后她自己发、或主人让她挑一张发
@@ -118,6 +118,9 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected }) 
 
   /** 挑一张存下来的截图发到指定会话（主人让她发 / 她刷完顺手发）。 */
   async function sendShot({ chatId, query = '' } = {}) {
+    const g = getConfig()
+    if (!g.enabled || !g.bili.enabled) return { ok: false, sent: false, message: '插件或 B 站没打开' }
+    if (!/^(private|group):\d+$/.test(String(chatId || ''))) return { ok: false, sent: false, message: '没有可发送的 QQ 会话' }
     const it = shots.pick(query)
     if (!it) {
       return {
@@ -126,14 +129,18 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected }) 
       }
     }
     if (!shots.exists(it)) return { ok: false, message: '那张截图的文件已经没有了' }
-    const r = await hub.sendImage(chatId, shotPath(it))
-    const g = getConfig()
-    if (!r && g.enabled && !g.dryRun) return { ok: false, message: '图没发出去，看日志' }
+    if (g.dryRun) return { ok: true, sent: false, simulated: true, message: `试运行：准备发送《${it.title}》${clockOf(it.sec)} 的截图，未实际发送` }
+    let r
+    try { r = await hub.sendImage(chatId, shotPath(it)) } catch (error) {
+      return { ok: false, sent: false, message: '图没发出去：' + error.message }
+    }
+    if (String(r?.message_id || '').startsWith('sim-')) return { ok: true, sent: false, simulated: true, message: '模拟发送：未实际发到 QQ' }
+    if (r?.message_id === undefined) return { ok: false, sent: false, message: '图没发出去或未收到消息回执，看日志' }
     const st = load()
     record(st, { kind: 'shot', title: it.title, bvid: it.bvid, text: `第 ${clockOf(it.sec)} 的截图` })
     save(st)
     log.info(`发了一张截图《${it.title}》${clockOf(it.sec)} → ${chatId}`)
-    return { ok: true, message: `发了《${it.title}》${clockOf(it.sec)} 那一帧`, shot: { title: it.title, bvid: it.bvid, sec: it.sec } }
+    return { ok: true, sent: true, message: `发了《${it.title}》${clockOf(it.sec)} 那一帧`, shot: { title: it.title, bvid: it.bvid, sec: it.sec } }
   }
 
   /** 让她自己看看手上有哪些截图（挑之前先看）。 */
@@ -236,19 +243,19 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected }) 
       // 刷完按概率顺手甩一张截图给主人：默认概率和发一张表情包一样，0 = 从不
       let shotSent = 0
       const shotTo = getConfig().ownerQQ ? `private:${getConfig().ownerQQ}` : ''
-      if (shotTo && Number(c.shotChance) > 0) {
+      if (shotTo && c.enabled && getConfig().enabled && !getConfig().dryRun && Number(c.shotChance) > 0) {
         const pool = looked.filter((x) => x.shotIds && x.shotIds.length)
         if (pool.length && Math.random() < Number(c.shotChance)) {
           const x = pool[Math.floor(Math.random() * pool.length)]
           const file = x.shotIds[Math.floor(Math.random() * x.shotIds.length)]
           try {
             const line = felt.get(x.info.bvid) || ''
-            if (line) await hub.sendText(shotTo, line)
             const r = await hub.sendImage(shotTo, shotPath({ file }))
-            if (r || getConfig().dryRun || !getConfig().enabled) {
+            if (r?.message_id !== undefined && !String(r.message_id).startsWith('sim-')) {
               shotSent = 1
               record(s, { kind: 'shot', title: x.info.title, bvid: x.info.bvid, text: line })
               log.info(`刷完顺手发了张截图《${x.info.title}》`)
+              if (line) await hub.sendText(shotTo, line)
             }
           } catch (error) {
             log.warn('顺手发截图失败：', error.message)

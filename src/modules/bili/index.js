@@ -108,7 +108,7 @@ export default {
     api.route('/bili/shot/image', async (req, res) => {
       const p = bili.shotFileOf(api.core.http.query(req).file)
       if (!p) return api.core.http.send(res, 404, '')
-      api.core.http.send(res, 200, readFileSync(p), 'image/jpeg')
+      return api.core.http.send(res, 200, readFileSync(p), 'image/jpeg')
     })
     api.route('/bili/shot/delete', async (req) => bili.deleteShot(String((await api.core.http.body(req)).file || '')))
     return bili

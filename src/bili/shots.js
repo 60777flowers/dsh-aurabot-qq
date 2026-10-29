@@ -10,10 +10,11 @@ import { dataDir, ensureDir, existsSync, readJson, writeJson } from '../core/sto
 
 const dir = () => dataDir('bili-shots')
 const indexFile = () => join(dir(), 'index.json')
+const validFile = (file) => typeof file === 'string' && /^[a-f0-9]{12}\.jpg$/.test(file)
 
 export function loadShots() {
   const s = readJson(indexFile(), () => ({ items: [] }))
-  return s && Array.isArray(s.items) ? s : { items: [] }
+  return { items: s && Array.isArray(s.items) ? s.items.filter((i) => i && validFile(i.file)) : [] }
 }
 
 function saveShots(s) {
@@ -22,12 +23,12 @@ function saveShots(s) {
 
 /** 截图文件在本机的绝对路径。 */
 export function shotPath(item) {
-  return join(dir(), item.file)
+  return validFile(item?.file) ? join(dir(), item.file) : ''
 }
 
 /** 秒数 → mm:ss，给「看哪一张」和回话用。 */
 export function clockOf(sec) {
-  const n = Math.max(0, Math.round(Number(sec) || 0))
+  const n = Number.isFinite(Number(sec)) ? Math.max(0, Math.round(Number(sec))) : 0
   return `${Math.floor(n / 60)}:${String(n % 60).padStart(2, '0')}`
 }
 
@@ -133,7 +134,9 @@ export function createShotStore({ max = 300 } = {}) {
     const s = loadShots()
     const it = s.items.find((i) => i.file === name)
     if (!it) return { ok: false, message: '库里没有这张' }
-    try { unlinkSync(join(dir(), it.file)) } catch (error) {}
+    try { unlinkSync(shotPath(it)) } catch (error) {
+      if (error.code !== 'ENOENT') return { ok: false, message: '截图没删掉：' + error.message }
+    }
     s.items = s.items.filter((i) => i.file !== name)
     saveShots(s)
     return { ok: true, message: `删掉了《${it.title || '截图'}》${clockOf(it.sec)} 那一张` }
