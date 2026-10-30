@@ -493,6 +493,72 @@ test('语音：回复里的 <voice> 变成 QQ 语音条', async () => {
   assert.match(rec.params.message[0].data.file, /^base64:\/\//)
 })
 
+test('引用消息：私聊能看到被引用的内容；引用她自己时标「你」', async () => {
+  mock.state.messages = {
+    7001: { message_id: 7001, sender: { user_id: OWNER, nickname: '主人' }, message: [{ type: 'text', data: { text: '上周说的那件事' } }] },
+    7002: { message_id: 7002, sender: { user_id: BOT, nickname: '大肥鱼' }, message: [{ type: 'text', data: { text: '我说过的晚安' } }] },
+  }
+  try {
+    let before = fake.turns.length
+    mock.push(priv(OWNER, [{ type: 'reply', data: { id: '7001' } }, ...text('这个你看到了吗')]))
+    await until(() => fake.turns.slice(before).some((t) => /上周说的那件事/.test(String(t.userText))), 15000)
+    const t1 = fake.turns.slice(before).find((t) => /上周说的那件事/.test(String(t.userText)))
+    assert.match(String(t1.userText), /引用 主人\(10000001\) 的消息/)
+
+    before = fake.turns.length
+    mock.push(priv(OWNER, [{ type: 'reply', data: { id: '7002' } }, ...text('你还记得吗')]))
+    await until(() => fake.turns.slice(before).some((t) => /我说过的晚安/.test(String(t.userText))), 15000)
+    const t2 = fake.turns.slice(before).find((t) => /我说过的晚安/.test(String(t.userText)))
+    assert.match(String(t2.userText), /引用 你 的消息/, '引用的是她自己，要标成「你」')
+  } finally {
+    delete mock.state.messages
+  }
+})
+
+test('引用消息：群聊里也能看到被引用的内容', async () => {
+  mock.state.messages = {
+    7101: { message_id: 7101, sender: { user_id: '999', nickname: '小明' }, message: [{ type: 'text', data: { text: '昨晚那把打得好' } }] },
+  }
+  try {
+    const before = fake.turns.length
+    mock.push(grp('557', OWNER, [{ type: 'reply', data: { id: '7101' } }, ...text('你看这个')], '主人'))
+    await until(() => fake.turns.slice(before).some((t) => /昨晚那把打得好/.test(String(t.userText))), 20000)
+    const t = fake.turns.slice(before).find((t) => /昨晚那把打得好/.test(String(t.userText)))
+    assert.match(String(t.userText), /引用 小明\(999\) 的消息/, '群提示词里要带引用说明')
+  } finally {
+    delete mock.state.messages
+  }
+})
+
+test('引用消息：引用里的图片也作为附件给她看', async () => {
+  const png = fakePng(240, 240, 7)
+  mock.state.messages = {
+    7201: { message_id: 7201, sender: { user_id: OWNER, nickname: '主人' }, message: [{ type: 'image', data: { sub_type: 0, file: 'base64://' + png.toString('base64') } }] },
+  }
+  try {
+    const before = fake.turns.length
+    mock.push(priv(OWNER, [{ type: 'reply', data: { id: '7201' } }, ...text('这张图呢')]))
+    await until(() => fake.turns.slice(before).some((t) => t.images >= 1), 20000)
+    const t = fake.turns.slice(before).find((x) => x.images >= 1)
+    assert.ok(t.images >= 1, '引用里的图片要作为附件交给她')
+  } finally {
+    delete mock.state.messages
+  }
+})
+
+test('引用消息：拉不到内容时明确告诉她没读到（不装看见）', async () => {
+  mock.state.failGetMsg = true
+  try {
+    const before = fake.turns.length
+    mock.push(priv(OWNER, [{ type: 'reply', data: { id: '7301' } }, ...text('这个呢')]))
+    await until(() => fake.turns.slice(before).some((t) => /没读到/.test(String(t.userText))), 15000)
+    const t = fake.turns.slice(before).find((t) => /没读到/.test(String(t.userText)))
+    assert.match(String(t.userText), /如实说没看到/, '要让她知道可以如实说没看到')
+  } finally {
+    mock.state.failGetMsg = false
+  }
+})
+
 test('引用 + 语音：语音条单独一条发，不和引用/@ 拼在同一条（issue #103）', async () => {
   const http = await import('node:http')
   // 用本地 HTTP TTS 避免依赖各平台的 TTS（Windows 语音在 Linux 上不可用）
