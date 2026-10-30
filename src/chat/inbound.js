@@ -14,7 +14,9 @@ export function isStickerSegment(seg) {
   if (seg.type === 'mface') return true
   if (seg.type !== 'image') return false
   const d = seg.data
-  if (String(d.sub_type ?? d.subType ?? '') === '1') return true
+  const sub = String(d.sub_type ?? d.subType ?? '')
+  // 1 = 收藏表情 / 自定义表情；7 = QQ 表情包（网关原样透传，常见于手机端发的表情）
+  if (sub === '1' || sub === '7') return true
   if (d.emoji_id || d.emojiId) return true
   return false
 }

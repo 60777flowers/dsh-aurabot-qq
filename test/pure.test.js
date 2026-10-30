@@ -151,6 +151,19 @@ test('parseMessageEvent：@、引用、图片、表情包、语音', () => {
   assert.match(m.text, /看这个/)
 })
 
+test('QQ 表情包（image sub_type=7）也按表情包识别，不当普通图片', () => {
+  const seg = { type: 'image', data: { url: 'http://x/s.gif', sub_type: 7, summary: '[非常不错]' } }
+  assert.equal(isStickerSegment(seg), true)
+  const m = parseMessageEvent({ message_type: 'private', user_id: 777, self_id: SELF, sender: { nickname: '白' }, message: [seg] }, SELF)
+  assert.equal(m.stickers.length, 1)
+  assert.equal(m.images.length, 0)
+  assert.match(m.text, /非常不错/)
+  // 网关有时把 sub_type 写成字符串，也要认
+  assert.equal(isStickerSegment({ type: 'image', data: { sub_type: '7' } }), true)
+  // 普通照片仍然不是表情包
+  assert.equal(isStickerSegment({ type: 'image', data: { sub_type: 0, summary: '[图片]' } }), false)
+})
+
 test('isStickerSegment：普通照片不算表情', () => {
   assert.equal(isStickerSegment({ type: 'image', data: { sub_type: 0, url: 'x' } }), false)
   assert.equal(isStickerSegment({ type: 'image', data: { sub_type: '1' } }), true)
