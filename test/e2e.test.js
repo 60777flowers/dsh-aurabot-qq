@@ -563,6 +563,27 @@ test('引用消息：引用里的表情包也作为附件给她看', async () =>
   }
 })
 
+test('引用消息：get_msg 只回空 url + 裸文件名时，从消息历史补图片地址', async () => {
+  const png = fakePng(120, 120, 9)
+  mock.state.messages = {
+    7501: { message_id: 7501, sender: { user_id: BOT, nickname: '大肥鱼' }, message: [{ type: 'image', data: { url: '', file: 'abc.png', sub_type: 1, summary: '[确认眼神]' } }] },
+  }
+  mock.state.history = [
+    { message_id: 7501, real_id: 7501, sender: { user_id: BOT }, message: [{ type: 'image', data: { url: 'base64://' + png.toString('base64'), file: 'abc.gif', sub_type: 1, summary: '[确认眼神]' } }] },
+  ]
+  try {
+    const before = fake.turns.length
+    mock.push(priv(OWNER, [{ type: 'reply', data: { id: '7501' } }, ...text('这个表情呢')]))
+    await until(() => fake.turns.slice(before).some((t) => t.images >= 1), 20000)
+    const t = fake.turns.slice(before).find((x) => x.images >= 1)
+    assert.ok(t.images >= 1, '历史里的图片地址要补上，表情包才算真的看到')
+    assert.match(String(t.userText), /引用 你 的消息/, '她自己的表情包标成「你」')
+  } finally {
+    delete mock.state.messages
+    delete mock.state.history
+  }
+})
+
 test('引用消息：拉不到内容时明确告诉她没读到（不装看见）', async () => {
   mock.state.failGetMsg = true
   try {

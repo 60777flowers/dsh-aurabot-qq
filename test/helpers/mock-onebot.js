@@ -75,6 +75,11 @@ export async function startMockOneBot({ selfId = '20000002', token = 'mock-token
         if (quoted) return quoted
         return { message_id: params.message_id, sender: { user_id: 1 } }
       }
+      case 'get_friend_msg_history':
+      case 'get_group_msg_history': {
+        if (state.failHistory) throw new Error('history failed')
+        return { messages: state.history || [] }
+      }
       case 'add_custom_face': {
         const id = 'emoji-' + (faces.size + 1)
         faces.set(id, '')

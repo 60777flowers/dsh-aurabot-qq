@@ -1014,7 +1014,39 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
   // QQ 的引用段只有 message_id，正文要用 get_msg 再取一次。取到后把「谁、说了什么、几张图」带上；
   // 取不到也记一笔，让她知道「这条引用没读到」，可以如实说没看到（别装作看见了）。
   const QUOTE_CACHE_MAX = 200
-  async function quotedInfo(replyId) {
+  /** 表情包/图片段里有没有能直接下载的地址（有些 get_msg 只回了空 url + 裸文件名）。 */
+  const quoteSegUsable = (seg) => {
+    const d = (seg && seg.data) || {}
+    return [d.url, d.file].some((x) => typeof x === 'string'
+      && (/^https?:\/\//i.test(x) || x.startsWith('base64://') || x.startsWith('file://') || /^[a-zA-Z]:[\\/]/.test(x)))
+  }
+  const quoteNeedsHistory = (parsed) => [...(parsed.images || []), ...(parsed.stickers || [])].some((seg) => !quoteSegUsable(seg))
+  /**
+   * get_msg 对「她发出的表情包/图片」可能只回空 url + 裸文件名（下载不了）。
+   * 这时退回消息历史（get_friend_msg_history / get_group_msg_history），里面带可用 url。
+   */
+  async function quoteFromHistory(id, ctx) {
+    if (!ctx || (!ctx.userId && !ctx.groupId)) return null
+    const group = Boolean(ctx.groupId)
+    const action = group ? 'get_group_msg_history' : 'get_friend_msg_history'
+    const base = group ? { group_id: Number(ctx.groupId) } : { user_id: Number(ctx.userId) }
+    // 先用引用 id 当锚点（能取到更早的消息），拿不到再退回「最近 30 条」
+    const anchor = /^-?\d+$/.test(id) ? Number(id) : 0
+    const attempts = anchor
+      ? [{ ...base, message_id: anchor, count: 5, reverse_order: false }, { ...base, count: 30 }]
+      : [{ ...base, count: 30 }]
+    for (const params of attempts) {
+      try {
+        const r = await onebot.call(action, params, { timeoutMs: 8000, retries: 0 })
+        const hit = (r?.messages || []).find((m) => String(m?.message_id ?? '') === id || String(m?.real_id ?? '') === id)
+        if (hit) return hit
+      } catch (error) {
+        log.debug(`引用消息历史也拉不到（${id}）：`, error.message)
+      }
+    }
+    return null
+  }
+  async function quotedInfo(replyId, ctx = null) {
     const id = String(replyId || '')
     if (!id) return null
     if (quoteCache.has(id)) return quoteCache.get(id)
@@ -1024,7 +1056,16 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       const sender = m?.sender || {}
       out.uid = String(sender.user_id ?? m?.user_id ?? '')
       out.who = String(sender.card || sender.nickname || out.uid || '某人')
-      const parsed = parseMessageEvent({ message_type: 'private', user_id: out.uid, sender, message: m?.message ?? m?.raw_message ?? '' }, selfId, { faceName: faces.nameOf })
+      const kind = ctx?.groupId ? 'group' : 'private'
+      let parsed = parseMessageEvent({ message_type: kind, group_id: ctx?.groupId, user_id: out.uid, sender, message: m?.message ?? m?.raw_message ?? '' }, selfId, { faceName: faces.nameOf })
+      if (quoteNeedsHistory(parsed)) {
+        const hit = await quoteFromHistory(id, ctx)
+        if (hit) {
+          const again = parseMessageEvent({ message_type: kind, group_id: ctx?.groupId, user_id: out.uid, sender: hit.sender || sender, message: hit.message ?? '' }, selfId, { faceName: faces.nameOf })
+          if (!quoteNeedsHistory(again)) parsed = again
+          else { parsed.images = [...(parsed.images || []), ...(again.images || [])]; parsed.stickers = [...(parsed.stickers || []), ...(again.stickers || [])] }
+        }
+      }
       out.text = String(parsed.text || '').trim().slice(0, 300)
       out.images = parsed.images || []
       out.stickers = parsed.stickers || []
@@ -1070,10 +1111,10 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     return got.map((x, i) => ({ type: 'image', data: x.data, mediaType: x.mediaType, name: `quote-${q.uid || 'x'}-${i + 1}` }))
   }
 
-  async function repliedToBot(replyId) {
+  async function repliedToBot(replyId, msg) {
     if (!replyId) return false
     if (sentIds.has(replyId)) return true
-    const q = await quotedInfo(replyId)
+    const q = await quotedInfo(replyId, msg)
     return Boolean(q && q.ok && q.isBot)
   }
 
@@ -1247,7 +1288,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       const recentTexts = (groupBuf.get(msg.groupId) || []).filter((x) => now - x.t < pol.activeWindowSec * 1000).slice(-6).map((x) => x.text)
       let memScore = 0
       try { memScore = typeof memoryScore === 'function' ? memoryScore(recentTexts.join(' ')) : 0 } catch (error) {}
-      const quotedBot = await repliedToBot(msg.replyId)
+      const quotedBot = await repliedToBot(msg.replyId, msg)
       const decision = decideGroupReply({
         policy: pol,
         relevance: topicRelevance(recentTexts, pol.interests, memScore),
@@ -1299,7 +1340,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       if (last) last.text = text
     }
     // 引用消息：私聊现在就把被引用的内容取出来拼进正文；群聊留给 groupPrompt 懒加载（没交给她就白取）
-    const quoted = msg.kind === 'private' && msg.replyId ? await quotedInfo(msg.replyId) : null
+    const quoted = msg.kind === 'private' && msg.replyId ? await quotedInfo(msg.replyId, msg) : null
     // 群聊：不在这里拼文案。等这段消息攒齐了（或她回完上一段），flush 时把群里新来的话一次性交给她
     const content = msg.kind === 'group' ? [] : [{ type: 'text', text: `【私聊】${msg.nickname}(${msg.userId})：` + (text || '（没有文字）') + (quoted ? '\n' + quoteInline(quoted) : '') }]
     const imgs = await imagesOf(msg)
@@ -1405,7 +1446,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     // 引用内容只在这一段真要交给她时才取（缓存在 quoteCache 里，取失败也会记一笔）
     const need = fresh.filter((x) => x.replyId && !('quote' in x))
     if (need.length) {
-      const infos = await Promise.all(need.map((x) => quotedInfo(x.replyId)))
+      const infos = await Promise.all(need.map((x) => quotedInfo(x.replyId, chat)))
       need.forEach((x, i) => { x.quote = infos[i] })
     }
     const line = (x) => `${x.nick}(${x.uid})${x.at ? '@了你' : ''}：${x.text || '（图片/表情）'}${x.quote ? ' ' + quoteInline(x.quote) : ''}`
