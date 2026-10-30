@@ -1452,7 +1452,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
             draft.stickers.collect ? f.choices('stickers.collectMode', [
               { value: 'ask', label: '她挑', desc: '只把表情递给她看，喜欢才收（她起的名字）；也听主人的' },
               { value: 'auto', label: '全都偷', desc: '看到就收，不用她同意；也听主人的' },
-              { value: 'owner', label: '只听主人的', desc: '只有主人让她收的时候才收；别人发的先悄悄记着，但不提示她' },
+              { value: 'owner', label: '只听主人的', desc: '只有主人让她收的时候才收；别人发的先悄悄记着，但不提示她（和主人私聊时任她挑）' },
             ]) : h('span', { className: 'ab-muted ab-small' }, '先把上面的「偷表情」打开')),
           h(Row, { label: '每小时最多收' }, f.num('stickers.maxPerHour', { min: 0 }), h('span', { className: 'ab-muted' }, '张')),
           h(Row, { label: '表情库最多存', hint: 'QQ 收藏表情有数量上限，满了就收不进去了。超过这个数会自动清掉最少用的偷来的表情（你自己加的不会动）' }, f.num('stickers.maxLibrary', { min: 20, max: 2000 }), h('span', { className: 'ab-muted' }, '张')),
