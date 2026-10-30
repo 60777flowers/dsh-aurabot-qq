@@ -29,6 +29,7 @@ import { createUpdateChecker, changelogSection } from './core/update.js'
 import { parseCommand, runCommand, createMutes, commandList } from './chat/commands.js'
 import { listPersonas, readPersona, savePersona, deletePersona, currentPersonaText, rulesText, seedPersonas } from './persona/personas.js'
 import { createModules, API_VERSION } from './core/modules.js'
+import { createCommunity } from './core/community.js'
 import { createBridge } from './core/bridge.js'
 import { createDangerGuard } from './security/danger.js'
 import { BUILTINS } from './modules/index.js'
@@ -387,15 +388,42 @@ export function apply(ctx) {
   }
   mods.listen('module/start', (id) => { if (id === 'pet') injectPetPort() })
 
+  let unloaded = false
+  const community = createCommunity({ mods, getConfig, setConfig, log, version: VERSION, alive: () => !unloaded })
   const booted = mods.boot()
   booted.then(() => {
     // 模块初始化可能跨过卸载时刻，结束后仍要撤掉它创建的资源。
     if (disposed) { mods.dispose(); return }
     try { injectPetPort() } catch (error) { log.debug('桌宠端口注入失败：', error.message) }
     bridge.refresh()
+    // 搬到社区库的模块（老用户自动装回）；卸载了就别装
+    if (!unloaded) community.migrate().catch((error) => log.warn('搬到社区库的模块处理失败：', error.message))
     // 启动时就开着调试的，顺手把调试会话建出来（没建过才会建）
     if (getConfig().debug) hub.ensureDebugSession().catch((error) => log.warn('建调试会话失败：', error.message))
   }).catch(() => {})
+
+  // ---------- 审批请求：DSH 要授权时把请求发到 QQ ----------
+  // 说明：DSH 的批准动作只能由界面回答（host 拿不到应答通道），所以这里只做通知。
+  const approvalSeen = new Map()
+  async function notifyApproval(session, event) {
+    try {
+      if (!cfg.enabled || cfg.dryRun || cfg.approvalNotify === false) return
+      const d = event.data || {}
+      const id = String(d.id || '')
+      if (!id || approvalSeen.has(id)) return
+      approvalSeen.set(id, Date.now())
+      if (approvalSeen.size > 200) { for (const [k, t] of approvalSeen) if (Date.now() - t > 6 * 3600_000) approvalSeen.delete(k) }
+      let title = ''
+      try { title = String(session?.title || session?.id || '') } catch (error) {}
+      const lines = ['【要授权】' + (d.toolName || '未知工具')]
+      if (d.reason) lines.push('原因：' + String(d.reason).slice(0, 300))
+      if (title) lines.push('会话：' + title.slice(0, 60))
+      lines.push('这个得在 DSH 界面里点「批准」，QQ 这边没法代答。')
+      await hub.sendText(`private:${cfg.ownerQQ}`, lines.join('\n'))
+    } catch (error) {
+      log.debug?.('审批通知失败：', error.message)
+    }
+  }
 
   // ---------- 盯会话：一轮结束就发回 QQ ----------
   ctx.effect(() => {
@@ -407,6 +435,8 @@ export function apply(ctx) {
       }
       // 桌宠的「干活状态」动画 / 结束提醒：把同一条事件顺手转给 pet 模块（模块没开就是 null，纯旁路）
       try { use('pet')?.onSessionEvent?.(session, event) } catch (error) { log.debug?.('桌宠状态联动出错：', error.message) }
+      // 审批请求顺手通知到主人私聊（只通知，不代答）
+      if (event && event.type === 'approval/asked') notifyApproval(session, event)
     })
     return () => { try { if (typeof off === 'function') off() } catch (error) {} }
   }, 'aurabot: 盯会话')
@@ -449,6 +479,7 @@ export function apply(ctx) {
   ctx.effect(() => () => {
     if (disposed) return
     disposed = true
+    unloaded = true
     for (const timer of delayed) clearTimeout(timer)
     delayed.clear()
     pendingEvents = []
@@ -650,6 +681,17 @@ export function apply(ctx) {
       if (Number.isFinite(b[k])) patch[k] = k === 'whisperMaxPerDay' ? Math.min(9999, Math.max(0, Math.floor(b[k]))) : Math.min(9999, Math.max(1, Math.floor(b[k])))
     }
     if (typeof b.whisperLines === 'string') patch.whisperLines = b.whisperLines.slice(0, 4000)
+    // 素材包下载地址：内建模块的 settings 字段不渲染成表单（同上），这里是它唯一的写入通道。
+    // 只收 http/https（或空 = 回到内置默认），别把 file:// 之类塞进来当下载源
+    if (typeof b.petPackUrl === 'string') {
+      const u = b.petPackUrl.trim().slice(0, 1000)
+      if (!u || /^https?:\/\//i.test(u)) patch.petPackUrl = u
+    }
+    // Electron 下载镜像：同上（内建模块不渲染 settings）；留空 = 回落内置默认 npmmirror
+    if (typeof b.electronMirror === 'string') {
+      const u = b.electronMirror.trim().slice(0, 500)
+      if (!u || /^https?:\/\//i.test(u)) patch.electronMirror = u
+    }
     // 行为大脑的模块级设置（AI 自己改不了，只有主人能改）。pet 是**内置模块**，
     // 它的 settings schema 不会渲染成表单（面板只给「用户自己复制出来的模块」生成），
     // 所以这里是这些开关唯一的写入通道——不补，关窗物理闸就永远打不开。
@@ -663,11 +705,16 @@ export function apply(ctx) {
       ['behaviorIdleCursorMinutes', 1, 240],
       ['behaviorMoodCloseWindowBelow', 0, 100],
       ['behaviorIconQuarantineDays', 1, 365],
+      ['chatBehaviorCooldownMinutes', 1, 1440], // 聊天联动冷却：1 分钟起，最长一天
+      ['chatBehaviorMaxPerDay', 0, 9999],       // 聊天联动每日上限：0 = 聊天时她也不动
     ]) {
       if (Number.isFinite(b[k])) patch[k] = Math.min(hi, Math.max(lo, Math.round(b[k])))
     }
     if (typeof b.behaviorWindowWhitelist === 'string') patch.behaviorWindowWhitelist = b.behaviorWindowWhitelist.slice(0, 2000)
     if (typeof b.behaviorDisabledActions === 'string') patch.behaviorDisabledActions = b.behaviorDisabledActions.slice(0, 500)
+    // 聊天联动动作（1.2.0 起 pet 模块代码在 mods 仓；核心侧 /panel/pet/config 仍是这些键的面板写入通道）
+    if (typeof b.chatBehaviorEnabled === 'boolean') patch.chatBehaviorEnabled = b.chatBehaviorEnabled
+    if (typeof b.chatBehaviorWhitelist === 'string') patch.chatBehaviorWhitelist = b.chatBehaviorWhitelist.slice(0, 2000)
     if (!Object.keys(patch).length) return { ok: false, message: '没有可保存的字段' }
     setConfig(mergeFromPanel(cfg, { ext: { pet: patch } }))
     log.info(`面板已保存桌宠设置｜${Object.keys(patch).map((k) => k + '=' + String(patch[k]).slice(0, 20)).join(' ')}`)
@@ -685,6 +732,12 @@ export function apply(ctx) {
     const pet = use('pet')
     if (typeof pet?.download !== 'function') return { ok: false, available: false, message: '桌宠模块还没就绪，装不了客户端' }
     return { ok: true, result: redactTokens(await pet.download()) }
+  })
+  // 素材包：手动重下默认形象包（换镜像地址后用；force=true 表示已有也重下）
+  route('/panel/pet/fetch-pack', async () => {
+    const pet = use('pet')
+    if (typeof pet?.ensureDefaultPack !== 'function') return { ok: false, available: false, message: '桌宠模块还没就绪，下不了素材包' }
+    return { ok: true, result: await pet.ensureDefaultPack(true), pet: petStatus() }
   })
   route('/panel/pet/focus', async (req) => {
     const enabled = Boolean((await readBody(req)).enabled)
@@ -948,8 +1001,13 @@ export function apply(ctx) {
   // 本地接口
   const openFolder = (dir) => {
     mkdirSync(dir, { recursive: true })
-    spawn('explorer.exe', [dir], { detached: true, stdio: 'ignore' }).unref()
-    return { ok: true, message: '打开了' }
+    const opener = process.platform === 'win32' ? 'explorer.exe' : process.platform === 'darwin' ? 'open' : 'xdg-open'
+    // 子进程起不来是以 error 事件抛的，没人听就是未捕获异常，会把 DSH 整个带走（#135）
+    return new Promise((resolve) => {
+      const child = spawn(opener, [dir], { detached: true, stdio: 'ignore' })
+      child.once('error', (error) => resolve({ ok: false, message: `打不开文件夹：${dir}（${error.message}）` }))
+      child.once('spawn', () => { child.unref(); resolve({ ok: true, message: '打开了' }) })
+    })
   }
   route('/local/status', async () => ({ ok: true, dir: local.dir(), list: local.status() }))
   route('/local/template', async (req) => {
@@ -978,6 +1036,17 @@ export function apply(ctx) {
 
   // 模块（面板「扩展」页）
   route('/modules', async () => ({ ok: true, dir: mods.dir(), safeMode: cfg.safeMode, apiVersion: API_VERSION, list: mods.status(), prompt: mods.promptFor('') }))
+  route('/modules/community', async (req) => {
+    try { return { ok: true, ...(await community.list({ force: query(req).force === '1' })) } } catch (error) { return { ok: false, message: error.message, list: [] } }
+  })
+  route('/modules/community/install', async (req) => {
+    const b = await readBody(req)
+    return { ...(await community.install(String(b.id || ''), { confirmReplace: b.confirmReplace === true })), modules: mods.status() }
+  })
+  route('/modules/community/remove', async (req) => {
+    const b = await readBody(req)
+    return { ...(await community.remove(String(b.id || ''), { purge: b.purge === true })), modules: mods.status() }
+  })
   route('/modules/reload', async (req) => {
     const id = String((await readBody(req)).id || '')
     if (!id) { await mods.sync(); return { ok: true, message: '检查过了', list: mods.status() } }

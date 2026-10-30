@@ -163,9 +163,14 @@ export async function askModel (dsh, o) {
     temperature: o.temperature ?? 0.3,
   }
   let effort = await pickReasoningEffort(dsh, t.provider, t.model, o.reasoningEffort === undefined ? 'low' : o.reasoningEffort)
+  let widened = false
   for (let attempt = 0; ; attempt++) {
     try {
-      return await runStream(llm, effort ? { ...base, reasoningEffort: effort } : base)
+      const out = await runStream(llm, effort ? { ...base, reasoningEffort: effort } : base)
+      // 推理模型可能把输出预算全花在思考上，一个字没写：放宽预算再试一次
+      if (out || widened) return out
+      widened = true
+      base.maxTokens = Math.min(4000, base.maxTokens * 3)
     } catch (error) {
       // 能力探测没查到 / 模型临时不认：去掉思考强度再来一次
       if (attempt === 0 && effort && isUnsupportedEffort(error)) {

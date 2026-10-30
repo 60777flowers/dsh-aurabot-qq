@@ -17,10 +17,12 @@ export const DEFAULTS = {
     dangerConfirm: false,
   },
   setupDone: false, // 首次使用向导走完了没有
+  communityMigrated: {}, // 搬到社区库的模块处理过没有（id → installed / skipped / kept），只处理一次
   botQQ: '', // 机器人 QQ 号（向导里填）
   ownerQQ: '', // 主人 QQ 号（向导里填）
   ownerName: '主人',
   ownerLevel: 'full', // full | social | chat
+  approvalNotify: true, // DSH 要授权时把请求发到主人私聊（只通知，不能在 QQ 里批）
   profilePerms: { qqNickname: 'owner', qqSignature: 'owner', qqAvatar: 'owner', biliSign: 'owner', biliAvatar: 'owner', qqFriendRequest: 'owner', whitelist: 'owner', douyinBrowse: 'owner', douyinLike: 'owner', douyinComment: 'owner', douyinShareOwner: 'owner', douyinDm: 'owner' }, // 改资料类操作（含抖音浏览 / 点赞 / 评论 / 分享）的权限：off 关 / owner 仅主人私聊 / all 所有人。抖音项默认仅主人，总开关默认关
   longTasks: false, // 长任务模式：主人私聊（完整权限）额外挂 dsh-tool-jobs + dsh-tool-schedule，会多一点工具定义、稍慢
   allow: { private: [], groups: [] }, // 主人永远能私聊，不用写进白名单
@@ -175,6 +177,16 @@ export const DEFAULTS = {
     maxPostsPerDay: 3, // 每天最多发帖（硬上限，多了容易被限）
     defaultTopic: 7214, // 发帖默认分区：7214 盒友杂谈 / 18745 数码硬件 / 806933 AI
     postStyle: 'mix', // 发帖风格：diary 大肥鱼日记 / news 热搜文 / mix 肥鱼热搜
+    shareToOwner: false, // 逛到有意思的帖子，私聊分享给主人（老用户升级不能突然收到私聊，默认关）
+    shareBias: 'normal', // stingy | normal | proactive：分享给主人的积极程度
+    shareDaily: 3, // 每天最多分享几条（避免刷屏）
+    // 谷时逛：只在非峰时跑自动逛，避开工作日 9-12 / 14-18 的高峰，省 token
+    offPeakOnly: false, // 开关：默认关（行为不变）
+    peakStartAM: 9, // 上午峰时开始（含）
+    peakEndAM: 12, // 上午峰时结束（不含）
+    peakStartPM: 14, // 下午峰时开始（含）
+    peakEndPM: 18, // 下午峰时结束（不含）
+    peakWeekend: false, // 周末是否也算峰时（默认不算，周末全天可逛）
   },
   qzoneSocial: {
     enabled: true,
@@ -196,8 +208,9 @@ export const DEFAULTS = {
     awakeFrom: 8,
     awakeTo: 23,
   },
-  mood: { enabled: true, halfLifeHours: 3, judge: false }, // judge：每轮聊完用模型判一次心情（更准，每轮多一次很短的调用）；关着用关键词
-  memory: { enabled: true, recallCount: 6, dailyConsolidate: true, consolidateTimes: ['04:00', '16:00'] }, // 每天这几个时间把临时记忆（聊天流水）整理进长期记忆、相处经验和说话方式；过了一天的流水整理完清空
+  mood: { enabled: true, halfLifeHours: 3, judge: false, base: 60 }, // base：心情基线（0~100 里算「平常」的那个值）；judge：每轮聊完用模型判一次心情（更准，每轮多一次很短的调用）；关着用关键词
+  chat: { seedHistory: false, seedHistoryCount: 20 }, // seedHistory：新会话第一次说话时先补最近几条历史（默认关）
+  memory: { enabled: true, recallCount: 6, dailyConsolidate: true, consolidateTimes: ['04:00', '16:00'], keepChatlogDays: 0, mergeGroups: false }, // keepChatlogDays：聊天流水保留（0 = 整理完就删，-1 = 永久，N = 留 N 天）；mergeGroups：整理时把同一个人名下的重复条目合并（默认关，每组多一次模型调用）；consolidateTimes：每天这几个时间把临时记忆整理进长期记忆、相处经验和说话方式
   song: {
     enabled: false,
     root: '', // 翻唱环境目录，留空 = 自动（老安装 C:\Aurabot\rvc，新安装在用户目录下）
@@ -262,6 +275,7 @@ export function normalize(raw) {
   c.security.ssrfMode = c.security.ssrfMode === 'loose' ? 'loose' : 'strict'
   c.botQQ = qq(c.botQQ)
   c.ownerQQ = qq(c.ownerQQ)
+  c.approvalNotify = bool(c.approvalNotify, true)
   c.gateway = c.gateway === 'onebot' ? 'onebot' : 'snowluma'
   // 只认绝对路径（Windows 的 D:\\… 或 Linux 的 /…），别的当没填
   c.workspaceDir = String(c.workspaceDir || '').trim()
@@ -303,6 +317,7 @@ export function normalize(raw) {
   c.voice.autoMaxChars = num(c.voice.autoMaxChars, 80, 1, 500)
   c.stickers.autoChance = num(c.stickers.autoChance, 0.35, 0, 1)
   c.stickers.faces = c.stickers.faces !== false
+  c.stickers.collectMode = ['ask', 'auto', 'owner'].includes(c.stickers.collectMode) ? c.stickers.collectMode : 'ask'
   c.stickers.maxPerHour = num(c.stickers.maxPerHour, 20, 0, 200)
   c.stickers.maxLibrary = num(c.stickers.maxLibrary, 300, 20, 2000)
   c.stickers.maxSide = num(c.stickers.maxSide, 520, 80, 4096)
@@ -330,6 +345,7 @@ export function normalize(raw) {
   q.maxPerDay = num(q.maxPerDay, 8, 0, 50)
   q.intervalMin = num(q.intervalMin, 30, 5, 1440)
   c.mood.halfLifeHours = num(c.mood.halfLifeHours, 3, 0.25, 72)
+  c.mood.base = num(c.mood.base, 60, 10, 90)
   c.mood.judge = bool(c.mood.judge, false)
   for (const k of ['tts', 'image', 'song', 'asr']) c.local[k] = bool(c.local[k], false)
   const b = c.bili
@@ -347,6 +363,17 @@ export function normalize(raw) {
   b.maxCommentsPerDay = num(b.maxCommentsPerDay, 3, 0, 50)
   b.maxRepliesPerDay = num(b.maxRepliesPerDay, 6, 0, 100)
   b.keywords = (Array.isArray(b.keywords) ? b.keywords : String(b.keywords || '').split(/[\n,，]+/)).map((x) => String(x).trim()).filter(Boolean).slice(0, 30)
+  const hb = c.heybox
+  hb.shareToOwner = bool(hb.shareToOwner, false)
+  hb.shareBias = ['stingy', 'normal', 'proactive'].includes(hb.shareBias) ? hb.shareBias : 'normal'
+  hb.shareDaily = Math.round(num(hb.shareDaily, 3, 0, 10))
+  hb.cookie = String(hb.cookie || '').trim()
+  hb.offPeakOnly = bool(hb.offPeakOnly, false)
+  hb.peakStartAM = num(hb.peakStartAM, 9, 0, 23)
+  hb.peakEndAM = num(hb.peakEndAM, 12, 0, 24)
+  hb.peakStartPM = num(hb.peakStartPM, 14, 0, 23)
+  hb.peakEndPM = num(hb.peakEndPM, 18, 0, 24)
+  hb.peakWeekend = bool(hb.peakWeekend, false)
   const d = c.douyin
   d.enabled = bool(d.enabled, false)
   d.autoBrowse = bool(d.autoBrowse, true)
@@ -381,9 +408,16 @@ export function normalize(raw) {
   delete c.memory.consolidateAt
   c.memory.consolidateTimes = [...new Set((Array.isArray(c.memory.consolidateTimes) ? c.memory.consolidateTimes : String(c.memory.consolidateTimes || '').split(/[\s,，]+/)).map((t) => hhmm(t, '')).filter(Boolean).map((t) => t.padStart(5, '0')))].sort().slice(0, 4)
   if (!c.memory.consolidateTimes.length) c.memory.consolidateTimes = ['04:00', '16:00']
+  c.chat = c.chat || {}
+  c.chat.seedHistory = bool(c.chat.seedHistory, false)
+  c.chat.seedHistoryCount = num(c.chat.seedHistoryCount, 20, 1, 50)
   c.memory.recallCount = num(c.memory.recallCount, 6, 0, 20)
+  c.memory.keepChatlogDays = num(c.memory.keepChatlogDays, 0, -1, 3650)
+  c.memory.mergeGroups = bool(c.memory.mergeGroups, false)
   g.interests = (Array.isArray(g.interests) ? g.interests : String(g.interests || '').split(/[\s,，]+/)).map((s) => String(s).trim()).filter(Boolean)
   g.minRelevance = num(g.minRelevance, 0.25, 0, 1)
+  // @ 了别人时不算叫她（只挡必回，仍然可以插话）；默认关，保持原行为
+  g.ignoreAtOthers = bool(g.ignoreAtOthers, false)
   c.merge.enabled = bool(c.merge.enabled, true)
   c.merge.waitSec = num(c.merge.waitSec, 2.5, 0, 30)
   c.merge.maxSec = Math.max(c.merge.waitSec, num(c.merge.maxSec, 8, 0, 60))

@@ -1,7 +1,7 @@
 // 端到端：假 DSH 宿主 + 假 QQ 网关，跑通 Aurabot 整条链路。
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { copyFileSync, mkdtempSync, writeFileSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { startMockOneBot } from './helpers/mock-onebot.js'
@@ -114,6 +114,8 @@ before(async () => {
   writeFileSync(outsideFilePath, '不在工作区里的文件')
   mock = await startMockOneBot({ selfId: BOT })
   mkdirSync(dataDir, { recursive: true })
+  mkdirSync(join(dataDir, 'modules', 'group-admin'), { recursive: true })
+  copyFileSync(new URL('./helpers/group-admin.mjs', import.meta.url), join(dataDir, 'modules', 'group-admin', 'index.mjs')) // 群管已搬到社区库，这里当成已安装
   writeFileSync(join(dataDir, 'config.json'), JSON.stringify({
     enabled: true,
     dryRun: false,
@@ -1263,9 +1265,8 @@ test('慢工具卡住超过 1.5 秒先发一条「正在做」提示，不让主
   }
   const t = await until(async () => { const x = await turn(); return x.reply === '慢工具好了' ? x : null }, 25000)
   assert.equal(t.reply, '慢工具好了')
-  // 模型结束事件与 OneBot HTTP 回执是两段异步流程，等网关实际收到最终回复再比较顺序。
-  await until(() => mock.calls.slice(before).some((c) => c.action === 'send_private_msg'
-    && c.params.message.some((s) => s.type === 'text' && s.data.text.includes('慢工具好了'))))
+  // 模型回完不等于已发出：等最终回复真的到网关再比先后
+  await until(() => mock.calls.slice(before).some((c) => c.action === 'send_private_msg' && JSON.stringify(c.params.message).includes('慢工具好了')), 8000)
   const sent = mock.calls.slice(before).filter((c) => c.action === 'send_private_msg').map((c) => c.params.message)
   const texts = sent.map((m) => (m || []).filter((s) => s.type === 'text').map((s) => s.data.text).join(''))
   const noticeAt = texts.findIndex((x) => /还在忙/.test(x))
@@ -1273,6 +1274,18 @@ test('慢工具卡住超过 1.5 秒先发一条「正在做」提示，不让主
   assert.ok(noticeAt >= 0, '慢工具卡住时要先发提示：' + JSON.stringify(texts))
   assert.ok(doneAt > noticeAt, '提示要比最终回复先到：' + JSON.stringify(texts))
   rmSync(modsDir, { recursive: true, force: true })
+})
+
+test('DSH 要授权时通知主人私聊，同一请求只发一次（#136）', async () => {
+  const before = mock.calls.length
+  const ask = { type: 'approval/asked', data: { id: 'approval-1', toolName: 'pwsh', reason: '要跑命令' } }
+  fake.emit('session/event', { id: 's', title: '测试会话' }, ask)
+  fake.emit('session/event', { id: 's', title: '测试会话' }, ask)
+  await until(() => mock.calls.slice(before).some((c) => c.action === 'send_private_msg'))
+  await sleep(100)
+  const sent = mock.calls.slice(before).filter((c) => c.action === 'send_private_msg' && String(c.params.user_id) === OWNER)
+  assert.equal(sent.length, 1)
+  assert.match(JSON.stringify(sent[0].params.message), /要授权.*pwsh.*没法代答/)
 })
 
 test('主人私聊里这一轮的说话人记录丢了，也按主人算（#90 兜底）', async () => {

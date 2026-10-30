@@ -15,9 +15,9 @@ const RING = 300
 export function createBridge({ ctx, getConfig, setConfig, hub, mods, log, version, apiVersion, overview }) {
   const events = [] // 最近发生的事（收到的消息、她发出去的话、模块发的事件），别的程序轮询用
   let seq = 0
+  let disposed = false
   let toolOffs = []
   let toolNames = []
-  let disposed = false
 
   function record(type, data) {
     events.push({ seq: ++seq, at: Date.now(), type, ...data })

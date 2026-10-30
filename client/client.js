@@ -528,7 +528,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       { id: 'heybox', label: '小黑盒', flag: 'heybox.enabled' },
       { id: 'local', label: '本地接口' },
       { id: 'security', label: '安全防护' },
-      { id: 'modules', label: '扩展' },
+      { id: 'market', label: '模块市场' },
+      { id: 'modules', label: '已安装' },
       { id: 'logs', label: '日志' },
     ]
     // 内置标签页属于哪个模块：模块都没在跑就不显示这一页
@@ -542,7 +543,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       { id: 'self', label: '人设', icon: 'M12 12.5a4.25 4.25 0 1 0 0-8.5 4.25 4.25 0 0 0 0 8.5zM4.5 20.5c.9-3.6 3.9-5.5 7.5-5.5s6.6 1.9 7.5 5.5', tabs: ['persona', 'group', 'speakup', 'mood'] },
       { id: 'express', label: '表达', icon: 'M20.5 11.5a8 8 0 0 1-11.7 7.1L4 20l1.4-4.4A8 8 0 1 1 20.5 11.5zM9 13.2s1.1 1.5 3 1.5 3-1.5 3-1.5M9.5 9.6h.01M14.5 9.6h.01', tabs: ['voice', 'stickers', 'imagegen', 'song', 'pet'] },
       { id: 'platform', label: '平台', icon: 'M3.5 6.5h17v11h-17zM10.5 9.8v4.4l3.8-2.2z', tabs: ['diary', 'bili', 'douyin', 'heybox'] },
-      { id: 'system', label: '系统', icon: 'M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1M15 5v4M9 10v4M17 15v4', tabs: ['connect', 'model', 'access', 'local', 'modules', 'logs'] },
+      { id: 'system', label: '系统', icon: 'M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1M15 5v4M9 10v4M17 15v4', tabs: ['connect', 'model', 'access', 'logs'] },
+      { id: 'market', label: '模块', icon: 'M4 9.5 5.5 4h13L20 9.5M4 9.5a2.7 2.7 0 0 0 5.3 0 2.7 2.7 0 0 0 5.4 0 2.7 2.7 0 0 0 5.3 0M5.5 12.5V20h13v-7.5M10 20v-4.5h4V20', tabs: ['market', 'modules', 'local'] },
     ]
     // 自己写的模块：名字像逛平台的放「平台」，其余放「系统」（排在「日志」前面）
     const PLATFORM_EXT = /逛|刷|B站|抖音|小红书|闲鱼|淘宝|微博|知乎|贴吧|快手|触站|小黑盒/
@@ -552,7 +554,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       overview: '首页 状态', connect: 'qq 网关 snowluma onebot 登录 工作区', persona: '人设 性格 设定 头像', access: '主人 白名单 权限 群管 改资料',
       group: '群聊 插话 合并', model: 'ai 大模型 视觉 思考强度', voice: '语音 tts 说话 音色 edge', stickers: '表情 小黄脸 gif 商城表情',
       imagegen: '画图 图片', diary: '空间 说说 日记', speakup: '搭话 主动', mood: '心情 记忆', song: '唱歌 翻唱 rvc 点歌',
-      bili: 'b站 bilibili 视频', douyin: '抖音 短视频 私信', pet: '桌宠 宠物 悬浮窗 气泡 electron', local: '本地 接口 sd sovits', modules: '扩展 模块 插件', logs: '日志 报错',
+      bili: 'b站 bilibili 视频', douyin: '抖音 短视频 私信', pet: '桌宠 宠物 悬浮窗 气泡 electron', local: '本地 接口 sd sovits', modules: '扩展 自己写 模板 安全模式', market: '模块 市场 插件 社区 下载 安装 桌宠 抖音 小黑盒 群管', logs: '日志 报错',
     }
     const navIcon = (d) => h('svg', { viewBox: '0 0 24 24', 'aria-hidden': true }, h('path', { d }))
 
@@ -1045,7 +1047,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       )
     }
 
-    function Access({ draft, setDraft }) {
+    function Access({ st, draft, setDraft }) {
       const f = useField(draft, setDraft)
       return h('div', { className: 'ab-grid' },
         h(Card, { title: '主人', desc: '主人的 QQ 号。群管、点歌、电脑上的操作只听主人的。' },
@@ -1059,25 +1061,28 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
                 { value: 'chat', label: '纯聊天', desc: '什么工具都没有，只聊天' },
               ] }),
               h('div', { className: 'ab-muted ab-small', style: { marginTop: 8 } }, '切换后会给主人私聊换一个新的 DSH 会话（旧的还在侧栏里）。'))),
+          h(Row, { label: 'DSH 要授权时发到 QQ', hint: '人不在电脑前也知道她卡住了。只是通知，批准还得回 DSH 里点。' }, f.sw('approvalNotify')),
           h(Row, { label: '长任务模式', hint: '只在「完整」权限下生效。打开后她能把命令放到后台跑、跑完自动回来告诉你，也能设定时任务；工具多一点，回话会稍慢。切换后同样换新会话。' },
             h(Choices, { value: draft.longTasks ? 'on' : 'off', onChange: (v) => setDraft(setPath(draft, 'longTasks', v === 'on')), options: [
               { value: 'off', label: '关', desc: '维持现在的速度（默认）' },
               { value: 'on', label: '开', desc: '挂上后台任务（jobs）+ 定时任务（schedule）' },
             ] })),
         ),
-        h(ProfilePerms, { draft, setDraft }),
+        h(ProfilePerms, { st, draft, setDraft }),
         h(Card, { title: '白名单', desc: '只有名单里的人和群，她才会理。一行一个号码。' },
           h(Row, { label: '私聊白名单', hint: '主人默认就在里面。' }, f.list('allow.private', { placeholder: '每行一个 QQ 号', numbers: true })),
           h(Row, { label: '群白名单', hint: '把机器人拉进群后，把群号加到这里。' }, f.list('allow.groups', { placeholder: '每行一个群号', numbers: true })),
         ),
-        h(GroupRoles, null),
+        modOn(st, 'group-admin') ? h(GroupRoles, null) : null,
         h(CommandList, null),
       )
     }
 
     /** 改资料类操作的权限：关 / 仅主人私聊 / 所有人。 */
-    function ProfilePerms({ draft, setDraft }) {
+    function ProfilePerms({ st, draft, setDraft }) {
       const perms = draft.profilePerms || {}
+      const douyinOn = modOn(st, 'douyin')
+      const heyboxOn = modOn(st, 'heybox')
       const opts = [
         { value: 'off', label: '关', desc: '谁说都不改' },
         { value: 'owner', label: '仅主人私聊', desc: '只有你私聊让她改才改（默认）' },
@@ -1085,7 +1090,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       ]
       const row = (key, label, hint) => h(Row, { label, hint },
         h(Choices, { value: perms[key] || 'owner', onChange: (v) => setDraft(setPath(draft, 'profilePerms.' + key, v)), options: opts }))
-      return h(Card, { title: '改资料与名单', desc: '她能不能听人的话改自己的 QQ 昵称、签名、头像和 B 站签名，处理好友申请、改白名单，以及抖音上的浏览、点赞、评论、分享。改 QQ 资料要 SnowLuma 支持（set_qq_profile / set_self_longnick / set_qq_avatar）。抖音各项默认仅主人，要放开自己在这里开。' },
+      return h(Card, { title: '改资料与名单', desc: '她能不能听人的话改自己的 QQ 昵称、签名、头像和 B 站签名，处理好友申请和改白名单；装了抖音、小黑盒模块后，它们的操作权限也在这里。改 QQ 资料要 SnowLuma 支持。各项默认仅主人。' },
         row('qqNickname', 'QQ 昵称'),
         row('qqSignature', 'QQ 个性签名'),
         row('qqAvatar', 'QQ 头像', '只用网址图片，或「刚才发的那张图」。'),
@@ -1093,15 +1098,15 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         row('biliAvatar', 'B 站头像', '要先在 B 站页登录并打开 B 站。图片网址或刚才发的图，最大 2MB。'),
         row('qqFriendRequest', '处理好友申请', '让她通过 / 拒绝别人加她为好友的申请。她自己主动加别人暂不支持（SnowLuma 没有这个接口）。'),
         row('whitelist', '改白名单', '让她把 QQ 号 / 群号加进或移出下面的白名单。主人不会被移出。开成「所有人」前请想清楚。'),
-        row('douyinBrowse', '刷抖音 / 看视频', '让她去刷推荐（douyin_browse）、点开别人发来的抖音链接（douyin_watch）。定时自己刷不受这项限制。'),
-        row('douyinLike', '抖音点赞', '有人让她给某个视频点赞；关掉后她自己刷的时候也不点赞。'),
-        row('douyinComment', '抖音评论', '有人让她去某个视频下评论；关掉后她自己刷的时候也不评论。'),
-        row('douyinShareOwner', '分享抖音给主人', '刷到好玩的视频在 QQ 私聊里发给你（她的话 + 链接）。'),
-        row('douyinDm', '主动发抖音私信', '主人明确让她给某个人发私信时（主页链接或抖音号）；列表里没有会话会从对方主页发起。默认仅主人私聊。'),
-        row('heyboxBrowse', '逛小黑盒 / 看帖子', '让她翻信息流（heybox_feed）、读帖子正文和热评（heybox_watch）、看热榜和搜帖子（heybox_hot / heybox_search / heybox_topics）。定时自己逛不受这项限制。'),
-        row('heyboxLike', '小黑盒点赞', '有人让她给某个帖子点赞；关掉后她自己逛的时候也不点赞。'),
-        row('heyboxComment', '小黑盒评论', '有人让她去某个帖子下评论；关掉后她自己逛的时候也不评论。'),
-        row('heyboxPost', '小黑盒发帖 / 删帖', '让她发帖（heybox_post，文章模式可带图）和删自己发的帖（heybox_delete）。发帖会用你的账号公开发布，默认仅主人私聊。'),
+        douyinOn && row('douyinBrowse', '刷抖音 / 看视频', '让她去刷推荐（douyin_browse）、点开别人发来的抖音链接（douyin_watch）。定时自己刷不受这项限制。'),
+        douyinOn && row('douyinLike', '抖音点赞', '有人让她给某个视频点赞；关掉后她自己刷的时候也不点赞。'),
+        douyinOn && row('douyinComment', '抖音评论', '有人让她去某个视频下评论；关掉后她自己刷的时候也不评论。'),
+        douyinOn && row('douyinShareOwner', '分享抖音给主人', '刷到好玩的视频在 QQ 私聊里发给你（她的话 + 链接）。'),
+        douyinOn && row('douyinDm', '主动发抖音私信', '主人明确让她给某个人发私信时（主页链接或抖音号）；列表里没有会话会从对方主页发起。默认仅主人私聊。'),
+        heyboxOn && row('heyboxBrowse', '逛小黑盒 / 看帖子', '让她翻信息流（heybox_feed）、读帖子正文和热评（heybox_watch）、看热榜和搜帖子（heybox_hot / heybox_search / heybox_topics）。定时自己逛不受这项限制。'),
+        heyboxOn && row('heyboxLike', '小黑盒点赞', '有人让她给某个帖子点赞；关掉后她自己逛的时候也不点赞。'),
+        heyboxOn && row('heyboxComment', '小黑盒评论', '有人让她去某个帖子下评论；关掉后她自己逛的时候也不评论。'),
+        heyboxOn && row('heyboxPost', '小黑盒发帖 / 删帖', '让她发帖（heybox_post，文章模式可带图）和删自己发的帖（heybox_delete）。发帖会用你的账号公开发布，默认仅主人私聊。'),
       )
     }
 
@@ -1189,7 +1194,9 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         ),
                 h(Card, { title: '危险命令确认', right: f.sw('security.dangerConfirm'), desc: '打开后，她在私聊里要执行终端危险命令（删根目录、格式化、关机、下载后直接执行等）之前，会先发 QQ 私聊问你；你回复「确认」才执行，回复「取消」或 60 秒没回就拦下。默认关。只拦真正致命的命令，普通删除/构建/改文件不受影响。' }),
 h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复她的消息、或者提到下面这些名字时，她一定会回。' },
-          h(Row, { label: '唤醒词', hint: '一行一个' }, f.list('group.wakeWords', { placeholder: '大肥鱼\n肥鱼' })),
+          h(Row, { label: '@ 了别人不算叫她', hint: '有人 @ 别人时顺口提到她的名字，不算在叫她；她还是可以按平时的频率插话。默认关' }, f.sw('group.ignoreAtOthers')),
+          h(Row, { label: '新会话先补看聊天记录', hint: '会话第一次开口时先读最近几条，接得上话。默认关' }, f.sw('chat.seedHistory')),
+          h(Row, { label: '唤醒词', hint: '一行一个' },f.list('group.wakeWords', { placeholder: '大肥鱼\n肥鱼' })),
         ),
         h(Card, { title: '安全刹车', desc: '只防失控（比如和别的机器人聊停不下来）：她在一个群里短时间说太多就歇一会儿，主人 @ 她除外。平时碰不到。' },
           h(Row, { label: '最多说几次' }, f.range('group.burstMax', 1, 20, 1, (v) => v + ' 次'), h('span', { className: 'ab-muted' }, '/'), f.range('group.burstWindowSec', 30, 600, 30, (v) => Math.round(v / 6) / 10 + ' 分钟')),
@@ -1644,7 +1651,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
         catch (e) { toast(e.message) } finally { setBusy('') }
       }
       return h(Card, { title: '目的引擎（实验）', desc: '可选的新引擎，默认关：她会自己从聊天和记忆里找「想跟你说的事」——攒素材 → 记观察 → 立目标假设 → 挑一个候选，到点了才来找你。开着的话建议关掉上方「主动搭话」总开关，两套别同时开。' },
-        !p.available ? h('div', { className: 'ab-note' }, '目的引擎模块没在跑。到面板「扩展」页看看模块状态。') : null,
+        !p.available ? h('div', { className: 'ab-note' }, '目的引擎模块没在跑。到「已安装」页页看看模块状态。') : null,
         h(Row, { label: '启用目的引擎', hint: '默认关。这是「主动搭话」的替代引擎，两套同时开会重复打扰' },
           h(Switch, { on: p.enabled, disabled: !p.available, onChange: save({ enabled: !p.enabled, __k: 'enabled' }) })),
         p.enabled ? h('div', { className: 'ab-flex', style: { gap: 8, flexWrap: 'wrap', margin: '4px 0 10px' } },
@@ -1694,7 +1701,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
 
     // 「桌宠」面板卡：状态、装客户端、专注模式、心跳、表情预览。数据走 /panel/pet/* 代理，模块没装好时给引导。
     const PET_MOODS = [{ key: 'idle', label: '😐 平常' }, { key: 'happy', label: '😄 开心' }, { key: 'shy', label: '😳 害羞' }, { key: 'sad', label: '😢 委屈' }, { key: 'angry', label: '😠 生气' }, { key: 'sleepy', label: '😴 困了' }, { key: 'think', label: '🤔 想事' }, { key: 'love', label: '🥰 喜欢你' }]
-    // 行为动作全表（面板「试一下」）：与 fork/src/modules/pet/index.js 的 BEHAVIOR_ACTIONS / BEHAVIOR_DEFERRED 一一对应。
+    // 行为动作全表（面板「试一下」）：与社区模块 pet 的 index.mjs 里的 BEHAVIOR_ACTIONS / BEHAVIOR_DEFERRED 一一对应。
     // tier：1 = 第一批已开放；2 = 第二批图标动作（服务端隔离区，可一键归还）；3 = 第三批暂未实现（点了客户端回执 refused:not-implemented）。
     const PET_BEHAVIOR_ACTIONS = [
       { action: 'chase_cursor', name: '追鼠标', effect: '扑过去追着你的鼠标跑，追到后按住指针 5 秒再松开', tier: 1 },
@@ -1740,6 +1747,10 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       const [quar, setQuar] = useState(null)
       const [quarErr, setQuarErr] = useState('')
       const [pend, setPend] = useState({})
+      // 素材包下载地址的本地编辑态：null = 跟着服务端当前值显示，改过就用本地值
+      const [pkUrl, setPkUrl] = useState(null)
+      // Electron 下载镜像的本地编辑态（同上；留空 = 用内置默认 npmmirror）
+      const [emUrl, setEmUrl] = useState(null)
       const load = async () => {
         const [pr, pu] = await Promise.all([get('/panel/pet/status'), get('/panel/purpose/status')])
         if (pr.ok) { setPet(pr.pet); setWs((old) => old || (pr.pet && pr.pet.whisper ? { ...pr.pet.whisper } : null)) }
@@ -1881,10 +1892,35 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
           h(Btn, { small: true, disabled: busy === 'st', onClick: () => act('st', '/panel/pet/stop', '已停止') }, busy === 'st' ? '停止中…' : '停止桌宠'),
           h('span', { className: 'ab-muted ab-small' },
             'Electron ' + (electronInstalled ? '已装' : '未装') + '｜运行 ' + (online ? '在跑' : '没在跑') + (pet?.pid ? '（pid ' + pet.pid + '）' : '') + (portReady ? '' : '｜端口未就绪（等宿主注入）'))),
+        h(Row, { label: 'Electron 镜像', hint: '装 Electron 从哪下（末尾带 /）。默认 npmmirror，国内一般快；连不上可换 https://github.com/electron/electron/releases/download/。留空 = 用内置默认。npm 装失败会自动改用 zip 直装' },
+          h('div', { className: 'ab-flex' },
+            h('input', { className: 'ab-input', style: { width: 'min(300px, 100%)' }, value: emUrl == null ? (pet?.electronMirror || '') : emUrl, placeholder: 'https://npmmirror.com/mirrors/electron/', onChange: (e) => setEmUrl(e.target.value) }),
+            h(Btn, { small: true, disabled: busy === 'cfg', onClick: async () => { await savePet({ electronMirror: String(emUrl == null ? (pet?.electronMirror || '') : emUrl).trim() }, 'Electron 镜像已保存'); setEmUrl(null) } }, '保存'))),
         h(Row, { label: '表情预览', hint: '气泡与心情事件会用到这些表情' },
           h('div', { style: { flex: 1, display: 'flex', flexWrap: 'wrap', gap: 6 } },
             moods.map((m, i) => h('span', { key: (m.key || m) + i, className: 'ab-pill' }, moodLabel(m))))),
         ),
+        // ---------- 素材包：默认形象包（大肥鱼）自动下载落位，也可在这里换镜像地址重下 ----------
+        h(Card, { title: '素材包', desc: '桌宠的形象与动画（「大肥鱼」那 106 段）。插件发现缺包会自动从素材仓库下载落位，通常不用你动手；下载不动时可以在这里换镜像地址再重下。没有素材时桌宠会显示内置的静态形象（蓝色小鲸鱼）。' },
+          !pet ? h(Empty, { icon: '⏳', text: '加载中…' })
+            : (() => {
+              const pi = pet.packInfo || null
+              if (!pi) return h('div', { className: 'ab-flex' }, h('span', { className: 'ab-muted ab-small' }, '素材包状态接口还没就绪（更新插件后刷新页面即可）'), h(Btn, { small: true, onClick: load }, '重试'))
+              const okPack = Boolean(pi.hasDefault && pi.defaultAnims > 0)
+              const cur = pkUrl == null ? (pi.url || '') : pkUrl
+              return h('div', null,
+                h('div', { className: 'ab-flex', style: { marginBottom: 8, flexWrap: 'wrap' } },
+                  h('span', { className: 'ab-pill' }, h('i', { className: cx('ab-dot', okPack ? 'ok' : 'err') }), okPack ? '已就位' : '还没有素材'),
+                  h('span', { className: 'ab-pill' }, 'default：' + (pi.defaultAnims || 0) + ' 个动画'),
+                  pi.downloading ? h('span', { className: 'ab-pill' }, '正在下载…') : null,
+                  !okPack ? h('span', { className: 'ab-muted ab-small' }, '缺包时每 10 分钟会自动重试一次') : null),
+                h(Row, { label: '下载地址', hint: 'zip 直链。默认走 GitHub 素材仓库 dsh-aurabot-qq-mods；国内网络可换成 gitee / ghproxy 等镜像。zip 里素材放文件夹即可（如 pet-pack/default-animation/）' },
+                  h('input', { className: 'ab-input', style: { width: 'min(380px, 100%)' }, value: cur, placeholder: 'https://…/archive/refs/heads/main.zip', onChange: (e) => setPkUrl(e.target.value) })),
+                h('div', { className: 'ab-flex', style: { marginTop: 8 } },
+                  h(Btn, { small: true, disabled: busy === 'cfg' || busy === 'pk' || !String(cur).trim(), onClick: async () => { await savePet({ petPackUrl: String(cur).trim() }, '下载地址已保存'); setPkUrl(null) } }, '保存地址'),
+                  h(Btn, { small: true, disabled: busy === 'pk', onClick: () => act('pk', '/panel/pet/fetch-pack', '素材包已就位') }, busy === 'pk' ? '下载中…' : okPack ? '重新下载素材包' : '下载素材包'),
+                  h('span', { className: 'ab-muted ab-small' }, '落位到 modules-data/pet/packs/，下完自动生效')))
+            })()),
         // ---------- 行为动作（面板测试通道）：状态行 + 逐动作「试一下」/ AI 开关 + 行内最近回执 ----------
         h(Card, { title: '行为动作', desc: '她的「行为大脑」每隔一会儿自己挑一个动作演：追鼠标、叼鼠标、叼图标、推窗口……这里可以逐个「试一下」（绕过专注模式与安静时段，立刻下发），也可以把某个动作从 AI 的动作表里拿掉——「试一下」按钮不受影响。桌宠没在跑时点按钮只是下发排队，等她跑起来才演。右边「最近回执」是客户端演完或拒演回来的结果。AI 每次决策都在工作区里单独开一条「行为大脑」会话，能当场看到她怎么想的。' },
           bhErr && !bh
@@ -1933,9 +1969,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
               ),
         ),
         // ---------- 行为与安全（模块级开关）----------
-        // 为什么放在面板：pet 是**内置模块**，DSH 面板只给「用户自己复制出来的模块」生成设置表单
-        // （client.js 的 hasUi 要求 running==='user' && !builtin），所以 index.js 里那份 settings schema
-        // 在内置形态下没有任何 UI。不在这里补一张卡，关窗物理闸就永远打不开。
+        // 为什么放在面板：hasUi 不给自带页面的模块生成自动表单，这里不补一张卡，关窗物理闸就永远打不开。
         bh ? h(Card, {
           title: '行为与安全',
           desc: 'AI 只能从动作表里挑动作，闹到什么程度由这里定。开关即点即存，数字和白名单点「应用」。'
@@ -1973,6 +2007,27 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
             h('textarea', { className: 'ab-textarea', rows: 3, value: c.windowWhitelist ?? '', placeholder: 'notepad', onChange: (e) => setBcfg({ ...c, windowWhitelist: e.target.value }) }),
             h('div', { style: { marginTop: 6 } }, h(Btn, { small: true, disabled: busy === 'cfg', onClick: () => saveBehCfg({ behaviorWindowWhitelist: String(c.windowWhitelist ?? '') }, '白名单存好了') }, '保存白名单'))),
         ) : null,
+        // ---------- 聊天联动：主人聊天时她可能顺带做个小动作（只读旁观，独立开关/冷却/上限；模块代码在 mods 仓）----------
+        h(Card, { title: '聊天联动', desc: '主人在生效范围内的 QQ 聊天里说话时，她可能根据聊天内容与心情顺带在桌面上做个小动作（追鼠标、溜达、小动作、说一句话——只挑安分的，绝不碰图标和窗口）。她只是旁观聊天：不接管消息、不改回复、不阻塞回合，聊天功能完全不受影响。默认关；与上面的「行为大脑」总开关互相独立（关掉行为大脑不影响这边，反之亦然）。每次决策在工作区「聊天联动」会话里能看到她的取舍。' },
+          h('div', { className: 'ab-flex', style: { marginBottom: 6 } },
+            h('span', { className: 'ab-pill' }, h('i', { className: cx('ab-dot', c.chatBehaviorEnabled ? 'ok' : '') }), '聊天联动' + (c.chatBehaviorEnabled ? '开着' : '关着')),
+            h('span', { className: 'ab-pill' }, '今天 ' + (c.chatBehaviorToday || 0) + '/' + (c.chatBehaviorMaxPerDay ?? '?') + ' 次'),
+            c.chatBehaviorThinking ? h('span', { className: 'ab-pill' }, '正在想要不要动…') : null,
+            c.chatBehaviorLastAt ? h('span', { className: 'ab-muted ab-small' }, '上次 ' + timeAgo(c.chatBehaviorLastAt)) : null),
+          h(Row, { label: '开启聊天联动', hint: '开关即点即存；关掉后聊天时她只回复、不动' },
+            h(Switch, { on: c.chatBehaviorEnabled === true, onChange: (v) => saveBehCfg({ chatBehaviorEnabled: v }, v ? '聊天联动已开' : '聊天联动已关') })),
+          h(Row, { label: '生效范围', hint: '一行一个：private:QQ号 或 group:群号（写法同「权限」页白名单，冒号后带空格也能认）；留空 = 只有主人私聊生效。不符合格式的行会被忽略，不会报错' },
+            h('textarea', { className: 'ab-textarea', rows: 3, value: c.chatBehaviorWhitelistText ?? '', placeholder: 'private:12345\ngroup:67890', onChange: (e) => setBcfg({ ...c, chatBehaviorWhitelistText: e.target.value }) }),
+            h('div', { style: { marginTop: 6 } }, h(Btn, { small: true, disabled: busy === 'cfg', onClick: () => saveBehCfg({ chatBehaviorWhitelist: String(c.chatBehaviorWhitelistText ?? '') }, '生效范围存好了') }, '保存范围'))),
+          h(Row, { label: '冷却', hint: '两次联动动作之间至少隔这么久（1~1440 分钟），宁缺毋滥' },
+            h('input', { className: 'ab-input sm', type: 'number', min: 1, max: 1440, value: c.chatBehaviorCooldownMinutes ?? '', onChange: (e) => setBcfg({ ...c, chatBehaviorCooldownMinutes: e.target.value }) }),
+            h('span', { className: 'ab-muted' }, '分钟'),
+            h(Btn, { small: true, disabled: busy === 'cfg', onClick: () => saveBehCfg({ chatBehaviorCooldownMinutes: Number(c.chatBehaviorCooldownMinutes) }, '冷却改好了') }, '应用')),
+          h(Row, { label: '每天最多', hint: '0 = 聊天时她也不动' },
+            h('input', { className: 'ab-input sm', type: 'number', min: 0, max: 9999, value: c.chatBehaviorMaxPerDay ?? '', onChange: (e) => setBcfg({ ...c, chatBehaviorMaxPerDay: e.target.value }) }),
+            h('span', { className: 'ab-muted' }, '次'),
+            h(Btn, { small: true, disabled: busy === 'cfg', onClick: () => saveBehCfg({ chatBehaviorMaxPerDay: Number(c.chatBehaviorMaxPerDay) }, '上限改好了') }, '应用')),
+        ),
         // ---------- 被收走的图标（第二批）：hide_icon 的隔离区，一键放回 ----------
         h(Card, { title: '被收走的图标', desc: '「收图标」不是删除：她把桌面图标剪切到插件数据目录的隔离区，文件原样留着。这里可以随时放回原位（原位置被占了会自动改名「名字(归还)」），超过「隔离保留天数」（默认 7 天）她也会自己放回去。' },
           quarErr
@@ -2099,6 +2154,9 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
           h('div', { className: 'ab-mood' }, h('i', { style: { width: Math.max(4, st.mood.value) + '%' } })),
           h('div', { style: { marginTop: 10 } },
             h(Row, { label: '多久回到平常', hint: '半衰期' }, f.range('mood.halfLifeHours', 0.5, 24, 0.5, (v) => v + ' 小时')),
+            h(Row, { label: '平常是多少', hint: '基线：没人说话时心情会慢慢往这个值靠（默认 60）' }, f.range('mood.base', 10, 90, 1, (v) => v + ' / 100')),
+            h(Row, { label: '聊天流水留多久', hint: '0 = 整理完就删（默认）；-1 = 永久保留；其他数字 = 留这么多天。留得越久，本机存的聊天原文越多' }, f.num('memory.keepChatlogDays', { min: -1, max: 3650 })),
+            h(Row, { label: '整理时合并重复记忆', hint: '同一个人名下说的是一件事的条目并成一条。每个人多一次模型调用，默认关' }, f.sw('memory.mergeGroups')),
             h(Row, { label: '用模型判断心情', hint: '每轮聊完用模型判一次（能分清开玩笑和真骂、她主动找你时的心意），更准；每轮多一次很短的模型调用。关着就按关键词' }, f.sw('mood.judge'))),
           (st.mood.history || []).length ? h('div', { className: 'ab-list', style: { marginTop: 8 } }, st.mood.history.slice(0, 6).map((x, i) => h('div', { key: i, className: 'ab-li' },
             h('div', { className: 'meta' }, timeAgo(x.at)),
@@ -2575,8 +2633,73 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
           : h('div', { className: 'ab-small ab-muted' }, '这个场合没有工具'))
     }
 
-    /** 扩展页：所有模块（内置的 + 自己写的）、新建、安全模式。 */
-    function Modules({ st, draft, toast, reload }) {
+    /** 模块市场：逛、搜、装、更新、卸载社区模块。安装前给用户看来源和能力，能力声明不是沙箱。 */
+    const CAP_LABEL = { network: '联网', filesystem: '读写本机文件', process: '启动其他程序', 'dynamic-code': '动态执行代码', 'plugin-config': '读写插件配置（含账号 Cookie）', 'plugin-internals': '使用插件内部接口' }
+    const capText = (m) => (m.capabilities || []).map((c) => CAP_LABEL[c] || c)
+    function Market({ st, toast, reload, go }) {
+      const [data, setData] = useState(null)
+      const [busy, setBusy] = useState('')
+      const [q, setQ] = useState('')
+      const [show, setShow] = useState('all')
+      const load = (force) => get('/modules/community' + (force ? '?force=1' : '')).then(setData)
+      useEffect(() => { load() }, [])
+      const done = async (r) => {
+        toast(r.message, r.ok ? 'ok' : 'err')
+        await load()
+        reload()
+      }
+      const install = async (m) => {
+        const caps = capText(m).join('、') || '无'
+        const why = '来源：社区模块库 dsh-aurabot-qq-mods\n版本：' + m.version + '\n作者：' + m.author + '\n能力：' + caps + '\n\n能力声明不是沙箱：模块和插件在同一进程运行。继续吗？'
+        if (!confirm((m.installed ? '更新' : '安装') + '「' + m.name + '」？\n\n' + why)) return
+        if (m.replacesBuiltin && !confirm('「' + m.name + '」会替换同名内置模块，确定吗？')) return
+        setBusy(m.id)
+        try { await done(await post('/modules/community/install', { id: m.id, confirmReplace: Boolean(m.replacesBuiltin) })) } finally { setBusy('') }
+      }
+      const remove = async (m) => {
+        if (!confirm('卸载「' + m.name + '」？')) return
+        const purge = confirm('把它的数据和设置也清掉吗？\n确定 = 一起清掉；取消 = 留着，以后重装还能用')
+        setBusy(m.id)
+        try { await done(await post('/modules/community/remove', { id: m.id, purge })) } finally { setBusy('') }
+      }
+      const list = (data && data.list) || []
+      const counts = { all: list.length, installed: list.filter((m) => m.installed).length, update: list.filter((m) => m.update).length }
+      const word = q.trim().toLowerCase()
+      const shown = list.filter((m) => (show === 'all' || (show === 'installed' && m.installed) || (show === 'update' && m.update)) && (!word || (m.name + ' ' + m.id + ' ' + (m.description || '')).toLowerCase().includes(word)))
+      const openSettings = (m) => {
+        const running = (st.modules || []).find((x) => x.id === m.id)
+        return running && running.tab ? () => go(running.tab) : null
+      }
+      const chip = (id, label) => h('button', { key: id, type: 'button', className: cx('ab-chip', show === id && 'on'), onClick: () => setShow(id) }, label, h('span', { className: 'n' }, counts[id]))
+      const card = (m) => {
+        const settings = m.installed ? openSettings(m) : null
+        const note = [m.delisted ? '已从市场下架' : '', m.foreign ? '有同名的自己写的文件夹，不会覆盖' : '', m.blocked].filter(Boolean).join(' · ')
+        return h('div', { key: m.id, className: 'ab-card', style: { display: 'flex', flexDirection: 'column' } },
+          h('h3', null, m.name, m.update ? h('span', { className: 'ab-badge' }, '可更新') : null),
+          h('div', { className: 'ab-small ab-muted' }, 'v' + (m.installed || m.version) + (m.update ? ' → v' + m.version : '') + (m.author ? ' · ' + m.author : '') + (m.license ? ' · ' + m.license : '')),
+          h('p', { className: 'ab-desc', style: { margin: '8px 0' } }, m.description),
+          capText(m).length ? h('div', { className: 'ab-small ab-muted', style: { marginBottom: 10 } }, '会用到：' + capText(m).join('、')) : null,
+          note ? h('div', { className: 'ab-note warn', style: { marginBottom: 10 } }, note) : null,
+          h('div', { className: 'ab-flex', style: { marginTop: 'auto' } },
+            !m.installed && !m.foreign && !m.delisted ? h(Btn, { small: true, kind: 'primary', disabled: Boolean(busy || m.blocked), onClick: () => install(m) }, busy === m.id ? '安装中…' : '安装') : null,
+            m.update ? h(Btn, { small: true, kind: 'primary', disabled: Boolean(busy || m.blocked), onClick: () => install(m) }, busy === m.id ? '更新中…' : '更新') : null,
+            settings ? h(Btn, { small: true, onClick: settings }, '去设置') : null,
+            m.installed ? h(Btn, { small: true, kind: 'ghost', disabled: Boolean(busy), onClick: () => remove(m) }, '卸载') : null))
+      }
+      return h('div', { className: 'ab-grid' },
+        h(Card, { title: '模块市场', desc: '给她装更多本事。模块由社区提供、维护者审核后上架；它们和插件在同一进程运行，能接触账号配置，装之前看清下面列的能力。', right: h(Btn, { small: true, kind: 'ghost', onClick: () => load(true) }, '刷新') },
+          h('div', { className: 'ab-flex' },
+            h('input', { className: 'ab-input', placeholder: '搜模块', value: q, onChange: (e) => setQ(e.target.value) }),
+            chip('all', '全部'), chip('installed', '已安装'), chip('update', '可更新')),
+          ((data && data.revoked) || []).map((r) => h('div', { key: r.id, className: 'ab-note err', style: { marginTop: 10 } }, '「' + r.id + '」' + r.version + ' 已撤回：' + r.reason + '。建议关闭或卸载。'))),
+        !data ? h(Empty, { icon: '⏳', text: '加载中…' }) : null,
+        data && data.ok === false ? h('div', { className: 'ab-note warn' }, '市场打不开：' + data.message) : null,
+        data && data.ok !== false && !shown.length ? h(Empty, { icon: '🐟', text: list.length ? '没有符合条件的模块' : '市场里还没有模块' }) : null,
+        shown.length ? h('div', { className: 'ab-grid', style: { gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' } }, shown.map(card)) : null)
+    }
+
+    /** 扩展页：所有模块（内置的 + 市场装的 + 自己写的）、安全模式；写模块的工具收在最下面。 */
+    function Modules({ st, draft, toast, reload, go }) {
       const [data, setData] = useState(null)
       const [newId, setNewId] = useState('')
       const [newName, setNewName] = useState('')
@@ -2587,7 +2710,8 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       if (!data) return h(Empty, { icon: '⏳', text: '加载中…' })
       const list = data.list || []
       const builtin = list.filter((m) => m.builtin)
-      const mine = list.filter((m) => !m.builtin)
+      const mine = list.filter((m) => !m.builtin && !m.community)
+      const fromCommunity = list.filter((m) => m.community)
       const props = { draft, setModules, toast, reload: () => { reload(); load() } }
       const create = async () => {
         const r = await post('/modules/create', { id: newId.trim(), name: newName.trim() })
@@ -2598,7 +2722,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
         reload()
       }
       return h('div', { className: 'ab-grid' },
-        h(Card, { title: '扩展', desc: '她的每项本事都是一个模块：能单独关掉；能复制一份来改，改了就替换内置的；也能自己写新模块，让她学会你想要的任何事。自己写的东西放在下面这个文件夹，插件升级不会动；改完保存几秒内自动生效，不用重启。不会写代码？点「复制给 DSH 的话」，粘给 DSH，说你想要什么。' },
+        h(Card, { title: '已安装', right: h(Btn, { small: true, kind: 'primary', onClick: () => go('market') }, '逛模块市场'), desc: '她的每项本事都是一个模块：能单独关掉；能复制一份来改，改了就替换内置的；也能自己写新模块，让她学会你想要的任何事。自己写的东西放在下面这个文件夹，插件升级不会动；改完保存几秒内自动生效，不用重启。不会写代码？点「复制给 DSH 的话」，粘给 DSH，说你想要什么。' },
           h('div', { className: 'ab-flex' },
             h('code', { className: 'ab-small', style: { wordBreak: 'break-all', flex: 1 } }, data.dir),
             h(Btn, { small: true, onClick: () => post('/modules/open').then((r) => toast(r.message)) }, '打开文件夹'),
@@ -2607,15 +2731,20 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
           h(Row, { label: '安全模式', hint: '打开后你写的模块一个都不加载，内置的全部恢复。出了问题先开它，看是不是你的模块引起的。' },
             h(Switch, { on: st.config.safeMode, onChange: async (v) => { const r = await post('/save', { safeMode: v }); toast(v ? '安全模式开了：只跑内置模块' : '安全模式关了', 'ok'); setModules(r.modules); reload() } })),
           st.config.safeMode ? h('div', { className: 'ab-note warn' }, '安全模式开着：你写的模块现在都没加载。') : null),
+        fromCommunity.length ? h(Card, { title: '从市场装的（' + fromCommunity.length + '）' }, h('div', null, fromCommunity.map((m) => h(ModuleRow, { key: m.id, m, ...props })))) : null,
+        mine.length ? h(Card, { title: '自己写的（' + mine.length + '）' }, h('div', null, mine.map((m) => h(ModuleRow, { key: m.id, m, ...props })))) : null,
+        h(Card, { title: '内置模块（' + builtin.length + '）', desc: '关掉的模块：她就没有这项本事，相关的标签页也会藏起来。连接、权限、人格、聊天这些是核心，不能关。' },
+          h('div', null, builtin.map((m) => h(ModuleRow, { key: m.id, m, ...props })))),
+        h('details', { className: 'ab-card' },
+          h('summary', { style: { cursor: 'pointer', fontWeight: 620 } }, '写模块的工具'),
+          h('p', { className: 'ab-desc', style: { marginTop: 8 } }, '自己写模块或排查问题时才用得上。'),
+          h('div', { className: 'ab-grid' },
         h(Card, { title: '新建一个模块', desc: '从模板建一个能直接跑的例子（关键词自动回复 + 一个命令 + 一个工具），在它上面改。id 用小写英文，比如 weather。想改内置的本事，用下面内置模块那一行的「复制一份来改」。' },
           h('div', { className: 'ab-flex' },
             h('input', { className: 'ab-input', style: { maxWidth: 180 }, placeholder: 'id，如 weather', value: newId, onChange: (e) => setNewId(e.target.value.toLowerCase()) }),
             h('input', { className: 'ab-input', placeholder: '名字，如 查天气', value: newName, onChange: (e) => setNewName(e.target.value) }),
             h(Btn, { kind: 'primary', small: true, disabled: !newId.trim(), onClick: create }, '新建'))),
-        mine.length ? h(Card, { title: '自己写的（' + mine.length + '）' }, h('div', null, mine.map((m) => h(ModuleRow, { key: m.id, m, ...props })))) : null,
-        h(Card, { title: '内置模块（' + builtin.length + '）', desc: '关掉的模块：她就没有这项本事，相关的标签页也会藏起来。连接、权限、人格、聊天这些是核心，不能关。' },
-          h('div', null, builtin.map((m) => h(ModuleRow, { key: m.id, m, ...props })))),
-        h(Simulate, { toast }),
+            h(Simulate, { toast }))),
       )
     }
 
@@ -2943,6 +3072,52 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
         if (r.ok) setCookieText('')
         load()
       }
+      const [qrc, setQrc] = useState(null)
+      const [qrBusy, setQrBusy] = useState('')
+      const qrBegin = async () => {
+        setQrBusy('start')
+        const r = await post('/heybox/qr/start')
+        setQrBusy('')
+        setQrc(r)
+        toast(r.message || (r.ok ? '二维码出来了，用小黑盒 App 扫' : '拿不到二维码'), r.ok === false ? 'err' : 'ok')
+      }
+      const qrPoll = async () => {
+        setQrBusy('poll')
+        const r = await post('/heybox/qr/poll')
+        setQrBusy('')
+        toast(r.message || (r.state === 'ok' ? '登录成功' : '还没扫上'), r.state === 'ok' ? 'ok' : 'warn')
+        if (r.state === 'ok' && r.verified) setQrc(null)
+        load()
+      }
+      const riskOf = s && s.risk
+      const riskLeftMs = Math.max(0, Number(riskOf && riskOf.leftMs) || 0)
+      const clearRiskBtn = async () => {
+        setBusy('risk')
+        const r = await post('/heybox/risk/clear')
+        setBusy('')
+        toast(r.message || '好了', r.ok === false ? 'err' : 'ok')
+        load()
+      }
+      const riskCard = () => h(Card, {
+        title: '访问限流 / 安全验证',
+        desc: '小黑盒对同一账号的读接口有频率限制：搜索最容易弹验证码，帖子详情次之。被挡下来之后她不会硬试重试（重试只会让冷却更长），而是按阶梯等（5 分钟 → 20 分钟 → 1 小时 → 3 小时 → 8 小时）。想马上继续用就扫码：不用开浏览器，手机上扫一下就能换一个干净会话。',
+        right: h(Btn, { small: true, kind: 'ghost', onClick: clearRiskBtn, disabled: !!busy }, busy === 'risk' ? '处理中…' : '解除冷却'),
+      },
+        h(Row, { label: '现在的状态' },
+          riskLeftMs > 0
+            ? h('span', { className: 'ab-small', style: { color: 'var(--ab-warn)' } },
+              '冷却中，还要等 ' + Math.ceil(riskLeftMs / 60000) + ' 分钟' + (riskOf.reason === 'ratelimit' ? '（因操作太频繁）' : '（因安全验证）'))
+            : h('span', { className: 'ab-small', style: { color: 'var(--ab-ok)' } }, '正常，没在冷却')),
+        h(Row, { label: '接口限速', hint: '每档都带 ±20% 抖动，避免固定节拍' },
+          h('span', { className: 'ab-small ab-muted' }, '搜索 8 秒 · 帖详情 2.5 秒 · 信息流 1.2 秒 · 写操作 3 秒')),
+        h(Row, { label: '扫码登录（推荐）', hint: '不用开浏览器：用小黑盒 App 扫这个码就行。这也是被验证码挡住后最省事的恢复方式' },
+          h('div', null,
+            h('div', { className: 'ab-flex' },
+              h(Btn, { small: true, kind: 'primary', onClick: qrBegin, disabled: !!qrBusy }, qrBusy === 'start' ? '生成中…' : '生成二维码'),
+              qrc && qrc.ok ? h(Btn, { small: true, onClick: qrPoll, disabled: !!qrBusy }, qrBusy === 'poll' ? '查…' : '我扫完了，查结果') : null),
+            qrc && qrc.png ? h('div', { style: { marginTop: 8 } }, h('img', { src: qrc.png, style: { width: 200, height: 200, imageRendering: 'pixelated', border: '1px solid var(--ab-line)', borderRadius: 6 } })) : null,
+            qrc && qrc.ok ? h('div', { className: 'ab-small ab-muted', style: { marginTop: 4 } }, qrc.message || '') : null)),
+      )
       const acct = s && s.account
       const acctText = !acct || !acct.checkedAt ? h('span', { className: 'ab-small ab-muted' }, '还没检查过') :
         h('span', { className: 'ab-small', style: { color: acct.loggedIn ? 'var(--ab-ok)' : 'var(--ab-warn)' } },
@@ -2974,13 +3149,44 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
                   s.hasToken ? '✓ 有 pkey 和 x_xhh_tokenid，读写都能用' : '⚠ 只有 pkey，没有 x_xhh_tokenid：点赞 / 评论 / 发帖大概率会被拒')
                 : null)),
         ),
+        riskCard(),
         h(Card, {
           title: '她的逛法', desc: '只在「主动搭话」里设的醒着时间内自己逛。主人在 QQ 里让她「去逛逛小黑盒」也行。逛是只读的，不会乱点赞评论。',
         },
           h(Row, { label: '定时自己去逛' }, f.sw('heybox.autoBrowse')),
+          h(Row, { label: '只在谷时逛', hint: '避开工作日 9-12、14-18 两个高峰（那会儿模型排队久、单价高，逛一轮很费 token）。峰时她会等，不占额度' },
+            f.sw('heybox.offPeakOnly')),
+          (draft.heybox && draft.heybox.offPeakOnly) ? h(Row, { label: '现在的时段', hint: '峰时段可以自己改；周末默认不算峰时' },
+            h('div', { className: 'ab-flex' },
+              h('span', { className: 'ab-small', style: { color: (s && s.peak && s.peak.now) ? 'var(--ab-warn)' : 'var(--ab-ok)' } },
+                (s && s.peak && s.peak.now) ? '峰时 · 等会儿再逛' : '谷时 · 可以逛'),
+              h('span', { className: 'ab-small ab-muted' }, s && s.peak ? '（' + s.peak.text + '）' : ''))) : null,
+          (draft.heybox && draft.heybox.offPeakOnly) ? h(Row, { label: '峰时段', hint: '默认 9-12 和 14-18（左闭右开）。改这两个数字就能挪到实际高峰' },
+            h('div', { className: 'ab-flex' },
+              h('span', { className: 'ab-small ab-muted' }, '上午'),
+              f.num('heybox.peakStartAM', { min: 0, max: 23 }), h('span', { className: 'ab-muted' }, '–'),
+              f.num('heybox.peakEndAM', { min: 0, max: 24 }),
+              h('span', { className: 'ab-small ab-muted', style: { marginLeft: 8 } }, '下午'),
+              f.num('heybox.peakStartPM', { min: 0, max: 23 }), h('span', { className: 'ab-muted' }, '–'),
+              f.num('heybox.peakEndPM', { min: 0, max: 24 }))) : null,
+          (draft.heybox && draft.heybox.offPeakOnly) ? h(Row, { label: '周末也算峰时', hint: '默认关：周末全天都能逛' },
+            f.sw('heybox.peakWeekend')) : null,
           h(Row, { label: '多久逛一圈' }, f.range('heybox.intervalHours', 1, 24, 1, (v) => v + ' 小时')),
           h(Row, { label: '一圈看几条' }, f.range('heybox.perRun', 1, 10, 1, (v) => v + ' 条')),
           h(Row, { label: '每天最多逛' }, f.range('heybox.maxRunsPerDay', 0, 12, 1, (v) => v + ' 轮')),
+        ),
+        h(Card, {
+          title: '分享给你',
+          desc: '逛到有意思的帖子，她自己判断值不值得分享，值得就私聊发给你（带帖子链接）。和 B 站那边的分享是同一套逻辑。',
+        },
+          h(Row, { label: '私聊分享给我' }, f.sw('heybox.shareToOwner')),
+          h(Row, { label: '分享的积极程度', hint: '她自己的判断阈值：越保守越不舍得发' },
+            f.choices('heybox.shareBias', [
+              { value: 'stingy', label: '很保守', desc: '非特别好不发' },
+              { value: 'normal', label: '正常', desc: '觉得你会喜欢才发' },
+              { value: 'proactive', label: '积极', desc: '有趣就发，不太吝啬' },
+            ], { width: 200 })),
+          h(Row, { label: '每天最多分享' }, f.num('heybox.shareDaily', { min: 0, max: 10 }), h('span', { className: 'ab-muted' }, '条/天')),
         ),
         h(Card, {
           title: '每天上限',
@@ -3007,7 +3213,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
                 '逛 ' + (quota.browse || 0) + '/' + (limits.maxRunsPerDay || 0) +
                 ' · 赞 ' + (quota.like || 0) + '/' + (limits.likeDaily || 0) +
                 ' · 评 ' + (quota.comment || 0) + '/' + (limits.commentDaily || 0) +
-                ' · 帖 ' + (quota.post || 0) + '/' + (limits.maxPostsPerDay || 0)),
+                ' · 帖 ' + (quota.post || 0) + '/' + (limits.maxPostsPerDay || 0) + ' · 分享 ' + (quota.share || 0) + '/' + (limits.shareDaily || 0)),
               h(Btn, { small: true, kind: 'ghost', onClick: act('/heybox/clear-quota', 'quota') }, busy === 'quota' ? '清零中…' : '清零')))
             : null,
         ),
@@ -3454,7 +3660,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       // 标签页：内置的按模块在不在跑决定显示；自己写的模块有设置或面板的各占一页
       const mods = st.modules || []
       const running = (id) => { const m = mods.find((x) => x.id === id); return Boolean(m && m.running) }
-      const hasUi = (m) => m.running === 'user' && !m.builtin && ((m.settings || []).length || m.panel)
+      const hasUi = (m) => m.running === 'user' && !m.builtin && !TABS.some((t) => t.id === m.id) && ((m.settings || []).length || m.panel)
       // 写了 tab 的模块嵌进那个内置标签页；没写（或写的页不存在）的单独一页
       const intoTab = (m) => Boolean(m.tab && TABS.some((t) => t.id === m.tab))
       const extTabs = mods.filter((m) => hasUi(m) && !intoTab(m)).map((m) => ({ id: 'ext:' + m.id, label: m.name, ext: m.id }))
@@ -3463,10 +3669,10 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       const curTab = tabs.find((t) => t.id === tab) || tabs[0]
       const body = curTab.ext ? ExtPage : {
         overview: Overview, connect: Connect, persona: Persona, access: Access, group: Group, model: Model, voice: Voice,
-        stickers: Stickers, imagegen: ImageGen, diary: Diary, speakup: SpeakUp, pet: PetPanel, mood: Mood, song: Song, bili: Bili, douyin: Douyin, heybox: Heybox, local: LocalApi, security: Security, modules: Modules, logs: Logs,
+        stickers: Stickers, imagegen: ImageGen, diary: Diary, speakup: SpeakUp, pet: PetPanel, mood: Mood, song: Song, bili: Bili, douyin: Douyin, heybox: Heybox, local: LocalApi, security: Security, market: Market, modules: Modules, logs: Logs,
       }[curTab.id] || Overview
       // 哪些标签有没保存的改动
-      const TAB_KEYS = { connect: ['snowluma', 'botQQ'], access: ['ownerQQ', 'ownerName', 'ownerLevel', 'longTasks', 'profilePerms', 'allow'], group: ['group', 'merge', 'titleFilter'], model: ['model', 'chatModels'], voice: ['voice'], stickers: ['stickers'], imagegen: ['imageGen'], diary: ['diary', 'qzoneSocial'], speakup: ['speakUp'], pet: [], mood: ['mood', 'memory'], song: ['song'], bili: ['bili'], douyin: ['douyin'], heybox: ['heybox'], local: ['local'], security: ['security'] }
+      const TAB_KEYS = { connect: ['snowluma', 'botQQ'], access: ['ownerQQ', 'ownerName', 'ownerLevel', 'approvalNotify', 'longTasks', 'profilePerms', 'allow'], group: ['group', 'merge', 'titleFilter', 'chat'], model: ['model', 'chatModels'], voice: ['voice'], stickers: ['stickers'], imagegen: ['imageGen'], diary: ['diary', 'qzoneSocial'], speakup: ['speakUp'], pet: [], mood: ['mood', 'memory'], song: ['song'], bili: ['bili'], douyin: ['douyin'], heybox: ['heybox'], local: ['local'], security: ['security'] }
       const tabDirty = (id) => {
         if (!dirty) return false
         if (id.startsWith('ext:')) { const k = id.slice(4); return JSON.stringify((draft.ext || {})[k]) !== JSON.stringify((cfg.ext || {})[k]) }

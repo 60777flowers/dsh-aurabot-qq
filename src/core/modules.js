@@ -25,6 +25,8 @@ const ID_RE = /^[a-z][a-z0-9-]{1,39}$/
 const ENTRY = ['index.mjs', 'index.js']
 const DOC = 'API.md'
 const TYPES = 'aurabot.d.ts'
+// 从内置搬到社区库的模块：接口路径不变，面板页照常能用
+const STABLE_ROUTES = new Set(['pet', 'douyin', 'heybox', 'group-admin'])
 
 export const userDir = () => dataDir('modules')
 
@@ -197,7 +199,7 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
       return off
     }
     // 内置模块和替换它的版本用原来的路径（内置的面板页照常能用）；新模块放在 /ext/模块id/ 下
-    const prefix = builtinDefs.has(id) ? '' : `/ext/${id}`
+    const prefix = builtinDefs.has(id) || STABLE_ROUTES.has(id) ? '' : `/ext/${id}`
     const def = rec.def
     const api = {
       id,
@@ -605,7 +607,7 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
 
   async function handle(path, req, res) {
     const r = routes.get(path)
-    if (!r || !live.has(r.id)) return { ok: false, message: '这个功能所在的模块没开（面板「扩展」里看看）', moduleOff: true }
+    if (!r || !live.has(r.id)) return { ok: false, message: '这个功能所在的模块没开（面板「已安装」里看看）', moduleOff: true }
     return r.handler(req, res)
   }
 
@@ -629,6 +631,7 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
         builtin: Boolean(b),
         builtinVersion: b?.version || '',
         hasUser: Boolean(u),
+        community: Boolean(u && existsSync(join(u.dir, '.aurabot-source.json'))),
         userDir: u?.dir || '',
         safeSkipped: Boolean(u?.safe),
         running: rec ? rec.source : null, // 'builtin' | 'user' | null
@@ -728,7 +731,7 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
     return `帮我修改 Aurabot（大肥鱼 QQ 插件）的扩展模块：${dir}\n`
       + `先完整读一遍「${join(userDir(), DOC)}」了解模块怎么写、能用哪些接口，再按我的要求改：\n`
       + '【这里写你想让她多会什么、改成什么样】\n'
-      + `只改 ${userDir()} 里的文件，不要动插件本身的代码；改完保存会自动重新加载，到面板「扩展」页看有没有报错，再告诉我怎么试。`
+      + `只改 ${userDir()} 里的文件，不要动插件本身的代码；改完保存会自动重新加载，到面板「已安装」页看有没有报错，再告诉我怎么试。`
   }
 
   const publicHandle = { use: exportsOf, has: (id) => live.has(id), list: () => status().map(({ id, name, running }) => ({ id, name, running })), emit }

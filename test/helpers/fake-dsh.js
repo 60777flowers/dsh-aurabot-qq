@@ -3,6 +3,8 @@
 
 import { randomUUID } from 'node:crypto'
 
+process.env.AURABOT_REGISTRY_URL ||= 'http://127.0.0.1:9/index.json' // 测试不碰真的社区库
+
 export function createFakeDsh({ brain }) {
   const disposers = []
   const listeners = new Map()
@@ -182,5 +184,5 @@ export function createFakeDsh({ brain }) {
     return { status, raw: () => out, json: () => JSON.parse(out) }
   }
 
-  return { ctx, routes, variables, agents, workspaces, turns, logs, call, dispose: () => disposers.splice(0).reverse().forEach((d) => { try { d() } catch (e) {} }) }
+  return { ctx, emit, routes, variables, agents, workspaces, turns, logs, call, dispose: () => disposers.splice(0).reverse().forEach((d) => { try { d() } catch (e) {} }) }
 }

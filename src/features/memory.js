@@ -123,12 +123,15 @@ export function memoryLine(it, now = Date.now()) {
 }
 
 /**
- * 该不该忘掉：每日整理自动提炼出来的、不太重要、已经淡了的（见 retention），忘掉。
+ * 该不该忘掉：自动提炼的按遗忘曲线淡了忘掉（见 retention）；桌宠行为回执只留 3 天，到期清掉。
  * 她自己记的、你加的、经历和日记不自动忘。
  */
 export function shouldForget(m, now = Date.now()) {
   // 过时的留半年（面板里能看到、能恢复），之后清掉
   if (m.invalidAt) return now - m.invalidAt > 180 * 86400_000
+  // 桌宠行为回执（source='pet'，比如「执行了 wander 动作」）只留 3 天：
+  // 写下来是给后续几天聊天的，过了就没什么用了，不然每个琐碎动作都永久占着记忆库。
+  if (m.source === 'pet') return now - (m.at || 0) > 3 * 86400_000
   if (m.source !== 'auto') return false
   if ((Number(m.importance) || 0) >= 0.6) return false
   return retention(m, now) < 0.05
@@ -486,7 +489,15 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
     if (recent.length) parts.push('（你最近做过的事：' + recent.map((m) => `${agoText(m.at)}${m.text}`).join('；') + '。聊到了可以自然提起。）')
     // 注意：随每条消息变化的「相关记忆」不放在这里（#79）——运行时上下文快照每轮都会追加到历史，
     // 内容一变就多一份快照；放在用户消息里（recallHint）只占当轮，不会越滚越大。
-    return parts.join('\n')
+    // 兜底字数上限：各段条数都有上限（相处经验 8 条、说话方式按 key 限条），但单条长度没有约束，
+    // 长期相处这段会慢慢变长，而它每轮都进上下文。超了从尾部截断，宁可少一句也不无声膨胀。
+    const RESIDENT_MAX_CHARS = 600
+    let resident = parts.join('\n')
+    if (resident.length > RESIDENT_MAX_CHARS) {
+      resident = resident.slice(0, RESIDENT_MAX_CHARS) + '…'
+      log.debug(`常驻记忆超长，已截断到 ${RESIDENT_MAX_CHARS} 字`)
+    }
+    return resident
   }
 
 
@@ -669,9 +680,16 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
         }
         const s = load()
         s.processed = s.processed || {}
+        // keepChatlogDays：0 = 上游现状（整理完就删）、-1 = 永久保留、N = 留 N 天
+        const keepDays = Number(getConfig().memory.keepChatlogDays)
         if (day < today) {
-          hub.deleteChatLog(day) // 整理完清空（今天的留着，写日记还要用）
-          delete s.processed[day]
+          const expire = keepDays >= 0 && day < dayKey(new Date(Date.now() - keepDays * 86400_000))
+          if (keepDays === 0 || expire) {
+            hub.deleteChatLog(day) // 整理完清空（今天的留着，写日记还要用）
+            delete s.processed[day]
+          } else {
+            s.processed[day] = all.length
+          }
         } else {
           s.processed[day] = all.length
         }
@@ -689,6 +707,8 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
       for (const qq of [...touched, ...missing].slice(0, 8)) {
         try { if (await buildProfile(qq)) profiles++ } catch (error) { log.warn('写人物小档案失败：', error.message) }
       }
+      // 先合并（内部 load→改→save），再重新读快照，否则下面那次 save(s) 会把合并结果覆盖回旧数据
+      try { await mergeGroups() } catch (error) { log.warn('合并记忆出错：', error.message) }
       const s = load()
       // 遗忘：不重要、很久没被想起的自动记忆清掉，记忆库不会越堆越乱
       const before = s.items.length
@@ -704,6 +724,61 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
     } finally {
       busy = false
     }
+  }
+
+  /**
+   * 按人整组合并：同一个人名下的重复条目交给模型判断，是同一件事就并成一条。
+   * 只并 importance 低的；约定/边界这类（>= 0.85）只加不并。默认关（memory.mergeGroups）。
+   */
+  async function mergeGroups() {
+    const cfg = getConfig()
+    if (!cfg.memory?.mergeGroups) return { groups: 0, calls: 0, merged: 0 }
+    const list = load().items.filter((m) => !m.invalidAt)
+    const by = new Map()
+    for (const m of list) {
+      const k = String(m.about || '(通用)')
+      if (!by.has(k)) by.set(k, [])
+      by.get(k).push(m)
+    }
+    let groups = 0, calls = 0, merged = 0
+    for (const [who, items] of by) {
+      const soft = items.filter((m) => (Number(m.importance) || 0) < 0.85)
+      if (soft.length < 4) continue
+      groups++
+      try {
+        const out = await askModel(dsh, {
+          cfg,
+          system: '你是「大肥鱼」。下面是同一个人名下的一些记忆条目，看有没有说的是同一件事、可以并成一条的。只并「确实是同一件事」的，拿不准就不要并；合并后的说法要保留原意，别添加没写过的东西。只输出 JSON：{"merges":[{"ids":[编号...],"text":"合并后的一句话"}]}，没有可并的就输出 {"merges":[]}。',
+          text: soft.map((m) => `#${m.id} ${m.text}`).join('\n'),
+          maxTokens: 1200,
+          temperature: 0.2,
+        })
+        calls++
+        const hit = String(out || '').match(/\{[\s\S]*\}/)
+        let plan = { merges: [] }
+        try { plan = hit ? JSON.parse(hit[0]) : { merges: [] } } catch (error) { log.debug?.(`合并 ${who}：模型输出不是合法 JSON，跳过`); continue }
+        const arr = Array.isArray(plan.merges) ? plan.merges : []
+        if (!arr.length) continue
+        const s = load()
+        for (const g of arr) {
+          const ids = (g.ids || []).map(String)
+          const text = String(g.text || '').trim()
+          if (ids.length < 2 || !text) continue
+          // 模型给的编号只认这一组里低权重的：别把约定或别人的记忆并进来
+          const allowed = new Set(soft.map((x) => String(x.id)))
+          const members = s.items.filter((m) => ids.includes(String(m.id)) && allowed.has(String(m.id)) && !m.invalidAt)
+          if (members.length < 2) continue
+          const keep = members.reduce((a, b) => ((Number(a.importance) || 0) >= (Number(b.importance) || 0) ? a : b))
+          keep.text = text
+          keep.mergedAt = Date.now()
+          keep.mergedFrom = (keep.mergedFrom || 0) + members.length
+          for (const m of members) { if (m !== keep) { m.invalidAt = Date.now(); merged++ } }
+        }
+        save(s)
+      } catch (error) { log.warn(`合并 ${who} 的记忆失败：`, error.message) }
+    }
+    if (groups) log.info(`记忆合并：看了 ${groups} 组、调了 ${calls} 次模型，并掉 ${merged} 条`)
+    return { groups, calls, merged }
   }
 
   /** 从各人的说话方式里，沉淀出几条她自己不知不觉学会的说法（很少、很淡）。 */
@@ -733,8 +808,13 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
     if (getConfig().debug) return
     const cfg = getConfig().memory
     if (!cfg.enabled || !cfg.dailyConsolidate) {
-      const cutoff = dayKey(new Date(Date.now() - 14 * 86400_000))
-      for (const day of hub.chatLogDays?.() || []) if (day < cutoff) hub.deleteChatLog(day)
+      // 没开每日整理时也按 keepChatlogDays 清理：-1 不清、0 沿用原来的 14 天、N 按 N 天
+      const keepDays = Number(getConfig().memory.keepChatlogDays)
+      if (keepDays !== -1) {
+        const days = keepDays > 0 ? keepDays : 14
+        const cutoff = dayKey(new Date(Date.now() - days * 86400_000))
+        for (const day of hub.chatLogDays?.() || []) if (day < cutoff) hub.deleteChatLog(day)
+      }
       return
     }
     const s = load()
