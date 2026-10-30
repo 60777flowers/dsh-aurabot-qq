@@ -93,7 +93,7 @@ export const DEFAULTS = {
     faces: true, // 回复里能夹 QQ 自带的小黄脸（<face:名字>）
     autoChance: 0.35, // 文字回复自动配一张表情的概率
     collect: true, // 偷表情总开关
-    collectMode: 'ask', // ask = 她挑（喜欢才收）；auto = 全都偷（看到就收）；owner = 只听主人的（主人让她收才收）
+    collectMode: 'ask', // ask = 她挑（喜欢才收）；auto = 全都偷（看到就收）；owner = 只听主人的（主人私聊/只有主人时她可自己挑，别人在场要主人发话）
     fromGroups: true,
     fromPrivate: true,
     maxPerHour: 20,
