@@ -494,6 +494,49 @@ test('语音：回复里的 <voice> 变成 QQ 语音条', async () => {
   assert.match(rec.params.message[0].data.file, /^base64:\/\//)
 })
 
+test('引用 + 语音：语音条单独一条发，不和引用/@ 拼在同一条（issue #103）', async () => {
+  const http = await import('node:http')
+  // 用本地 HTTP TTS 避免依赖各平台的 TTS（Windows 语音在 Linux 上不可用）
+  const srv = http.createServer((req, res) => { res.setHeader('content-type', 'audio/wav'); res.end(Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(2000)])) })
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r))
+  await fake.call('/save', { voice: { engine: 'http', http: { urlTemplate: `http://127.0.0.1:${srv.address().port}/tts?text={text}` } } })
+  try {
+    const at = (t) => [{ type: 'at', data: { qq: BOT } }, { type: 'text', data: { text: ' ' + t } }]
+    const before = mock.calls.length
+    mock.push(grp('557', '999', at('语音带引用'), 'xiaoming'))
+    await until(() => mock.calls.slice(before).some((c) => c.action === 'send_group_msg' && (c.params.message || []).some((s) => s.type === 'record')), 20000)
+    const recs = mock.calls.slice(before).filter((c) => c.action === 'send_group_msg' && (c.params.message || []).some((s) => s.type === 'record'))
+    assert.equal(recs.length, 1, '语音条应该只发一条')
+    assert.deepEqual(recs[0].params.message.map((s) => s.type), ['record'], '语音条必须单独一条，不能带引用/@：' + JSON.stringify(recs[0].params.message.map((s) => s.type)))
+  } finally {
+    srv.close()
+    await fake.call('/save', { voice: { engine: 'windows' } })
+  }
+})
+
+test('语音条不把 QQ 表情/emoji 念出来（face 标签和 emoji 在 TTS 前去掉）', async () => {
+  const http = await import('node:http')
+  let spoken = ''
+  const srv = http.createServer((req, res) => { spoken = new URL(req.url, 'http://x').searchParams.get('text') || ''; res.end(Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(2000)])) })
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r))
+  await fake.call('/save', { voice: { engine: 'http', http: { urlTemplate: `http://127.0.0.1:${srv.address().port}/tts?text={text}` } } })
+  try {
+    const n = sentTo('private', OWNER).length
+    mock.push(priv(OWNER, text('表情语音测试')))
+    await until(() => sentTo('private', OWNER).slice(n).some((c) => (c.params.message || []).some((s) => s.type === 'record')), 20000)
+    assert.match(spoken, /晚安/, '能念的字要保留：' + spoken)
+    assert.doesNotMatch(spoken, /呲牙|face:|😁|在读/, '表情标签和 emoji 不能念出来：' + spoken)
+  } finally {
+    srv.close()
+    await fake.call('/save', { voice: { engine: 'windows' } })
+  }
+})
+
+test('听语音：收到语音先转文字再交给她', async () => {
+  mock.push(priv(OWNER, [{ type: 'record', data: { file: 'abc.amr' } }]))
+  await until(() => fake.turns.at(-1)?.userText.includes('[语音] 今天想吃白米饭'))
+})
+
 test('引用消息：私聊能看到被引用的内容；引用她自己时标「你」', async () => {
   mock.state.messages = {
     7001: { message_id: 7001, sender: { user_id: OWNER, nickname: '主人' }, message: [{ type: 'text', data: { text: '上周说的那件事' } }] },
@@ -596,49 +639,6 @@ test('引用消息：拉不到内容时明确告诉她没读到（不装看见�
   } finally {
     mock.state.failGetMsg = false
   }
-})
-
-test('引用 + 语音：语音条单独一条发，不和引用/@ 拼在同一条（issue #103）', async () => {
-  const http = await import('node:http')
-  // 用本地 HTTP TTS 避免依赖各平台的 TTS（Windows 语音在 Linux 上不可用）
-  const srv = http.createServer((req, res) => { res.setHeader('content-type', 'audio/wav'); res.end(Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(2000)])) })
-  await new Promise((r) => srv.listen(0, '127.0.0.1', r))
-  await fake.call('/save', { voice: { engine: 'http', http: { urlTemplate: `http://127.0.0.1:${srv.address().port}/tts?text={text}` } } })
-  try {
-    const at = (t) => [{ type: 'at', data: { qq: BOT } }, { type: 'text', data: { text: ' ' + t } }]
-    const before = mock.calls.length
-    mock.push(grp('557', '999', at('语音带引用'), 'xiaoming'))
-    await until(() => mock.calls.slice(before).some((c) => c.action === 'send_group_msg' && (c.params.message || []).some((s) => s.type === 'record')), 20000)
-    const recs = mock.calls.slice(before).filter((c) => c.action === 'send_group_msg' && (c.params.message || []).some((s) => s.type === 'record'))
-    assert.equal(recs.length, 1, '语音条应该只发一条')
-    assert.deepEqual(recs[0].params.message.map((s) => s.type), ['record'], '语音条必须单独一条，不能带引用/@：' + JSON.stringify(recs[0].params.message.map((s) => s.type)))
-  } finally {
-    srv.close()
-    await fake.call('/save', { voice: { engine: 'windows' } })
-  }
-})
-
-test('语音条不把 QQ 表情/emoji 念出来（face 标签和 emoji 在 TTS 前去掉）', async () => {
-  const http = await import('node:http')
-  let spoken = ''
-  const srv = http.createServer((req, res) => { spoken = new URL(req.url, 'http://x').searchParams.get('text') || ''; res.end(Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(2000)])) })
-  await new Promise((r) => srv.listen(0, '127.0.0.1', r))
-  await fake.call('/save', { voice: { engine: 'http', http: { urlTemplate: `http://127.0.0.1:${srv.address().port}/tts?text={text}` } } })
-  try {
-    const n = sentTo('private', OWNER).length
-    mock.push(priv(OWNER, text('表情语音测试')))
-    await until(() => sentTo('private', OWNER).slice(n).some((c) => (c.params.message || []).some((s) => s.type === 'record')), 20000)
-    assert.match(spoken, /晚安/, '能念的字要保留：' + spoken)
-    assert.doesNotMatch(spoken, /呲牙|face:|😁|在读/, '表情标签和 emoji 不能念出来：' + spoken)
-  } finally {
-    srv.close()
-    await fake.call('/save', { voice: { engine: 'windows' } })
-  }
-})
-
-test('听语音：收到语音先转文字再交给她', async () => {
-  mock.push(priv(OWNER, [{ type: 'record', data: { file: 'abc.amr' } }]))
-  await until(() => fake.turns.at(-1)?.userText.includes('[语音] 今天想吃白米饭'))
 })
 
 test('空间日记：手动写一篇（仅自己可见），配今天画的图，不往聊天里发，然后删除', async () => {

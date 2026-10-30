@@ -489,6 +489,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
     return parts.join('\n')
   }
 
+
   /**
    * 这一轮聊到的事相关的记忆（#79）：内容随每条消息变化，所以由模块在「交给她的内容」里附上，
    * 不放进每轮都会追加的运行时上下文快照。最多 4 条、总长 ≤ 300 字。

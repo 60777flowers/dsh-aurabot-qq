@@ -67,6 +67,7 @@ export const DEFAULTS = {
     codex: { model: 'gpt-image-2', quality: 'auto', background: 'auto' },
   },
   persona: { current: 'dafeiyu' },
+  // 主人私聊里问起群里的事：把最近 24 小时的群聊流水补进这一轮（本地默认开；可在「聊天 → 主人私聊」关掉）
   group: { ...DEFAULT_GROUP_POLICY, overrides: {}, ownerBrief: { enabled: true, lines: 24, groups: [] } },
   // 按群头衔不回：勾选的群里，专属头衔正好是 title 的成员（一般是别的机器人）说话、戳她都不理。没勾群就不起作用
   titleFilter: { enabled: true, groups: [], title: '大肥鱼' },
