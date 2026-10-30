@@ -546,6 +546,23 @@ test('引用消息：引用里的图片也作为附件给她看', async () => {
   }
 })
 
+test('引用消息：引用里的表情包也作为附件给她看', async () => {
+  const png = fakePng(120, 120, 8)
+  mock.state.messages = {
+    7401: { message_id: 7401, sender: { user_id: OWNER, nickname: '主人' }, message: [{ type: 'image', data: { sub_type: 1, summary: '[表情包]', file: 'base64://' + png.toString('base64') } }] },
+  }
+  try {
+    const before = fake.turns.length
+    mock.push(priv(OWNER, [{ type: 'reply', data: { id: '7401' } }, ...text('这个表情呢')]))
+    await until(() => fake.turns.slice(before).some((t) => t.images >= 1), 20000)
+    const t = fake.turns.slice(before).find((x) => x.images >= 1)
+    assert.ok(t.images >= 1, '引用里的表情包要作为附件交给她')
+    assert.match(String(t.userText), /表情包/, '文字里也要注明引用的是表情包')
+  } finally {
+    delete mock.state.messages
+  }
+})
+
 test('引用消息：拉不到内容时明确告诉她没读到（不装看见）', async () => {
   mock.state.failGetMsg = true
   try {

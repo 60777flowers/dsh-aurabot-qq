@@ -1042,27 +1042,31 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
 
   const quoteWho = (q) => (q.isBot ? '你' : `${q.who || q.uid || '某人'}${q.uid ? `(${q.uid})` : ''}`)
   const quoteBody = (q) => {
-    const body = String(q.text || '').replace(/\[图片\]/g, '').trim()
+    const body = String(q.text || '').replace(/\[(图片|表情包)\]/g, '').trim()
     if (body) return body
     if (q.images.length) return '（图片）'
     if (q.records) return '（语音）'
-    if (q.stickers.length) return '（表情）'
+    if (q.stickers.length) return '（表情包）'
     return '（没有文字）'
   }
   /** 引用说明：群聊接在某条消息后面，私聊单独一行。失败时明说没读到，让她可以如实讲。 */
   const quoteInline = (q) => {
     if (!q) return ''
     if (!q.ok) return '（引用了某条消息，但内容没读到；如果影响理解，可以如实说没看到，让对方重发或说一下是哪条）'
-    const pics = q.images.length || q.stickers.length
-      ? `，另有 ${q.images.length + q.stickers.length} 张图/表情`
+    const pics = q.images.length && q.stickers.length
+      ? `，另有 ${q.images.length} 张图、${q.stickers.length} 个表情包`
+      : q.images.length ? `，另有 ${q.images.length} 张图`
+      : q.stickers.length ? `，另有 ${q.stickers.length} 个表情包`
       : q.records ? '，一条语音' : ''
     return `（引用 ${quoteWho(q)} 的消息：「${quoteBody(q)}」${pics}）`
   }
-  /** 引用里的图片：最多 take 张转成附件；模型看不了图就只留上面的文字说明。 */
+  /** 引用里的图片 / 表情包：最多 take 张转成附件；模型看不了图就只留上面的文字说明。 */
   async function quoteImages(q, chat, take = 2) {
-    if (!q?.ok || !q.images.length || take <= 0) return []
+    if (!q?.ok || take <= 0) return []
+    const segs = [...q.images, ...q.stickers].slice(0, take)
+    if (!segs.length) return []
     if ((await chatCanSeeImages(chat)) === false) return []
-    const got = await imagesOf({ stickers: [], images: q.images.slice(0, take) })
+    const got = await imagesOf({ stickers: [], images: segs })
     return got.map((x, i) => ({ type: 'image', data: x.data, mediaType: x.mediaType, name: `quote-${q.uid || 'x'}-${i + 1}` }))
   }
 
@@ -1308,8 +1312,8 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
         for (let i = 0; i < imgs.length; i++) content.push({ type: 'image', data: imgs[i].data, mediaType: imgs[i].mediaType, name: `qq-${msg.messageId}-${i + 1}` })
       }
     }
-    // 引用里的图也给她看（最多 2 张，总数不超过 4；看不了图的模型靠上面的文字说明）
-    if (quoted?.ok && quoted.images.length && imgs.length < 4) {
+    // 引用里的图 / 表情包也给她看（最多 2 张，总数不超过 4；看不了图的模型靠上面的文字说明）
+    if (quoted?.ok && (quoted.images.length || quoted.stickers.length) && imgs.length < 4) {
       const qImgs = await quoteImages(quoted, msg, Math.min(2, 4 - imgs.length))
       for (const c of qImgs) content.push(c)
     }
@@ -1426,7 +1430,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     const quotedImages = []
     if (imageRoom > 0) {
       for (const x of fresh) {
-        if (!x.quote?.ok || !x.quote.images.length) continue
+        if (!x.quote?.ok || (!x.quote.images.length && !x.quote.stickers.length)) continue
         const take = Math.min(2, imageRoom - quotedImages.length)
         if (take <= 0) break
         quotedImages.push(...await quoteImages(x.quote, chat, take))
