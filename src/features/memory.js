@@ -108,6 +108,15 @@ export function isPersonalMemory(it) {
   return Boolean(it.about) || ['tool', 'auto', 'import', 'manual', 'diary'].includes(it.source)
 }
 
+/** 明确的约定/承诺：和日记分开，问「约定/说好」时优先于日记。 */
+const AGREEMENT_RE = /(约定|约好|说好|答应|讲好|定好|约定了)/
+const AGREEMENT_QUERY = /(约定|约好|说好|答应|讲好|定好)/
+
+export function isAgreementMemory(it) {
+  if (!it || it.source === 'diary' || it.source === 'event') return false
+  return AGREEMENT_RE.test(String(it.text || ''))
+}
+
 /** 这句话明显在问 B站 / 视频 / 最近看了什么：这时不该让私人记忆抢在前面。 */
 const EVENT_QUERY = /(B站|b站|视频|看了|看过|刷到|番剧|番|电影|直播|UP主|弹幕|做法|教程|音乐|歌曲|唱歌|抖音|空间|日记)/i
 
@@ -333,11 +342,20 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
   function recall(query, { about, limit, where = '', context = '', onlyAbout, preferPersonal } = {}) {
     const max = limit ?? getConfig().memory.recallCount
     const prefer = (preferPersonal ?? (getConfig().memory?.preferPersonal !== false)) && !EVENT_QUERY.test(String(query || ''))
-    const take = prefer ? Math.max(max, 1) * 4 : max
+    const agreementQuery = AGREEMENT_QUERY.test(String(query || ''))
+    // 问「约定/说好」时多取一些候选，避免明确的约定被大量日记/事件挤出候选集
+    const take = prefer ? (agreementQuery ? 500 : Math.max(max, 1) * 4) : max
     // 私人记忆优先只在「没在问 B站/视频/最近看了什么」时把关于人的记忆提前；
     // 明确问视频时仍按相关度，B站记忆不会被挤掉。
     const pick = (list) => {
       if (!prefer) return list.slice(0, max)
+      // 问「约定/说好」时：明确的约定排在日记前面；其他问法仍保持私人记忆优先。
+      if (AGREEMENT_QUERY.test(String(query || ''))) {
+        const agreements = list.filter((h) => isAgreementMemory(h.it))
+        const personal = list.filter((h) => isPersonalMemory(h.it) && !isAgreementMemory(h.it))
+        const other = list.filter((h) => !isPersonalMemory(h.it))
+        return [...agreements, ...personal, ...other].slice(0, max)
+      }
       const personal = list.filter((h) => isPersonalMemory(h.it))
       const other = list.filter((h) => !isPersonalMemory(h.it))
       return [...personal, ...other].slice(0, max)

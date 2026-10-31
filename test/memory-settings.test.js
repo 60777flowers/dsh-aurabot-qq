@@ -48,3 +48,13 @@ test('私人记忆优先：没在问 B站时先私人；问具体 B站视频仍�
   const off = mem.recall('B站 视频 做法', { about: owner, limit: 2, preferPersonal: false })
   assert.match(off[0].it.text, /B站看了/)
 })
+
+test('问约定/说好时，明确的约定排在空间日记前面', () => {
+  const mem = store(mk({ preferPersonal: true }))
+  mem.add({ text: '我在 QQ 空间写过：说好今天一起看番，晚饭吃白米饭。', source: 'diary', importance: 1 })
+  mem.add({ text: '白恒aead和大肥鱼约定：熬夜时十二点前必须躺下。', about: owner, aboutName: '白恒aead', source: 'auto', importance: 0.8 })
+
+  const hits = mem.recall('你还记得我们之前说好什么吗', { about: owner, limit: 5 })
+  assert.match(hits[0].it.text, /约定/)
+  assert.equal(hits.some((h) => /空间写过/.test(h.it.text)), true)
+})
