@@ -72,7 +72,7 @@ export default {
           execute: async ({ query }) => {
             // 群聊 / 非主人私聊里只翻「这个人自己」的记忆，不能把主人的私事翻出来
             const onlyAbout = level === 'full' ? undefined : (chat.userId || '')
-            const hits = memory.recall(String(query || ''), { about: chat.userId, onlyAbout, limit: 8, where: current + '（翻记忆）' })
+            const hits = memory.recall(String(query || ''), { about: chat.userId, onlyAbout, requireAbout: level !== 'full', limit: 8, where: current + '（翻记忆）' })
             return hits.length ? { ok: true, message: hits.map((h) => memoryLine(h.it)).join('；') } : { ok: true, message: '没想起相关的事' }
           },
         }),

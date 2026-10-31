@@ -129,3 +129,16 @@ test('非主人会话里的危险命令：直接拦，不打扰主人；重复�
   guard.handleReply(ownerChat, owner, '取消')
   await p1
 })
+
+test('H04：等待确认期间关闭 dangerConfirm，旧确认不能执行', async () => {
+  const { guard, cfg } = makeGuard({ timeoutMs: 60000 })
+  let ran = false
+  const p = guard.preExecute(execOf('shutdown /s /t 0'), () => { ran = true; return 'NEXT' })
+  await sleep(20)
+  assert.equal(guard.pendingCount, 1)
+  cfg.security.dangerConfirm = false
+  assert.equal(guard.handleReply(ownerChat, owner, '确认'), false, '关闭后不能消费旧确认')
+  const result = await p
+  assert.equal(result.kind, 'deny')
+  assert.equal(ran, false, '关闭确认后旧命令不能执行')
+})

@@ -54,3 +54,23 @@ test('记忆检索：非主人私聊只能想起和当前说话人有关的内�
   const own = store.recall('吃辣', { about: stranger, onlyAbout: stranger })
   assert.ok(own.some((h) => h.it.text.includes('吃辣')))
 })
+
+test('F4：群聊不把无主 diary/事件带进上下文和回忆', () => {
+  const store = createMemoryStore({
+    dsh: null,
+    getConfig: cfg,
+    hub: null,
+    log: { info () {}, warn () {}, debug () {} },
+  })
+  const canary = 'OWNER_PRIVATE_DIARY_CANARY_H03'
+  store.add({ text: canary + '：主人今天一个人吃了外卖', source: 'diary', importance: 0.6 })
+
+  const groupCtx = store.contextFor({ kind: 'group', groupId: '7', chatId: 'group:7' }, 's-g')
+  assert.doesNotMatch(groupCtx, /CANARY_H03/, '群聊常驻上下文不能带无主日记')
+
+  const groupHint = store.recallHint({ kind: 'group', groupId: '7', chatId: 'group:7' }, '外卖 CANARY')
+  assert.doesNotMatch(groupHint, /CANARY_H03/, '群聊回忆不能带无主日记')
+
+  const ownerCtx = store.contextFor({ kind: 'private', userId: owner, chatId: `private:${owner}` }, 's-o')
+  assert.match(ownerCtx, /CANARY_H03/, '主人私聊仍可见自己的日记')
+})

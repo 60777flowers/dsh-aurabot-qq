@@ -35,10 +35,11 @@ export default {
         })] : []),
         defineTool({
           name: 'qq_list_stickers',
-          description: '看看表情库里有哪些表情（名字和标签），挑表情前可以先看。',
+          description: '看看表情库里有哪些表情（名字和标签），挑表情前可以先看。非主人只能看到数量，名字和标签只给主人看。',
           properties: { query: str('可选，按名字/标签筛选') },
           execute: async ({ query }) => {
             const items = store.library().items
+            if (!hub.turnSendersAllOwner(sessionId)) return { ok: true, count: items.length, message: `表情库里有 ${items.length} 张表情；名字和标签只给主人看` }
             const q = String(query || '').trim()
             const hit = (q ? items.filter((i) => (i.name || '').includes(q) || (i.tags || []).some((t) => t.includes(q))) : items).slice(-60)
             return { ok: true, count: items.length, message: hit.length ? hit.map((i) => `${i.name || '未命名'}${i.tags?.length ? '（' + i.tags.join('/') + '）' : ''}`).join('、') : '没有符合的表情', items: hit.map((i) => ({ name: i.name, tags: i.tags })) }

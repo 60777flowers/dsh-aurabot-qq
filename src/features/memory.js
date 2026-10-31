@@ -73,9 +73,10 @@ export function search(idx, query, o = {}) {
   const b = 0.7
   const scored = []
   for (const d of idx.docs) {
-    // 群聊 / 非主人私聊里只允许想起「和这一段说话的人有关」的记忆，避免把主人的私事带出来；
-    // 没有标注「关于谁」的通用记忆仍然可以想起（如阿强喜欢钓鱼这种没有 QQ 号的旧档案）。
+    // 群聊 / 非主人私聊里只允许想起「和这一段说话的人有关」的记忆；
+    // requireAbout 再收紧：社交场景连没有 about 的旧日记/事件也不放进来。
     if (onlyAbout && d.it.about && !onlyAbout.has(String(d.it.about))) continue
+    if (o.requireAbout && !d.it.about) continue
     let s = 0
     const why = []
     for (const t of q) {
@@ -339,7 +340,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
   }
 
   const recallLog = [] // 最近几次想起了什么（给面板看）
-  function recall(query, { about, limit, where = '', context = '', onlyAbout, preferPersonal } = {}) {
+  function recall(query, { about, limit, where = '', context = '', onlyAbout, preferPersonal, requireAbout } = {}) {
     const max = limit ?? getConfig().memory.recallCount
     const prefer = (preferPersonal ?? (getConfig().memory?.preferPersonal !== false)) && !EVENT_QUERY.test(String(query || ''))
     const agreementQuery = AGREEMENT_QUERY.test(String(query || ''))
@@ -360,11 +361,11 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
       const other = list.filter((h) => !isPersonalMemory(h.it))
       return [...personal, ...other].slice(0, max)
     }
-    let hits = pick(search(index(), query, { about, limit: take, onlyAbout }))
+    let hits = pick(search(index(), query, { about, limit: take, onlyAbout, requireAbout }))
     // 这一句没想起几条（「嗯嗯」「然后呢」）：用上一句再找找，分数打折
     if (context && hits.length < max) {
       const have = new Set(hits.map((h) => h.it.id))
-      for (const h of pick(search(index(), context, { about, limit: take, minScore: 0.5, onlyAbout }))) {
+      for (const h of pick(search(index(), context, { about, limit: take, minScore: 0.5, onlyAbout, requireAbout }))) {
         if (hits.length >= max) break
         if (!have.has(h.it.id)) hits.push({ ...h, score: h.score * 0.6, why: [...(h.why || []), '（上一句）'] })
       }
@@ -531,9 +532,13 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
     if (sty.length || self.length) {
       parts.push('（说话方式：' + [sty.length ? '和' + (chat.kind === 'group' ? '这个群' : '对方') + '聊久了，' + sty.join('；') : '', self.length ? '你平时不知不觉会用的说法：' + self.join('、') : ''].filter(Boolean).join('。') + '。自然带一点就好，别刻意模仿，也别变成另一个人。）')
     }
-    // 最近做过的事：不用等别人提，她自己记得（比如刚给你唱过歌）
-    const recent = recentEvents()
-    if (recent.length) parts.push('（你最近做过的事：' + recent.map((m) => `${agoText(m.at)}${m.text}`).join('；') + '。聊到了可以自然提起。）')
+    // 最近做过的事：只给主人私聊；群聊/非主人私聊不带，避免日记/经历里的主人细节外溢
+    const owner = String(getConfig().ownerQQ || '')
+    const ownerPrivate = chat.kind === 'private' && String(chat.userId) === owner
+    if (ownerPrivate) {
+      const recent = recentEvents()
+      if (recent.length) parts.push('（你最近做过的事：' + recent.map((m) => `${agoText(m.at)}${m.text}`).join('；') + '。聊到了可以自然提起。）')
+    }
     // 注意：随每条消息变化的「相关记忆」不放在这里（#79）——运行时上下文快照每轮都会追加到历史，
     // 内容一变就多一份快照；放在用户消息里（recallHint）只占当轮，不会越滚越大。
     // 兜底字数上限：各段条数都有上限（相处经验 8 条、说话方式按 key 限条），但单条长度没有约束，
@@ -565,9 +570,10 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
     const owner = String(getConfig().ownerQQ || '')
     const ownerPrivate = chat && chat.kind === 'private' && String(chat.userId) === owner
     const onlyAbout = ownerPrivate ? undefined : about
+    const requireAbout = !ownerPrivate
     // 「嗯嗯」「然后呢」这种短句单看检索不到东西，把上一句也带上
     const ctxText = q.length < 12 ? String(prevText || '').slice(-300) : ''
-    const hits = recall(q, { about, onlyAbout, where: (chat && chat.chatId) || '', context: ctxText }).filter((h) => !shown.has(h.it.id)).slice(0, 4)
+    const hits = recall(q, { about, onlyAbout, requireAbout, where: (chat && chat.chatId) || '', context: ctxText }).filter((h) => !shown.has(h.it.id)).slice(0, 4)
     if (!hits.length) return backdrop
     let body = hits.map((h) => memoryLine(h.it)).join('；')
     if (body.length > 300) body = body.slice(0, 300) + '…'
@@ -640,17 +646,35 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
   function relatedTo(chatId, transcript) {
     const ppl = new Set([...String(transcript).matchAll(/\((\d{5,})\)/g)].map((m) => m[1]))
     if (chatId.startsWith('private:')) ppl.add(chatId.slice(8))
-    const items = load().items.filter((m) => !m.invalidAt && m.source !== 'event' && m.source !== 'diary')
+    const ownerQQ = String(getConfig().ownerQQ || '')
+    const ownerScope = chatId === `private:${ownerQQ}`
+    // 群聊/非主人私聊不把主人相关的旧记忆塞进整理候选，避免被模型看到并可改写
+    const allowed = (m) => !m.invalidAt && m.source !== 'event' && m.source !== 'diary' && (ownerScope || String(m.about || '') !== ownerQQ)
+    const items = load().items.filter(allowed)
     const out = items.filter((m) => m.about && ppl.has(String(m.about))).sort((a, b) => b.at - a.at).slice(0, 10)
     for (const h of search(index(), String(transcript).slice(-1500), { limit: 8, minScore: 0.5 })) {
       if (out.length >= 15) break
-      if (!out.some((m) => m.id === h.it.id) && h.it.source !== 'event' && h.it.source !== 'diary') out.push(h.it)
+      if (!out.some((m) => m.id === h.it.id) && allowed(h.it)) out.push(h.it)
     }
     return out
   }
 
   async function extractFacts(chatId, transcript) {
     const cfg = getConfig()
+    const ownerQQ = String(cfg.ownerQQ || '')
+    const ownerScope = chatId === `private:${ownerQQ}`
+    const ppl = new Set([...String(transcript).matchAll(/\((\d{5,})\)/g)].map((m) => m[1]))
+    if (chatId.startsWith('private:')) ppl.add(chatId.slice(8))
+    // 整理结果只能改「当前聊天候选里的、关于当前在场人的」记忆；不能跨聊天/改主人
+    const canRevise = (target) => {
+      if (!target || target.source === 'panel') return false
+      const about = String(target.about || '')
+      if (about === ownerQQ && !ownerScope) return false
+      if (target.chatId && String(target.chatId) !== String(chatId)) return false
+      if (!ownerScope && !about) return false
+      if (!ownerScope && about && !ppl.has(about)) return false
+      return true
+    }
     const source = chatId === 'qzone' ? '下面是 QQ 空间里的动态（好友发的说说、别人给你的评论、你的回复）' : '下面是一段聊天'
     const related = relatedTo(chatId, transcript)
     const known = new Map(related.map((m) => [m.id, m]))
@@ -674,13 +698,22 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
       const about = qq.length >= 5 && qq !== String(cfg.botQQ) ? qq : chatId.startsWith('private:') ? chatId.slice(8) : ''
       const op = String(x.op || 'add')
       const target = known.get(String(x.id || '').replace(/^#/, ''))
-      // 补充旧的（你在面板里亲手写的不改写）
-      if (op === 'update' && target && target.source !== 'panel') {
+      // 非主人/群聊整理不能新增挂到主人 QQ 或不在场人身上的记忆
+      if (!ownerScope && about && (about === ownerQQ || !ppl.has(about))) {
+        log.warn(`整理结果丢弃：${chatId} 试图写关于 ${about} 的记忆`)
+        continue
+      }
+      // 补充/作废旧记忆必须经过来源授权（不能跨聊天、不能借群聊改主人）
+      if ((op === 'update' || op === 'outdated') && !canRevise(target)) {
+        log.warn(`整理结果丢弃：${chatId} 试图改不属于本轮候选的记忆 ${x && x.id}`)
+        continue
+      }
+      if (op === 'update') {
         if (revise(target.id, x.text, x.importance)) n++
         continue
       }
       // 旧的过时了：先标过时（这样新的不会被当成重复合并进去），再记新的
-      if (op === 'outdated' && target) {
+      if (op === 'outdated') {
         invalidate(target.id)
         const r = add({ text: x.text, aboutName: x.about || target.aboutName || '', about: about || target.about || '', importance: x.importance ?? target.importance ?? 0.5, source: 'auto', chatId })
         if (r.id || r.updated) {
