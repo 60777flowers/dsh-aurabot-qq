@@ -695,7 +695,13 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       return h('div', { className: 'ab-grid' },
         h(UpdateNotes, { st, toast }),
         !cfg.enabled ? h('div', { className: 'ab-note warn' }, '总开关是关着的：大肥鱼现在不会收也不会发任何 QQ 消息。准备好了就在右上角打开。') : null,
-        cfg.enabled && cfg.dryRun ? h('div', { className: 'ab-note' }, '现在是试运行：ta会照常思考回复，但只写进日志，不会真的发到 QQ。确认没问题后在右上角关掉「试运行」。') : null,
+        cfg.enabled && cfg.debug ? h('div', { className: 'ab-note warn' },
+          '现在是调试：她会照常思考回复，但既不发到 QQ，也不写任何记忆和聊天流水 —— 只出现在日志里。调试期间的对话不会被明天的记忆整理吸收，也不会影响正式上线后的她。',
+          h('div', { className: 'ab-flex', style: { marginTop: 6, alignItems: 'center' } },
+            h(Btn, { small: true, kind: 'primary', onClick: async () => { const r = await post('/debug/session'); toast(r.message || (r.ok ? '好了' : '没建好'), r.ok ? 'ok' : 'err') } }, '新建 / 打开调试会话'),
+            h('span', { className: 'ab-muted ab-small' }, '去左侧栏「Aurabot · QQ」工作区打开它，直接在输入框里跟她说话'))) : null,
+        cfg.enabled && cfg.debug ? h(Card, { title: '调试对话', desc: '在这里直接跟她说话：走她的人格和工具，但不经过 QQ、不写记忆。和左侧栏那个调试会话是同一个会话。' }, h(DebugChat, { toast })) : null,
+        cfg.enabled && !cfg.debug && cfg.dryRun ? h('div', { className: 'ab-note' }, '现在是试运行：她会照常思考回复，但只写进日志，不会真的发到 QQ。注意试运行**会照常写记忆**；只想试人格、不想留痕迹请切到「调试」。') : null,
         cfg.enabled && !conn ? h('div', { className: 'ab-note err' }, '还没连上 QQ 网关' + (st.onebot.problem ? '：' + st.onebot.problem + '。' : '。去「连接」标签看看 SnowLuma 有没有装好、启动没有。') + ' ', h('a', { href: '#', onClick: (e) => { e.preventDefault(); go('connect') } }, '去连接 →')) : null,
         h('div', { className: 'ab-grid ab-g4' },
           [['今天收到', s.received, '📥'], ['今天发出', s.sent, '📤'], ['语音条', s.voice, '🎙️'], ['表情包', s.stickers, '😺']].map(([l, n, ic]) => h('div', { key: l, className: 'ab-card ab-stat' }, h('span', { className: 'ic', 'aria-hidden': true }, ic), h('div', { className: 'n' }, n || 0), h('div', { className: 'l' }, l))),
@@ -3762,6 +3768,44 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
       )
     }
 
+    /** 面板里的调试对话：不经过 QQ、不写记忆，直接把她说的话显示出来。 */
+    function DebugChat({ toast }) {
+      const [msgs, setMsgs] = useState([])
+      const [text, setText] = useState('')
+      const [busy, setBusy] = useState(false)
+      const say = async () => {
+        const t = text.trim()
+        if (!t || busy) return
+        setMsgs((m) => [...m, { who: 'me', text: t }])
+        setText('')
+        setBusy(true)
+        try {
+          const r = await post('/debug/say', { text: t })
+          setMsgs((m) => [...m, { who: 'her', text: r.ok ? (r.text || '（她这次没说话）') : '✗ ' + (r.message || '出错了') }])
+        } catch (error) {
+          setMsgs((m) => [...m, { who: 'her', text: '✗ ' + error.message }])
+        } finally {
+          setBusy(false)
+        }
+      }
+      return h('div', null,
+        msgs.length ? h('div', { className: 'ab-list', style: { maxHeight: 340, overflow: 'auto', marginBottom: 8 } },
+          msgs.map((m, i) => h('div', { key: i, className: 'ab-li' },
+            h('div', { className: 'meta' }, m.who === 'me' ? '你' : '她'),
+            h('div', { className: 'body' }, m.text)))) : h(Empty, { icon: '🐳', text: '说点什么试试 —— 比如「在吗」「今天心情怎么样」' }),
+        h('div', { className: 'ab-flex', style: { marginTop: 6 } },
+          h('input', {
+            className: 'ab-input',
+            style: { flex: 1 },
+            value: text,
+            placeholder: '对她说…（回车发送）',
+            onChange: (e) => setText(e.target.value),
+            onKeyDown: (e) => { if (e.key === 'Enter') say() },
+          }),
+          h(Btn, { small: true, kind: 'primary', disabled: busy || !text.trim(), onClick: say }, busy ? '她在想…' : '发送')),
+      )
+    }
+
     function Logs() {
       const [items, setItems] = useState(null)
       const [level, setLevel] = useState('info')
@@ -3934,6 +3978,14 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
       const quickToggle = async (path, v) => {
         await save(setPath(dirtyRef.current ? draft : clone(st.config), path, v))
       }
+      // 试运行 / 调试互斥：开一个就自动关另一个。
+      // 关掉「调试」退回「试运行」（而不是直接上线）—— 上线必须自己关掉「试运行」那个开关。
+      const toggleRun = async (which, v) => {
+        const base = clone(dirtyRef.current ? draft : st.config)
+        const debug = which === 'debug' ? Boolean(v) : false
+        const dryRun = which === 'debug' ? !v : Boolean(v)
+        await save(setPath(setPath(base, 'debug', debug), 'dryRun', dryRun))
+      }
       // Ctrl/⌘ + S 保存
       useEffect(() => {
         const onKey = (e) => {
@@ -3951,7 +4003,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
       }
       const cfg = st.config
       const conn = st.onebot.state === 'connected'
-      const status = !cfg.enabled ? { cls: '', text: '休息中（总开关关着）' } : !conn ? { cls: 'err', text: 'QQ 没连上' } : cfg.dryRun ? { cls: 'warn', text: '在线 · 试运行' } : { cls: 'ok', text: '在线' }
+      const status = !cfg.enabled ? { cls: '', text: '休息中（总开关关着）' } : !conn ? { cls: 'err', text: 'QQ 没连上' } : cfg.debug ? { cls: 'warn', text: '在线 · 调试' } : cfg.dryRun ? { cls: 'warn', text: '在线 · 试运行' } : { cls: 'ok', text: '在线' }
       const persona = st.personas.find((p) => p.id === cfg.persona.current)
       const props = { st, draft, setDraft: setD, toast, reload, go, openWizard: () => setWizardOpen(true) }
       const showWizard = !cfg.setupDone || wizardOpen
@@ -3989,7 +4041,8 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
                 h('span', { className: 'ab-pill' }, 'Aurabot v' + st.version))),
             h('div', { className: 'ab-hero-side' },
               h('div', { className: 'ab-switch-row' }, h('span', null, '总开关'), h(Switch, { on: cfg.enabled, onChange: (v) => quickToggle('enabled', v) })),
-              h('div', { className: 'ab-switch-row' }, h('span', { className: 'ab-muted' }, '试运行'), h(Switch, { on: cfg.dryRun, onChange: (v) => quickToggle('dryRun', v), title: '开着时只写日志，不真的发到 QQ' })))),
+              h('div', { className: 'ab-switch-row' }, h('span', { className: 'ab-muted' }, '试运行'), h(Switch, { on: cfg.dryRun, onChange: (v) => toggleRun('dryRun', v), title: '开着时只写日志，不真的发到 QQ（记忆照写）' })),
+              h('div', { className: 'ab-switch-row' }, h('span', { className: 'ab-muted' }, '调试'), h(Switch, { on: cfg.debug, onChange: (v) => toggleRun('debug', v), title: '调试：不真发，也不写任何记忆和聊天流水，只在日志里看。开它会自动关掉试运行' })))),
           showWizard ? h(Wizard, { st, draft, setDraft: setD, save, toast, reload, onClose: () => setWizardOpen(false) }) : null,
           showWizard ? null : h(NavBar, {
             tabs, cur: curTab, go, dirtyOf: tabDirty, subRef: tabsRef,

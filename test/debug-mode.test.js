@@ -1,7 +1,7 @@
 // 调试模式：不真发 + 不写任何持久记忆，只在日志里留痕；和「试运行」互斥。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -64,6 +64,15 @@ test('调试模式：不整理记忆（不然流水还是会被提炼进来）',
   const { store } = memoryOf({ debug: true, memory: { enabled: true, dailyConsolidate: true, consolidateTimes: ['00:00'] } })
   const r = await store.tick()
   assert.equal(r, undefined, 'tick 直接返回，不做整理')
+})
+
+test('面板有调试开关 / 调试对话，不会在合并上游后丢失', () => {
+  const src = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
+  assert.ok(src.includes("toggleRun('debug', v)"), '右上角缺调试开关')
+  assert.ok(src.includes("post('/debug/session')"), '缺新建 / 打开调试会话')
+  assert.ok(src.includes("post('/debug/say'"), '缺调试对话发送')
+  assert.ok(src.includes('function DebugChat('), '缺调试对话组件')
+  assert.ok(src.includes('cfg.debug ? { cls: \'warn\', text: \'在线 · 调试\' }'), '状态栏没显示调试')
 })
 
 test('调试模式：不收表情（不往表情库里添东西）', async () => {
