@@ -193,7 +193,7 @@ test('系统会话超时会及时返回，晚到的回复不会发到 QQ', async
   const start = Date.now()
   await assert.rejects(api.hub.runSystemTurn('timeout-test', '超时测试', '慢慢想', { timeoutMs: 50 }), /等太久/)
   assert.ok(Date.now() - start < 1500)
-  await assert.rejects(api.hub.runSystemTurn('timeout-test', '超时测试', '下一轮', { timeoutMs: 50 }), /上一轮还没结束/)
+  await assert.rejects(api.hub.runSystemTurn('timeout-test', '超时测试', '下一轮', { timeoutMs: 50 }), /冷却中/)
   // key：同一个模块的多种后台用途各走一条会话（桌宠的「碎碎念」和「行为大脑」就是这种关系）。
   // 上面那条还挂着没结束，这里换 key 必须能立刻跑起来——不再撞「上一轮还没结束」。
   const before = fake.workspaces[0].sessionIds.length
@@ -974,7 +974,7 @@ test('换头像：主人发来的图也能用，不能被「她的画作」抢�
   const n = mock.sent('set_qq_avatar').length
   mock.push(priv(OWNER, text('刚才那张换头像测试')))
   const c = await lastCall('刚才那张换头像测试')
-  assert.equal(c.result.ok, true, JSON.stringify(c.result))
+  assert.equal(c.result.ok, true)
   assert.equal(mock.sent('set_qq_avatar').length, n + 1, '真的调了换头像')
   const call = mock.sent('set_qq_avatar').at(-1)
   const file = String(call.params.file)
@@ -1274,6 +1274,19 @@ test('慢工具卡住超过 1.5 秒先发一条「正在做」提示，不让主
   assert.ok(noticeAt >= 0, '慢工具卡住时要先发提示：' + JSON.stringify(texts))
   assert.ok(doneAt > noticeAt, '提示要比最终回复先到：' + JSON.stringify(texts))
   rmSync(modsDir, { recursive: true, force: true })
+})
+
+test('来源章标明说话人：主人 owner，别人 guest，后台任务 none（#145）', async () => {
+  const last = async (push) => {
+    const n = fake.turns.length
+    push()
+    await until(() => fake.turns.length > n, 8000)
+    return fake.turns.at(-1).source
+  }
+  assert.deepEqual((await last(() => mock.push(priv(OWNER, text('来源章测试'))))).speaker, { role: 'owner', chat: 'private' })
+  assert.deepEqual((await last(() => mock.push(grp('557', OWNER, [{ type: 'at', data: { qq: BOT } }, { type: 'text', data: { text: ' 来源章测试 主人在群里' } }], '主人')))).speaker, { role: 'owner', chat: 'group' })
+  assert.deepEqual((await last(() => mock.push(grp('557', '999', [{ type: 'at', data: { qq: BOT } }, { type: 'text', data: { text: ' 来源章测试 群友' } }], '群友')))).speaker, { role: 'guest', chat: 'group' })
+  assert.deepEqual((await last(() => api.hub.runSystemTurn('source-test', '来源章', '后台任务', { timeoutMs: 5000 }).catch(() => {}))).speaker, { role: 'none' })
 })
 
 test('DSH 要授权时通知主人私聊，同一请求只发一次（#136）', async () => {

@@ -12,7 +12,7 @@ const PRIVATE_ONLY = ['192.168.1.10']
 const LOOPBACK = ['127.0.0.1']
 const METADATA = ['169.254.169.254']
 
-test('配置：默认严格，只接受 strict / loose', () => {
+test('配置：SSRF 模式默认 strict，只接受 strict / loose', () => {
   assert.equal(normalize({}).security.ssrfMode, 'strict')
   assert.equal(normalize({ security: { ssrfMode: 'loose' } }).security.ssrfMode, 'loose')
   assert.equal(normalize({ security: { ssrfMode: '随便写' } }).security.ssrfMode, 'strict')
@@ -86,11 +86,22 @@ test('IPv6 变形地址（IPv4-mapped / NAT64 / 6to4 / 文档段）也拦得住'
 })
 
 test('IPv4 保留段补全：0/8、100.64/10、文档段、保留段都算内网', () => {
-  for (const ip of ['0.1.2.3', '100.64.0.1', '100.127.255.255', '192.0.0.1', '192.0.2.1', '198.18.0.1', '198.51.100.1', '203.0.113.1', '240.0.0.1', '255.255.255.255']) {
+  for (const ip of ['0.1.2.3', '100.64.0.1', '100.127.255.255', '192.0.0.1', '192.0.2.1', '198.51.100.1', '203.0.113.1', '240.0.0.1', '255.255.255.255']) {
     assert.equal(isPrivateIp(ip), true, ip)
   }
   for (const ip of ['8.8.8.8', '28.0.1.35', '2606:4700:4700::1111']) {
     assert.equal(isPrivateIp(ip), false, ip)
+  }
+})
+
+test('代理 fake-ip：198.18.0.0/15 和 2001:2::/48 不能被当内网', () => {
+  // Clash TUN / fake-ip 常把域名解析到这两段；拦了会让 QQ 图片/表情全挂
+  for (const ip of ['198.18.0.40', '198.18.0.41', '198.18.0.108', '198.19.255.255', '2001:2::1']) {
+    assert.equal(isPrivateIp(ip), false, ip)
+  }
+  // 真正的私网仍然拦
+  for (const ip of ['192.168.1.10', '10.0.0.5', '127.0.0.1', '169.254.169.254', '::1', 'fc00::1']) {
+    assert.equal(isPrivateIp(ip), true, ip)
   }
 })
 

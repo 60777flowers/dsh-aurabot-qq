@@ -19,7 +19,7 @@ async function bounded(promise) {
   } finally { clearTimeout(timer) }
 }
 
-function fixture(t) {
+function fixture(t, { core = {}, builtins = [], onSetConfig } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'aurabot-module-lifecycle-'))
   const previousDir = process.env.AURABOT_DATA_DIR
   const previousGlobal = globalThis.aurabot
@@ -27,8 +27,8 @@ function fixture(t) {
   let cfg = { modules: {}, ext: {}, safeMode: false, debug: false }
   const warnings = []
   const modules = createModules({
-    ctx: {}, core: {}, getConfig: () => cfg, setConfig: (next) => { cfg = next },
-    logger: { child: () => ({ ...silent, warn: (...args) => warnings.push(args.join(' ')) }) }, version: 'test', builtins: [],
+    ctx: {}, core, getConfig: () => cfg, setConfig: (next) => { cfg = onSetConfig ? onSetConfig(next) : next },
+    logger: { child: () => ({ ...silent, warn: (...args) => warnings.push(args.join(' ')) }) }, version: 'test', builtins,
   })
   t.after(() => {
     modules.dispose()
@@ -40,6 +40,8 @@ function fixture(t) {
   return {
     modules,
     warnings,
+    config: () => cfg,
+    setConfig: (next) => { cfg = next },
     write(id, code) {
       const path = join(dir, 'modules', id)
       mkdirSync(path, { recursive: true })
@@ -131,6 +133,159 @@ test('异步 setup 跨过停止或卸载后，迟到资源和 exports 都会被�
     f.modules.dispose()
     assert.equal(g.state.disposed, 1, '重复卸载不会重复销毁导出')
   })
+})
+
+test('异步 setup 停止后，迟到的写操作不能发送消息或修改配置', async (t) => {
+  for (const action of ['stop', 'dispose']) await t.test(action, async (t) => {
+    const writes = []
+    const hub = Object.fromEntries(['deliver', 'sendText', 'sendImage', 'sendSegments', 'sendFile', 'sendVoiceFile', 'runSystemTurn']
+      .map((name) => [name, (...args) => writes.push([name, ...args])]))
+    const f = fixture(t, { core: { hub, ask: () => writes.push('ask'), onebot: { call: () => writes.push('onebot') } } })
+    await f.modules.boot()
+    const g = gate(t)
+    f.write('late-write', `
+      const gate = ${g.source}
+      export default { id: 'late-write', async setup(api) {
+        gate.enter()
+        await gate.ready
+        const actions = [
+          () => api.send('private:1', 'a'), () => api.sendText('private:1', 'b'),
+          () => api.reply({ chatId: 'private:1' }, 'c'), () => api.sendImage('private:1', 'image'),
+          () => api.sendSegments('private:1', []), () => api.sendFile('private:1', 'file'),
+          () => api.sendVoiceFile('private:1', 'voice'), () => api.setConfig({ ownerQQ: 'changed' }),
+          () => api.saveSettings({ secret: 'changed' }), () => api.onebot('send_private_msg', {}),
+          () => api.ask('question'), () => api.think('prompt'), () => api.emit('probe'),
+        ]
+        gate.errors = []
+        for (const action of actions) {
+          try { await action() } catch (error) { gate.errors.push(error.message) }
+        }
+        return { dispose() { gate.disposed++ } }
+      } }
+    `)
+    const syncing = f.modules.sync()
+    t.after(async () => { g.release(); await syncing })
+    await bounded(g.entered)
+    const before = structuredClone(f.config())
+    if (action === 'stop') f.modules.stop('late-write')
+    else f.modules.dispose()
+    g.release()
+    await bounded(syncing)
+    assert.equal(g.state.errors.length, 13)
+    assert.ok(g.state.errors.every((message) => message.includes('已停止')))
+    assert.equal(f.warnings.filter((message) => message.includes('已停止')).length, 13)
+    assert.deepEqual(writes, [])
+    assert.deepEqual(f.config(), before)
+    assert.equal(g.state.disposed, 1)
+  })
+})
+
+test('导入途中关闭模块、开启安全模式或停止模块，导入结束后不执行 setup', async (t) => {
+  for (const action of ['disable', 'safeMode', 'stop']) await t.test(action, async (t) => {
+    const f = fixture(t)
+    await f.modules.boot()
+    const g = gate(t)
+    f.write('slow-import', `
+      const gate = ${g.source}
+      gate.enter()
+      await gate.ready
+      export default { id: 'slow-import', setup() { gate.setups++; return {} } }
+    `)
+    const syncing = f.modules.sync()
+    t.after(async () => { g.release(); await syncing })
+    await bounded(g.entered)
+    if (action === 'disable') f.setConfig({ ...f.config(), modules: { 'slow-import': { enabled: false } } })
+    if (action === 'safeMode') f.setConfig({ ...f.config(), safeMode: true })
+    if (action === 'stop') f.modules.stop('slow-import')
+    // 模拟面板保存配置时触发的同步；直接 stop 不重新发起加载。
+    const updated = action === 'stop' ? syncing : f.modules.sync()
+    g.release()
+    await bounded(Promise.all([syncing, updated]))
+    assert.equal(g.state.setups, 0)
+    assert.equal(f.modules.has('slow-import'), false)
+  })
+})
+
+test('导入途中开启安全模式，恢复被替换的内置模块', async (t) => {
+  let builtinStarts = 0
+  const f = fixture(t, { builtins: [{ id: 'slow-import', setup() { builtinStarts++; return {} } }] })
+  await f.modules.boot()
+  const g = gate(t)
+  f.write('slow-import', `
+    const gate = ${g.source}
+    gate.enter()
+    await gate.ready
+    export default { id: 'slow-import', setup() { gate.setups++; return {} } }
+  `)
+  const syncing = f.modules.sync()
+  t.after(async () => { g.release(); await syncing })
+  await bounded(g.entered)
+  f.setConfig({ ...f.config(), safeMode: true })
+  const updated = f.modules.sync()
+  g.release()
+  await bounded(Promise.all([syncing, updated]))
+  assert.equal(g.state.setups, 0)
+  assert.equal(builtinStarts, 2)
+  assert.equal(f.modules.running('slow-import'), 'builtin')
+})
+
+test('记录替换版本时同步开启安全模式，不执行用户模块 setup', async (t) => {
+  let builtinStarts = 0
+  const f = fixture(t, { builtins: [{ id: 'safe-replace', setup() { builtinStarts++; return {} } }],
+    onSetConfig: (cfg) => cfg.modules?.['safe-replace']?.forkedFrom ? { ...cfg, safeMode: true } : cfg })
+  await f.modules.boot()
+  const g = gate(t)
+  f.write('safe-replace', `
+    const gate = ${g.source}
+    export default { id: 'safe-replace', setup() { gate.setups++; return {} } }
+  `)
+  await f.modules.sync()
+  assert.equal(g.state.setups, 0)
+  assert.equal(builtinStarts, 2)
+  assert.equal(f.modules.running('safe-replace'), 'builtin')
+})
+
+test('导入途中配置变化，不按旧快照关闭后面的内置模块', async (t) => {
+  const state = { setups: 0 }
+  const f = fixture(t, { builtins: [{ id: 'builtin-late', setup() { state.setups++; return {} } }] })
+  await f.modules.boot()
+  const g = gate(t)
+  f.write('slow-import', `
+    const gate = ${g.source}
+    gate.enter()
+    await gate.ready
+    export default { id: 'slow-import', setup() { return {} } }
+  `)
+  f.setConfig({ ...f.config(), modules: { 'builtin-late': { enabled: false } } })
+  const syncing = f.modules.sync()
+  t.after(async () => { g.release(); await syncing })
+  await bounded(g.entered)
+  f.setConfig({ ...f.config(), modules: {} })
+  const updated = f.modules.sync()
+  g.release()
+  await bounded(Promise.all([syncing, updated]))
+  assert.equal(state.setups, 2)
+  assert.equal(f.modules.running('builtin-late'), 'builtin')
+})
+
+test('旧实例清理时启动同名新实例，路由和监听器仍属于新实例', async (t) => {
+  let f
+  let starts = 0
+  const events = []
+  const builtin = { id: 'same-id', setup(api) {
+    const instance = ++starts
+    api.route('/probe', () => ({ instance }))
+    api.on('probe', () => events.push(instance))
+    if (instance === 1) api.onDispose(() => { f.modules.sync() })
+    return {}
+  } }
+  f = fixture(t, { builtins: [builtin] })
+  await f.modules.boot()
+  f.modules.stop('same-id')
+  assert.equal(starts, 2)
+  assert.deepEqual(await f.modules.handle('/aurabot/api/probe'), { instance: 2 })
+  f.modules.emit('probe')
+  assert.deepEqual(events, [2])
 })
 
 test('boot 等待 loadLib 时卸载，不覆盖新实例全局对象、不启动 watcher', async (t) => {

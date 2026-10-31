@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createFakeDsh } from './helpers/fake-dsh.js'
 import { normalize } from '../src/core/config.js'
+import { OneBotError } from '../src/onebot/client.js'
 
 const root = mkdtempSync(join(tmpdir(), 'aurabot-lifecycle-'))
 process.env.AURABOT_WORKSPACE = join(root, 'workspace')
@@ -104,14 +105,14 @@ function config(patch = {}) {
     snowluma: { autoStart: false, autoAttach: false, dir: join(root, 'no-snowluma') }, ...patch })
 }
 
-function setup(t, { cfg = config(), brain = async () => '', hooks, buildTools } = {}) {
+function setup(t, { cfg = config(), brain = async () => '', hooks, buildTools, onebot, onCommand, onActivity } = {}) {
   process.env.AURABOT_DATA_DIR = mkdtempSync(join(root, 'data-'))
   const fake = createFakeDsh({ brain })
   const calls = []
   const hub = createHub({ dsh: fake.ctx, getConfig: () => cfg,
     log: Object.fromEntries(['info', 'warn', 'error', 'debug'].map((k) => [k, (...v) => fake.logs.push(v.join(' '))])),
-    onebot: { connected: true, async call(action, params) { calls.push({ action, params }); return { message_id: calls.length } } },
-    hooks, buildTools })
+    onebot: onebot || { connected: true, async call(action, params) { calls.push({ action, params }); return { message_id: calls.length } } },
+    hooks, buildTools, onCommand, onActivity })
   fake.ctx.effect(() => fake.ctx.on('session/event', hub.onSessionEvent))
   t.after(() => { try { hub.dispose?.() } finally { fake.dispose() } })
   return { hub, fake, calls }
@@ -200,6 +201,49 @@ test('会话恢复等待中卸载，恢复结果不能重新挂载工具或启�
   assert.equal(fake.turns.length, 1)
 })
 
+test('旧实例建会话或改名期间卸载，不能覆盖新实例的会话映射', { timeout: 5000 }, async (t) => {
+  for (const phase of ['create', 'rename']) await t.test(phase, async (t) => {
+    const { hub: oldHub, fake } = setup(t)
+    const controller = fake.ctx.services.sessionController
+    const original = controller[phase]
+    const entered = deferred(), gate = deferred()
+    t.after(() => gate.resolve())
+    let first = true
+    controller[phase] = async (...args) => {
+      const result = await original(...args)
+      if (first) { first = false; entered.resolve(); await gate.promise }
+      return result
+    }
+    const oldWork = oldHub.pushToSession(ownerChat, [{ type: 'text', text: '旧会话' }], OWNER).catch((error) => error)
+    await entered.promise
+    oldHub.dispose()
+    const newHub = createHub({ dsh: fake.ctx, getConfig: () => config(), log: { info() {}, warn() {}, debug() {}, error() {} },
+      onebot: { async call() { return {} } } })
+    t.after(() => newHub.dispose())
+    await newHub.pushToSession(ownerChat, [{ type: 'text', text: '新会话' }], OWNER)
+    const file = join(process.env.AURABOT_DATA_DIR, 'sessions.json')
+    const before = JSON.parse(readFileSync(file, 'utf8'))
+    assert.ok(before.chats[CHAT]?.sessionId)
+    gate.resolve()
+    assert.equal((await oldWork).code, 'AURABOT_DISPOSED')
+    assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), before)
+    assert.equal(fake.turns.length, 1)
+    assert.match(fake.turns[0].userText, /新会话/)
+  })
+})
+
+test('后台轮次取得 agent 后卸载，不登记超时或启动 followup', { timeout: 5000 }, async (t) => {
+  const timers = t.mock.method(globalThis, 'setTimeout')
+  let hub
+  const s = setup(t, { buildTools: () => { queueMicrotask(() => hub.dispose()); return [] } })
+  hub = s.hub
+  const result = await hub.runSystemTurn('between', '后台', '不应执行', { timeoutMs: 123456 }).catch((error) => error)
+  assert.equal(result.code, 'AURABOT_DISPOSED')
+  await settle()
+  assert.equal(timers.mock.calls.some((call) => call.arguments[1] === 123456), false)
+  assert.equal(s.fake.turns.length, 0)
+})
+
 test('图片准入等待中卸载，随后完成的准入不能提交旧消息', { timeout: 5000 }, async (t) => {
   const { hub, fake } = setup(t)
   const entered = deferred()
@@ -223,6 +267,61 @@ test('消息合并等待中卸载，计时结束和新消息均不能再启动�
   await settle()
   assert.equal(fake.agents.size, 0)
   assert.equal(fake.turns.length, 0)
+})
+
+test('卸载后消息不再调用命令、记录流水或登记合并计时器', async (t) => {
+  const timers = t.mock.method(globalThis, 'setTimeout')
+  let commands = 0, activity = 0
+  const s = setup(t, { cfg: config({ merge: { enabled: true, waitSec: 5, maxSec: 5 } }),
+    onCommand: async () => { commands++; return '已执行' }, onActivity: () => { activity++ } })
+  s.hub.dispose()
+  await s.hub.onMessage(event('/test'))
+  await s.hub.onMessage(event('卸载后才到达'))
+  assert.equal(commands, 0)
+  assert.equal(activity, 0)
+  assert.equal(s.hub.stats().received, 0)
+  assert.deepEqual(s.hub.chatLogDays(), [])
+  assert.equal(timers.mock.calls.length, 0)
+})
+
+test('消息挂钩等待中卸载，挂钩结束后不记录或安排轮次', async (t) => {
+  const entered = deferred(), gate = deferred()
+  t.after(() => gate.resolve())
+  let activity = 0
+  const s = setup(t, { hooks: { message: async () => { entered.resolve(); await gate.promise; return false } },
+    onActivity: () => { activity++ } })
+  const work = s.hub.onMessage(event())
+  await entered.promise
+  s.hub.dispose()
+  gate.resolve()
+  await work
+  assert.equal(activity, 0)
+  assert.deepEqual(s.hub.chatLogDays(), [])
+  assert.equal(s.fake.turns.length, 0)
+})
+
+test('卸载后不发文件，在途请求失败后也不进行 base64 回退', async (t) => {
+  const entered = deferred(), gate = deferred()
+  t.after(() => gate.resolve())
+  const calls = []
+  const file = join(root, 'lifecycle-file.txt')
+  writeFileSync(file, '测试')
+  const s = setup(t, { cfg: config({ dryRun: false, files: { enabled: true, dirs: [root] } }),
+    onebot: { async call(action, params) {
+      calls.push({ action, params })
+      entered.resolve()
+      await gate.promise
+      throw new OneBotError(action, { message: '网关拒绝', status: 'failed' })
+    } } })
+  const work = s.hub.sendFile(CHAT, file)
+  await entered.promise
+  s.hub.dispose()
+  gate.resolve()
+  assert.equal(await work, null)
+  assert.equal(await s.hub.sendFile(CHAT, file), null)
+  assert.equal(calls.length, 1)
+  assert.equal(s.hub.stats().sent, 0)
+  assert.equal(s.hub.stats().errors, 0)
 })
 
 test('发送挂钩等待中卸载，挂钩完成后不再向网关发送', { timeout: 5000 }, async (t) => {

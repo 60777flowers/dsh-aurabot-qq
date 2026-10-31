@@ -70,6 +70,68 @@ before(async () => {
 })
 after(() => rmSync(root, { recursive: true, force: true }))
 
+test('安装时报进度，装完清空', async () => {
+  const p = pack('progress-mod', '1.0.0')
+  const seen = []
+  let c
+  const fetcher = async (url) => {
+    if (url.endsWith('index.json')) return { ok: true, json: async () => ({ schema: 1, assetsBase: 'https://x/', modules: [p.entry] }) }
+    return { ok: true, headers: { get: () => String(p.buf.length) }, body: (async function* () {
+      yield p.buf.subarray(0, 10)
+      seen.push({ ...c.progress() })
+      yield p.buf.subarray(10)
+      seen.push({ ...c.progress() })
+    })() }
+  }
+  c = createCommunity({ mods: { status: () => [], sync: async () => {}, stop: () => true }, getConfig: () => ({}), setConfig() {}, log: { info() {}, warn() {} }, version: '1.2.0', registryUrl: 'https://x/index.json', fetcher })
+  const r = await c.install('progress-mod')
+  assert.equal(r.ok, true, r.message)
+  assert.deepEqual(seen.map((s) => [s.stage, s.received, s.total]), [['download', 10, p.buf.length], ['download', p.buf.length, p.buf.length]])
+  assert.equal(c.progress(), null)
+})
+
+test('安装每一步都报进度，含启动模块', async () => {
+  const p = pack('stage-mod', '1.0.0')
+  const stages = []
+  let c
+  const fetcher = async (url) => {
+    stages.push(c.progress()?.stage)
+    if (url.endsWith('index.json')) return { ok: true, json: async () => ({ schema: 1, assetsBase: 'https://x/', modules: [p.entry] }) }
+    return { ok: true, arrayBuffer: async () => p.buf }
+  }
+  const mods = { status: () => [], sync: async () => { stages.push(c.progress()?.stage); assert.equal(c.progress().name, 'stage-mod') }, stop: () => true }
+  c = createCommunity({ mods, getConfig: () => ({}), setConfig() {}, log: { info() {}, warn() {} }, version: '1.2.0', registryUrl: 'https://x/index.json', fetcher })
+  assert.equal((await c.install('stage-mod')).ok, true)
+  assert.deepEqual(stages, ['index', 'download', 'start'])
+  assert.equal(c.progress(), null)
+})
+
+test('断网先重试，再失败说人话并写日志', async () => {
+  const p = pack('flaky-mod', '1.0.0')
+  const index = { ok: true, json: async () => ({ schema: 1, assetsBase: 'https://x/', modules: [p.entry] }) }
+  const down = () => Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNRESET' } })
+  const make = (fetcher, warns = []) => createCommunity({ mods: { status: () => [], sync: async () => {}, stop: () => true }, getConfig: () => ({}), setConfig() {}, log: { info() {}, warn: (...a) => warns.push(a.join(' ')) }, version: '1.2.0', registryUrl: 'https://x/index.json', fetcher, retryMs: 1 })
+
+  let tries = 0
+  const once = make(async (url) => {
+    if (url.endsWith('index.json')) return index
+    if (++tries === 1) throw down()
+    return { ok: true, arrayBuffer: async () => p.buf }
+  })
+  assert.equal((await once.install('flaky-mod')).ok, true)
+  assert.equal(tries, 2)
+
+  const warns = []
+  const dead = make(async () => { throw down() }, warns)
+  const r = await dead.install('flaky-mod')
+  assert.equal(r.ok, false)
+  assert.match(r.message, /连不上 GitHub（ECONNRESET）/)
+  assert.doesNotMatch(r.message, /fetch failed/)
+  assert.equal(warns.length, 1)
+  await assert.rejects(dead.list(), /连不上 GitHub/)
+  assert.equal(dead.progress(), null)
+})
+
 test('readZip 拒绝路径穿越、绝对路径和反斜杠', () => {
   for (const name of ['../evil.js', 'a/../../evil.js', '/etc/x', 'C:/x', 'a\\b.js']) assert.throws(() => readZip(zip({ [name]: 'x' })), /不安全/, name)
   assert.equal(readZip(zip({ 'a/b.js': 'hi' })).get('a/b.js').toString(), 'hi')
@@ -162,4 +224,10 @@ test('测试版：版本比较、更新通道、市场最低版本', async () =>
   assert.equal(r.newer, true)
   assert.match(r.command, /github:a\/b#beta$/)
   assert.equal(u.channelOf('1.2.0'), 'main')
+})
+
+test('提交教程随插件发布', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  assert.ok(pkg.files.includes('docs/MODULE-TUTORIAL.md'))
+  assert.match(readFileSync(new URL('../docs/MODULE-TUTORIAL.md', import.meta.url), 'utf8'), /提交一个模块/)
 })

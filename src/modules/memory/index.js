@@ -33,8 +33,7 @@ export default {
     api.on('prompt', (content, info) => {
       try {
         if (!info || !info.chat || info.chat.kind === 'system' || !Array.isArray(content)) return content
-        const hint = memory.recallHint(info.chat, info.queryText || '', info.prevText || '', info.sessionId,
-          info.speakers || [info.senderId, ...(info.extraSenders || [])].filter(Boolean).map(String))
+        const hint = memory.recallHint(info.chat, info.queryText || '', info.prevText || '', info.sessionId, info.speakers || [])
         if (!hint) return content
         return [{ type: 'text', text: hint }, ...content]
       } catch (error) { return content }

@@ -17,7 +17,7 @@ function isPrivateIpv4(ip) {
     || (a === 192 && b === 168)
     || (a === 192 && b === 0 && (c === 0 || c === 2)) // 192.0.0/24、192.0.2/24
     || (a === 192 && b === 88 && c === 99) // 6to4 中继
-    || (a === 198 && (b === 18 || b === 19)) // 基准测试
+    // 198.18.0.0/15 是基准测试段，但 Clash/fake-ip 也用它；不能当内网拦，否则代理用户图片全挂
     || (a === 198 && b === 51 && c === 100) // 文档
     || (a === 203 && b === 0 && c === 113) // 文档
     || a >= 224 // 组播 / 保留
@@ -98,16 +98,12 @@ export function isPrivateIp(ip) {
 }
 
 // ---------- SSRF 防护强度 ----------
-// 面板「安全防护」页里选，host 启动时注入；这里不直接读配置，保持纯工具。
+// 默认严格；setSsrpMode 保留给宿主/测试注入，未接面板时始终 strict。
 let modeGetter = () => 'strict'
 export function setSsrpMode (fn) { if (typeof fn === 'function') modeGetter = fn }
 export const currentSsrpMode = () => (modeGetter() === 'loose' ? 'loose' : 'strict')
 
-/**
- * 这组解析结果算不算「内网目标」。
- * strict：只要有一个内网地址就拒绝（默认；部署在服务器上、不信任群友时用）。
- * loose：全部解析结果都是内网才拒绝（本机 DNS 会给公网域名同时塞一条 IPv6 ULA 时用）。
- */
+/** strict：只要有一个内网地址就拒绝；loose：全部都是内网才拒绝。 */
 export function ssrfBlocked (ips, mode = currentSsrpMode()) {
   const list = (Array.isArray(ips) ? ips : []).filter((x) => typeof x === 'string' && x)
   if (!list.length) return true

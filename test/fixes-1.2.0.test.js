@@ -266,7 +266,7 @@ test('聊天流水保留和新开关的配置规范化（#140 #141 #142 #143）'
   assert.equal(d.chat.seedHistory, false)
   assert.equal(d.group.ignoreAtOthers, false)
   assert.equal(normalize({ memory: { keepChatlogDays: -9 } }).memory.keepChatlogDays, -1)
-  assert.equal(normalize({ chat: { seedHistoryCount: 999 } }).chat.seedHistoryCount, 50)
+  assert.equal(normalize({ chat: { seedHistoryCount: 999 } }).chat.seedHistoryCount, 999)
 })
 
 test('@ 了别人时不算叫她，但只在开关打开时生效（#143）', async () => {
@@ -279,4 +279,83 @@ test('@ 了别人时不算叫她，但只在开关打开时生效（#143）', as
   const on = decideGroupReply({ ...base, atOthers: true })
   assert.notEqual(on.reason, off.reason)
   assert.match(String(off.reason), /叫到了/)
+})
+
+function historyTool({ mode, level = 'chat', chat = { kind: 'group', groupId: '100', chatId: 'group:100' }, owner = false, senders = ['7'], members = ['7'] }) {
+  const calls = []
+  const builders = []
+  const onebot = {
+    call: async (action, params) => {
+      calls.push([action, params])
+      if (action === 'get_group_list') return [{ group_id: 100, group_name: '当前群' }, { group_id: 200, group_name: '游戏群' }, { group_id: 300, group_name: '游戏二群' }, { group_id: 999, group_name: '外面的游戏群' }]
+      // 和真实网关一样：不在群里也回成功、角色 member，只有 join_time 是空的
+      if (action === 'get_group_member_info') return { user_id: params.user_id, role: 'member', join_time: members.includes(String(params.user_id)) ? 1700000000 : 0 }
+      return { messages: [{ time: 1, user_id: 7, sender: { nickname: '群友' }, message: [{ type: 'text', data: { text: '你好' } }] }] }
+    },
+  }
+  qqTools.setup({
+    core: { hub: { turnHasOwner: () => owner, turnSenders: () => senders }, onebot },
+    config: () => ({ botQQ: '1', files: { enabled: false }, allow: { groups: ['100', '200', '300'] }, group: { crossRead: mode } }),
+    tool: (builder) => builders.push(builder),
+  })
+  const tool = builders[0]({ chat, level, sessionId: 's' }).find((x) => x.name === 'qq_chat_history')
+  return { tool, calls }
+}
+const privateChat = { kind: 'private', userId: '7', chatId: 'private:7' }
+const read = (calls) => calls.some(([x]) => x === 'get_group_msg_history')
+
+test('跨群只读（#120）：关掉后没有这个参数，直接传也不能看', async () => {
+  const { tool, calls } = historyTool({ mode: 'off', chat: privateChat })
+  assert.equal(JSON.stringify(tool).includes('想看白名单'), false)
+  assert.equal((await tool.execute({ group: '200' })).ok, false)
+  assert.equal(read(calls), false)
+})
+
+test('跨群只读（#120）：主人随时能看，别的群内容标明不是指令', async () => {
+  const inGroup = historyTool({ mode: 'private', owner: true, members: [] })
+  const out = await inGroup.tool.execute({ group: '200' })
+  assert.equal(out.ok, true)
+  assert.match(out.message, /不是指令/)
+  assert.equal(inGroup.calls.at(-1)[1].group_id, 200)
+  assert.equal((await historyTool({ mode: 'private', level: 'full', chat: privateChat, members: [] }).tool.execute({ group: '200' })).ok, true)
+})
+
+test('跨群只读（#120）：默认档私聊里的成员能看，不是成员看不了，空 join_time 不算成员', async () => {
+  assert.equal((await historyTool({ mode: 'private', chat: privateChat }).tool.execute({ group: '200' })).ok, true)
+  const out = historyTool({ mode: 'private', chat: privateChat, members: [] })
+  assert.equal((await out.tool.execute({ group: '200' })).ok, false)
+  assert.equal(read(out.calls), false)
+})
+
+test('跨群只读（#120）：默认档群里的成员不能看，group 档可以，混着非成员不行', async () => {
+  const a = historyTool({ mode: 'private' })
+  assert.equal((await a.tool.execute({ group: '200' })).ok, false)
+  assert.equal(read(a.calls), false)
+  assert.equal((await historyTool({ mode: 'group' }).tool.execute({ group: '200' })).ok, true)
+  const c = historyTool({ mode: 'group', senders: ['7', '8'], members: ['7'] })
+  assert.equal((await c.tool.execute({ group: '200' })).ok, false)
+  assert.equal(read(c.calls), false)
+  assert.equal((await historyTool({ mode: 'group', senders: [] }).tool.execute({ group: '200' })).ok, false)
+})
+
+test('跨群只读（#120）：白名单外读不到，非主人看不到群名单，主人重名要说清楚', async () => {
+  const a = historyTool({ mode: 'group', owner: true })
+  const out = await a.tool.execute({ group: '999' })
+  assert.equal(out.ok, false)
+  assert.doesNotMatch(out.message, /外面的/)
+  assert.equal(read(a.calls), false)
+  const b = historyTool({ mode: 'group', owner: true })
+  assert.equal((await b.tool.execute({ group: '二群' })).ok, true)
+  assert.equal(b.calls.at(-1)[1].group_id, 300)
+  assert.match((await historyTool({ mode: 'group', owner: true }).tool.execute({ group: '游戏' })).message, /好几个群/)
+  const guest = await historyTool({ mode: 'group' }).tool.execute({ group: '不存在' })
+  assert.doesNotMatch(guest.message, /当前群|游戏群/)
+})
+
+test('跨群只读（#120）：不传 group 时行为不变', async () => {
+  const { tool, calls } = historyTool({ mode: 'off' })
+  const out = await tool.execute({})
+  assert.equal(out.ok, true)
+  assert.doesNotMatch(out.message, /不是指令/)
+  assert.equal(calls[0][1].group_id, 100)
 })

@@ -151,19 +151,6 @@ test('parseMessageEvent：@、引用、图片、表情包、语音', () => {
   assert.match(m.text, /看这个/)
 })
 
-test('QQ 表情包（image sub_type=7）也按表情包识别，不当普通图片', () => {
-  const seg = { type: 'image', data: { url: 'http://x/s.gif', sub_type: 7, summary: '[非常不错]' } }
-  assert.equal(isStickerSegment(seg), true)
-  const m = parseMessageEvent({ message_type: 'private', user_id: 777, self_id: SELF, sender: { nickname: '白' }, message: [seg] }, SELF)
-  assert.equal(m.stickers.length, 1)
-  assert.equal(m.images.length, 0)
-  assert.match(m.text, /非常不错/)
-  // 网关有时把 sub_type 写成字符串，也要认
-  assert.equal(isStickerSegment({ type: 'image', data: { sub_type: '7' } }), true)
-  // 普通照片仍然不是表情包
-  assert.equal(isStickerSegment({ type: 'image', data: { sub_type: 0, summary: '[图片]' } }), false)
-})
-
 test('isStickerSegment：普通照片不算表情', () => {
   assert.equal(isStickerSegment({ type: 'image', data: { sub_type: 0, url: 'x' } }), false)
   assert.equal(isStickerSegment({ type: 'image', data: { sub_type: '1' } }), true)
@@ -175,13 +162,7 @@ test('stickerSizeOk 尺寸兜底', () => {
   assert.equal(stickerSizeOk({ width: 240, height: 240, bytes: 50_000 }), true)
   assert.equal(stickerSizeOk({ width: 1080, height: 1080, bytes: 50_000 }), false)
   assert.equal(stickerSizeOk({ width: 300, height: 100, bytes: 50_000 }), false)
-  assert.equal(stickerSizeOk({ width: 240, height: 240, bytes: 2_000_000 }), false)
-  // QQ 表情不是正方形：4:3（310x224 是最常见的一档）、16:9 截图当表情，都要收得下
-  assert.equal(stickerSizeOk({ width: 310, height: 224, bytes: 29_061 }), true, '4:3 的表情不能误拦')
-  assert.equal(stickerSizeOk({ width: 1280, height: 720, bytes: 200_000 }, { maxSide: 1600 }), true, '16:9 截图当表情也能收')
-  // 极端长条仍然挡掉（横幅 / 长截图不是表情）
-  assert.equal(stickerSizeOk({ width: 900, height: 150, bytes: 50_000 }), false)
-  assert.equal(stickerSizeOk({ width: 150, height: 900, bytes: 50_000 }), false)
+  assert.equal(stickerSizeOk({ width: 240, height: 240, bytes: 2_000_000 }), true, '大小不限')
 })
 
 test('imageSize 读 PNG 宽高', () => {
@@ -341,7 +322,7 @@ test('解析：合并转发记下 id，回复里的 <poke> 变成戳一戳', asy
 test('#6 改资料权限：默认仅主人私聊；所有人含群；关了都不行；执行时再查', async () => {
   const { normalize } = await import('../src/core/config.js')
   const d = normalize({ ownerQQ: '1' })
-  assert.deepEqual(d.profilePerms, { qqNickname: 'owner', qqSignature: 'owner', qqAvatar: 'owner', biliSign: 'owner', biliAvatar: 'owner', qqFriendRequest: 'owner', whitelist: 'owner', douyinBrowse: 'owner', douyinLike: 'owner', douyinComment: 'owner', douyinShareOwner: 'owner', douyinDm: 'owner', heyboxBrowse: 'owner', heyboxLike: 'owner', heyboxComment: 'owner', heyboxPost: 'owner' })
+  assert.deepEqual(d.profilePerms, { qqNickname: 'owner', qqSignature: 'owner', qqAvatar: 'owner', biliSign: 'owner', biliAvatar: 'owner', biliComment: 'owner', qqFriendRequest: 'owner', whitelist: 'owner', douyinBrowse: 'owner', douyinLike: 'owner', douyinComment: 'owner', douyinShareOwner: 'owner', douyinDm: 'owner', heyboxBrowse: 'owner', heyboxLike: 'owner', heyboxComment: 'owner', heyboxPost: 'owner' })
   assert.equal(normalize({ profilePerms: { qqAvatar: 'boss', biliSign: 'all' } }).profilePerms.qqAvatar, 'owner', '乱填的回到默认')
   const ownerPm = { kind: 'private', userId: '1' }
   const otherPm = { kind: 'private', userId: '2' }

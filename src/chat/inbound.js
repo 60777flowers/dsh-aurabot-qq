@@ -15,8 +15,9 @@ export function isStickerSegment(seg) {
   if (seg.type !== 'image') return false
   const d = seg.data
   const sub = String(d.sub_type ?? d.subType ?? '')
-  // 1 = 收藏表情 / 自定义表情；7 = QQ 表情包（网关原样透传，常见于手机端发的表情）
-  if (sub === '1' || sub === '7') return true
+  if (sub === '1') return true
+  // 带文字说明的表情（比如「[啊？]」）是 sub_type 7；只认有说明的，普通图片的说明是「[图片]」
+  if (sub === '7' && d.summary && d.summary !== '[图片]') return true
   if (d.emoji_id || d.emojiId) return true
   return false
 }
@@ -27,7 +28,7 @@ export function isStickerSegment(seg) {
  * @returns {{
  *   kind: 'private'|'group', chatId: string, userId: string, groupId: string,
  *   nickname: string, role: string, messageId: string, text: string,
- *   mentioned: boolean, replyId: string, images: object[], stickers: object[], records: object[],
+ *   mentioned: boolean, replyId: string, images: object[], stickers: object[], records: object[], files: object[],
  * }}
  */
 export function parseMessageEvent(event, selfId, { faceName } = {}) {
@@ -44,6 +45,7 @@ export function parseMessageEvent(event, selfId, { faceName } = {}) {
   const stickers = []
   const records = []
   const forwards = [] // 合并转发的 id
+  const files = []
   for (const seg of segmentsOf(event)) {
     const d = seg.data || {}
     switch (seg.type) {
@@ -84,6 +86,7 @@ export function parseMessageEvent(event, selfId, { faceName } = {}) {
         break
       case 'file':
         texts.push(`[文件 ${d.name || d.file || ''}]`)
+        files.push({ name: String(d.name || d.file || ''), size: Number(d.size ?? d.file_size) || 0, id: String(d.id ?? d.file_id ?? ''), url: String(d.url || ''), hash: String(d.file_hash || ''), busid: Number(d.busid) || 0 })
         break
       case 'json':
         texts.push(cardText(d.data))
@@ -122,20 +125,18 @@ export function parseMessageEvent(event, selfId, { faceName } = {}) {
     stickers,
     records,
     forwards,
+    files,
   }
 }
 
 /** 偷表情的尺寸兜底（拿到字节、宽高之后再判）。 */
 export function stickerSizeOk({ width, height, bytes }, limits = {}) {
   const maxSide = limits.maxSide ?? 520
-  const maxBytes = limits.maxBytes ?? 1.5 * 1024 * 1024
-  if (!(bytes > 0) || bytes > maxBytes) return false
+  if (!(bytes > 0)) return false
   if (!(width > 0) || !(height > 0)) return true // 读不出尺寸就只看体积
   if (width > maxSide || height > maxSide) return false
-  // QQ 表情的形状比"正方形"宽松得多：常见 1:1、4:3（310x224）、3:2，还有拿截图当表情的 16:9。
-  // 这里只挡极端的长条 / 竖条（横幅、长截图那种），别再按 0.75~1.33 卡 —— 那会把正常表情误拦。
   const r = width / height
-  return r >= 0.45 && r <= 2.2
+  return r >= 0.75 && r <= 1.33
 }
 
 /** 从图片字节里读宽高（PNG / GIF / JPEG / WEBP），读不出返回 0。 */
@@ -183,6 +184,14 @@ export function cardText(raw) {
   } catch (error) {
     return '[卡片消息]'
   }
+}
+
+/** GIF 有几帧：数图形控制扩展块，够判断是不是动图。 */
+export function gifFrames(buf) {
+  if (!buf || buf[0] !== 0x47 || buf[1] !== 0x49) return 0
+  let n = 0
+  for (let i = 13; i + 2 < buf.length; i++) if (buf[i] === 0x21 && buf[i + 1] === 0xf9 && buf[i + 2] === 4) n++
+  return n
 }
 
 export function mimeOf(buf) {

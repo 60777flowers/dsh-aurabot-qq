@@ -89,8 +89,8 @@ export function createFakeDsh({ brain }) {
             calls.push({ name, args, result })
             return result
           }
-          const reply = await brain({ preset, text, inputText, images, ctxText, persona, callTool, toolNames: [...tools.keys()] })
-          turns.push({ sessionId, preset, userText: text, inputText, images: images.length, reply, toolCalls: calls, ctxText })
+          const reply = await brain({ preset, text, inputText, images, ctxText, persona, callTool, toolNames: [...tools.keys()], source: msg.source })
+          turns.push({ source: msg.source, sessionId, preset, userText: text, inputText, images: images.length, reply, toolCalls: calls, ctxText })
           emit('session/event', session, { type: 'assistant/message', data: { turn: myTurn, message: { content: [{ type: 'text', text: reply }] } } })
           emit('session/event', session, { type: 'turn/end', data: { turn: myTurn, reason: { kind: 'completed' } } })
         })
@@ -141,8 +141,9 @@ export function createFakeDsh({ brain }) {
     llm: {
       listProviders: () => ['fake'],
       async listModels() { return ['fake-1', 'm-pdef', 'm-gdef', 'm-owner', 'm-g777'].map((id) => ({ id, name: id })) },
-      async *stream() {
-        yield { type: 'text-delta', text: '可爱的小鲸鱼 #开心 #卖萌' }
+      async *stream({ system } = {}) {
+        const text = system?.includes('整理长期记忆') ? '[]' : '可爱的小鲸鱼 #开心 #卖萌'
+        yield { type: 'text-delta', text }
         yield { type: 'finish', reason: { kind: 'stop' } }
       },
     },

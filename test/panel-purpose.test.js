@@ -66,7 +66,7 @@ test('/state 聚合 purpose 字段（独立模块，默认关也不炸）', asyn
   assert.equal(st.purpose.available, true, 'purpose 模块已提供 status()')
   assert.equal(st.purpose.enabled, false, '目的引擎默认关')
   assert.equal(st.purpose.pacing, 'default')
-  assert.equal(st.purpose.dailyMax, 4, 'dailyMax 取自 speakUp.maxPerDay 默认值')
+  assert.equal(st.purpose.dailyMax, 20, 'dailyMax 取自 speakUp.maxPerDay 默认值')
   assert.equal(st.purpose.quietStart, '23:00', '安静时段由醒着窗口 8~23 推算')
   assert.equal(st.purpose.quietEnd, '08:00')
   assert.equal(st.pet, null, '桌宠没装：/state 里是 null')

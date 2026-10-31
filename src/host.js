@@ -22,7 +22,6 @@ import { createHub, workspaceDirOf } from './chat/hub.js'
 import { createLocal, fileOf, toImageBuffer } from './local/local.js'
 import { createGroupRoles } from './chat/group-roles.js'
 import { defaultModel, askModel, modelReasoning, modelVision, clearReasoningCache, clearVisionCache } from './core/llm.js'
-import { setSsrpMode } from './core/net.js'
 import { mimeOf } from './chat/inbound.js'
 import { dataDir, ensureDir } from './core/store.js'
 import { createUpdateChecker, changelogSection } from './core/update.js'
@@ -30,8 +29,11 @@ import { parseCommand, runCommand, createMutes, commandList } from './chat/comma
 import { listPersonas, readPersona, savePersona, deletePersona, currentPersonaText, rulesText, seedPersonas } from './persona/personas.js'
 import { createModules, API_VERSION } from './core/modules.js'
 import { createCommunity } from './core/community.js'
+import { applyPendingRestore, cancelRestore, createBackup, listBackups, pendingModules, pendingRestore, saveUpload, setPendingModules, stageRestore } from './core/backup.js'
+import { cleanText } from './core/text.js'
 import { createBridge } from './core/bridge.js'
 import { createDangerGuard } from './security/danger.js'
+import { setSsrpMode } from './core/net.js'
 import { BUILTINS } from './modules/index.js'
 
 export const name = 'aurabot'
@@ -47,23 +49,18 @@ const PREFIX = '/aurabot/api'
 export function apply(ctx) {
   const logger = createLogger({ dsh: ctx })
   const log = logger.child('core')
-  let disposed = false
-  const delayed = new Set()
-  const later = (fn, ms) => {
-    if (disposed) return
-    const timer = setTimeout(() => { delayed.delete(timer); if (!disposed) fn() }, ms)
-    delayed.add(timer)
-    timer.unref?.()
-  }
+  // 恢复备份必须在读配置之前：读完配置后内存里的旧状态会写回去
+  try {
+    const restored = applyPendingRestore()
+    if (restored) log.info(`已恢复备份：${restored} 个文件，原来的文件在 backups/ 里留了底`)
+  } catch (error) { log.error('恢复备份失败：', error.message) }
   let cfg = loadConfig()
   let mods = null
   let bridge = null
   const getConfig = () => cfg
-  // 面板「安全防护」页选的 SSRF 强度，注入给 core/net（那边是纯工具，不读配置）
   setSsrpMode(() => (getConfig().security && getConfig().security.ssrfMode === 'loose' ? 'loose' : 'strict'))
   const secrets = () => { for (const k of ['webuiPassword', 'httpToken', 'wsToken']) registerSecret(cfg.snowluma[k]); registerSecret(cfg.imageGen.apiKey); registerSecret(cfg.bridge.token) }
   const setConfig = (next) => {
-    if (disposed) throw new Error('Aurabot 插件已卸载')
     const before = cfg
     cfg = saveConfig(next)
     // 改机器人号后旧连接的核对结果立刻失效，必须重新核对才能处理消息或完成向导。
@@ -81,7 +78,7 @@ export function apply(ctx) {
   seedPersonas()
 
   // ---------- 人格与规则：通过提示词变量注入到 Aurabot 的两个 preset ----------
-  const variable = (n, fn) => ctx.effect(() => ctx.systemPrompt.variable(n, fn), `aurabot: 变量 ${n}`)
+  const variable = (n, fn) => ctx.effect(() => ctx.systemPrompt.variable(n, (...args) => cleanText(fn(...args))), `aurabot: 变量 ${n}`)
   const rulesOpts = (kind) => (mods ? { off: mods.builtinOff(), extra: mods.rules(kind) } : {})
   // 扩展模块能整段改写人格和规则（同步：提示词变量不能等）
   const rewrite = (event, text, ...args) => { const r = mods ? mods.filterSync(event, text, ...args) : text; return typeof r === 'string' ? r : r === null ? '' : text }
@@ -124,7 +121,6 @@ export function apply(ctx) {
   let hub = null
   let dangerGuard = null // 危险命令确认（security.dangerConfirm 开着才生效）
   async function checkLogin() {
-    if (disposed) return
     verifying = true
     pendingEvents = []
     try {
@@ -135,15 +131,13 @@ export function apply(ctx) {
       } catch (error) {
         logger.child('onebot').warn('核对登录的 QQ 号失败：', error.message)
       }
-      if (disposed || onebotState !== 'connected') return
+      if (onebotState !== 'connected') return
       if (!uin) {
         // 核对不了就别用，断开后由看门狗重试
         onebot.stop()
         return
       }
-      const confirmed = await snowluma.confirmLogin(uin)
-      if (disposed) return
-      if (confirmed) {
+      if (await snowluma.confirmLogin(uin)) {
         loginOk = true
         wrongAccount = ''
         // 把核对期间攒下的补上（按到达顺序）
@@ -161,7 +155,7 @@ export function apply(ctx) {
   }
   /** 核对通过后的事件都在这里处理（onEvent 直接调，核对期间攒下的也会补到这里）。 */
   function handleEvent(ev) {
-    if (disposed || !hub) return
+    if (!hub) return
     // 模块能看到所有原始事件（加群、撤回、好友申请……），只看不拦
     mods?.emit('onebot', ev)
     if (ev.post_type === 'message' || ev.post_type === 'message_sent') {
@@ -177,13 +171,14 @@ export function apply(ctx) {
       }
     } else if (ev.post_type === 'notice' && ev.notice_type === 'notify' && ev.sub_type === 'poke') {
       hub.onPoke(ev).catch((error) => log.error('处理戳一戳出错：', error.message))
+    } else if (ev.post_type === 'notice' && ev.notice_type === 'group_upload') {
+      hub.onGroupFile(ev).catch((error) => log.error('处理群文件出错：', error.message))
     }
   }
   const onebot = createOneBotClient({
     endpoint,
     log: logger.child('onebot'),
     onState: (s, d) => {
-      if (disposed) return
       onebotState = s
       if (s !== 'connected') { loginOk = false; pendingEvents = [] }
       else checkLogin().catch((error) => log.warn('核对登录号出错：', error.message))
@@ -191,7 +186,6 @@ export function apply(ctx) {
       mods?.emit('onebot/state', s)
     },
     onEvent: (ev) => {
-      if (disposed) return
       // 还没核对是机器人号：核对期间先攒着，核对通过后补处理
       if (!loginOk) {
         if (verifying) {
@@ -213,7 +207,6 @@ export function apply(ctx) {
    * 面板据此把「思考强度」置灰，免得选了之后整轮报错）。
    */
   async function listModels() {
-    if (disposed) return []
     const llm = ctx.llm || ctx.get('llm')
     const out = []
     for (const p of llm.listProviders() || []) {
@@ -225,12 +218,12 @@ export function apply(ctx) {
         }
       } catch (error) {}
     }
-    if (!disposed && out.length) modelCache = out
+    if (out.length) modelCache = out
     return out
   }
   // 最近一次查到的模型列表：按聊天选的模型已经不在 DSH 里了，就退回下一级（同步取，hub 每条消息都要用）
   let modelCache = null
-  later(() => { listModels().catch(() => {}) }, 3000)
+  setTimeout(() => { listModels().catch(() => {}) }, 3000).unref?.()
 
   // 聊天中枢找表情库、语音时，找的是当时在跑的那个模块；模块关着就当没有
   const use = (id) => mods?.use(id) || null
@@ -391,16 +384,20 @@ export function apply(ctx) {
   let unloaded = false
   const community = createCommunity({ mods, getConfig, setConfig, log, version: VERSION, alive: () => !unloaded })
   const booted = mods.boot()
-  booted.then(() => {
-    // 模块初始化可能跨过卸载时刻，结束后仍要撤掉它创建的资源。
-    if (disposed) { mods.dispose(); return }
-    try { injectPetPort() } catch (error) { log.debug('桌宠端口注入失败：', error.message) }
-    bridge.refresh()
-    // 搬到社区库的模块（老用户自动装回）；卸载了就别装
-    if (!unloaded) community.migrate().catch((error) => log.warn('搬到社区库的模块处理失败：', error.message))
-    // 启动时就开着调试的，顺手把调试会话建出来（没建过才会建）
-    if (getConfig().debug) hub.ensureDebugSession().catch((error) => log.warn('建调试会话失败：', error.message))
-  }).catch(() => {})
+  booted.then(() => injectPetPort()).catch(() => {})
+  booted.then(() => { if (getConfig().debug) hub.ensureDebugSession().catch((error) => log.warn('建调试会话失败：', error.message)) }).catch(() => {})
+  booted.then(() => (unloaded ? [] : community.migrate())).catch((error) => log.warn('搬到社区库的模块处理失败：', error.message))
+    .then(async () => {
+      // 恢复备份后把市场模块装回来；没装上的留着，下次启动再试
+      const left = []
+      for (const id of pendingModules()) {
+        if (unloaded) return
+        const r = await community.install(id)
+        if (!r.ok && !/自己的文件夹/.test(r.message)) { left.push(id); log.warn(`恢复模块「${id}」没装上，下次启动再试：`, r.message) }
+      }
+      if (!unloaded) setPendingModules(left)
+    }).catch((error) => log.warn('恢复模块失败：', error.message))
+  booted.then(() => { if (!unloaded) bridge.refresh() })
 
   // ---------- 审批请求：DSH 要授权时把请求发到 QQ ----------
   // 说明：DSH 的批准动作只能由界面回答（host 拿不到应答通道），所以这里只做通知。
@@ -443,51 +440,40 @@ export function apply(ctx) {
 
   // ---------- 启动 / 看门狗 ----------
   async function watchdog() {
-    if (disposed) return
     if (!cfg.enabled) {
       if (onebot.state !== 'stopped') onebot.stop()
       return
     }
     const own = cfg.gateway === 'snowluma' // 接别人的 OneBot 时不启动、不注入 SnowLuma
     const inst = snowluma.detect()
-    if (own && inst.installed && cfg.snowluma.autoStart) {
-      const running = await snowluma.running()
-      if (disposed) return
-      if (!running) {
-        const r = await snowluma.start()
-        if (disposed) { snowluma.dispose(); return }
-        log.info('SnowLuma：', r.message)
-      }
+    if (own && inst.installed && cfg.snowluma.autoStart && !(await snowluma.running())) {
+      const r = await snowluma.start()
+      log.info('SnowLuma：', r.message)
     }
     // 上次连上的不是机器人号：等主人手动点「接入机器人号」或改设置再连
     if (wrongAccount) return
     if (onebot.state === 'stopped') onebot.start()
-    if (own && cfg.snowluma.autoAttach && cfg.snowluma.webuiPassword && onebotState !== 'connected') {
-      const running = await snowluma.running()
-      if (disposed || !running) return
+    if (own && cfg.snowluma.autoAttach && cfg.snowluma.webuiPassword && onebotState !== 'connected' && (await snowluma.running())) {
       const last = snowluma.lastAttach
       if (Date.now() - last.at > 60_000) {
         const r = await snowluma.attachBot()
-        if (disposed) return
         log.info('接入机器人号：', r.message)
       }
     }
   }
-  const safe = (fn, label) => () => { Promise.resolve().then(() => { if (!disposed) return fn() }).catch((error) => { if (!disposed) log.warn(`${label}出错：`, error.message) }) }
+  const safe = (fn, label) => () => { Promise.resolve().then(fn).catch((error) => log.warn(`${label}出错：`, error.message)) }
   ctx.effect(() => ctx.interval(safe(watchdog, '看门狗'), 30_000), 'aurabot: 看门狗')
-  later(safe(watchdog, '看门狗'), 3000)
+  const firstWatch = setTimeout(safe(watchdog, '看门狗'), 3000)
+  firstWatch.unref?.()
   ctx.effect(() => () => {
-    if (disposed) return
-    disposed = true
     unloaded = true
-    for (const timer of delayed) clearTimeout(timer)
-    delayed.clear()
-    pendingEvents = []
-    verifying = false
-    loginOk = false
-    for (const cleanup of [() => dangerGuard?.dispose(), () => hub.dispose(), () => bridge.dispose(), () => mods.dispose(), () => onebot.stop(), () => snowluma.dispose()]) {
-      try { cleanup() } catch (error) { log.warn('卸载清理失败：', error.message) }
-    }
+    clearTimeout(firstWatch)
+    dangerGuard?.dispose()
+    hub.dispose()
+    bridge.dispose()
+    mods.dispose()
+    onebot.stop()
+    snowluma.dispose()
   }, 'aurabot: 收尾')
 
   // ---------- 面板接口 ----------
@@ -595,15 +581,13 @@ export function apply(ctx) {
     if (changedModel) { clearReasoningCache(); clearVisionCache() }
     if (changedConn || before.botQQ !== cfg.botQQ) wrongAccount = ''
     if (changedConn && onebot.state !== 'stopped') onebot.restart()
-    if (!before.enabled && cfg.enabled) later(safe(watchdog, '看门狗'), 100)
+    if (!before.enabled && cfg.enabled) setTimeout(safe(watchdog, '看门狗'), 100)
     if (before.enabled && !cfg.enabled) onebot.stop()
     log.info(`设置已保存｜总开关 ${cfg.enabled ? '开' : '关'}｜试运行 ${cfg.dryRun && !cfg.debug ? '开' : '关'}｜调试 ${cfg.debug ? '开' : '关'}`)
     await mods.sync().catch(() => {})
-    // 模块启停 / 生图开关变化后工具清单可能变了：已挂载的会话重新挂一遍，
-    // 这样在 DSH 会话窗口直接打字（不触发 mount）也能立刻用上新工具 / 去掉旧工具。
+    // 模块启停 / 生图开关变化后工具清单可能变了：已挂载的会话重新挂一遍
     try { hub.remountAll?.('设置已保存') } catch (error) { log.debug('重挂工具失败：', error.message) }
     if (pw && !pw.ok) return { ...(await overview()), ok: false, message: '其他设置保存了，但控制台密码没改：' + pw.message }
-    // 一开调试就把主人私聊的调试会话建出来，省得你还得先发条 QQ 消息才有会话说
     let debugNote = ''
     if (cfg.debug) {
       try {
@@ -616,7 +600,6 @@ export function apply(ctx) {
     return { ...(await overview()), message: '保存好了' + (pw ? '，' + pw.message : '') + debugNote }
   })
 
-  // 手动把调试会话建出来（默认一开调试就自动建，这个是为了重开面板后能再确认一次）
   route('/debug/session', async () => {
     try {
       return await hub.ensureDebugSession()
@@ -625,7 +608,6 @@ export function apply(ctx) {
     }
   })
 
-  // 面板里的调试对话：不经过 QQ，也不进记忆
   route('/debug/say', async (req) => {
     const b = await readBody(req)
     try {
@@ -680,6 +662,8 @@ export function apply(ctx) {
       // 面板口径：间隔 1~9999 分钟、每日上限 0~9999 次（0 = 不发）
       if (Number.isFinite(b[k])) patch[k] = k === 'whisperMaxPerDay' ? Math.min(9999, Math.max(0, Math.floor(b[k]))) : Math.min(9999, Math.max(1, Math.floor(b[k])))
     }
+    // 人物大小倍率：0.5~2.0，步进 0.05；坏值忽略（别把桌宠缩没了）
+    if (Number.isFinite(b.petScale)) patch.petScale = Math.min(2, Math.max(0.5, Math.round(b.petScale * 20) / 20))
     if (typeof b.whisperLines === 'string') patch.whisperLines = b.whisperLines.slice(0, 4000)
     // 素材包下载地址：内建模块的 settings 字段不渲染成表单（同上），这里是它唯一的写入通道。
     // 只收 http/https（或空 = 回到内置默认），别把 file:// 之类塞进来当下载源
@@ -855,7 +839,7 @@ export function apply(ctx) {
   })
   route('/commands', async () => ({ ok: true, list: commandList(mods.commands()) }))
   // 更新：检查 GitHub 上有没有新版本；这次更新了什么
-  const checkUpdate = createUpdateChecker({ pkg: PKG, log })
+  const checkUpdate = createUpdateChecker({ pkg: PKG, log, unstable: () => getConfig().update.unstable })
   route('/update/check', async (req) => checkUpdate({ force: query(req).force === '1' }))
   route('/changelog', async () => {
     let text = ''
@@ -1009,6 +993,33 @@ export function apply(ctx) {
       child.once('spawn', () => { child.unref(); resolve({ ok: true, message: '打开了' }) })
     })
   }
+  // 备份：文件里有账号凭证，只存在本机文件夹，不提供网页下载
+  let backupJob = null // { running, done, total, error, result }
+  const backupAction = (run) => async (req) => {
+    if (req.method !== 'POST' || req.headers?.['x-aurabot-backup'] !== '1') return { ok: false, message: '请从面板发起操作' }
+    return run(req)
+  }
+  route('/backup/state', async () => ({ ok: true, job: backupJob, list: listBackups(), pending: pendingRestore(), modules: pendingModules(), dir: dataDir('backups') }))
+  route('/backup/create', backupAction(async () => {
+    if (backupJob?.running) return { ok: false, message: '上一个备份还在打包' }
+    backupJob = { running: true, done: 0, total: 0 }
+    createBackup({ version: VERSION, workspaceDir: workspaceDirOf(getConfig()), onProgress: (p) => { backupJob = { ...backupJob, ...p } } })
+      .then((result) => { backupJob = { running: false, result }; log.info(`备份完成：${result.name}，${result.files} 个文件`) })
+      .catch((error) => { backupJob = { running: false, error: error.message }; log.error('备份失败：', error.message) })
+    return { ok: true, message: '开始打包了' }
+  }))
+  route('/backup/open', backupAction(async () => openFolder(dataDir('backups'))))
+  route('/backup/upload', backupAction(async (req) => {
+    const buf = await readRaw(req, 2 * 1024 * 1024 * 1024 - 1)
+    if (!buf.length) return { ok: false, message: '文件是空的' }
+    try { return await stageRestore(await saveUpload(buf)) } catch (error) { return { ok: false, message: error.message } }
+  }))
+  route('/backup/restore-path', backupAction(async (req) => {
+    const path = String((await readBody(req)).path || '').trim().replace(/^"|"$/g, '')
+    if (!path) return { ok: false, message: '填备份文件的完整路径' }
+    try { return await stageRestore(path) } catch (error) { return { ok: false, message: error.message } }
+  }))
+  route('/backup/cancel', backupAction(async () => { cancelRestore(); return { ok: true, message: '取消了' } }))
   route('/local/status', async () => ({ ok: true, dir: local.dir(), list: local.status() }))
   route('/local/template', async (req) => {
     const slot = String((await readBody(req)).slot || '')
@@ -1039,6 +1050,10 @@ export function apply(ctx) {
   route('/modules/community', async (req) => {
     try { return { ok: true, ...(await community.list({ force: query(req).force === '1' })) } } catch (error) { return { ok: false, message: error.message, list: [] } }
   })
+  route('/modules/tutorial', async () => {
+    try { return { ok: true, text: readFileSync(join(ROOT, 'docs', 'MODULE-TUTORIAL.md'), 'utf8') } } catch (error) { return { ok: false, message: '教程文件不见了' } }
+  })
+  route('/modules/community/progress', async () => ({ ok: true, progress: community.progress() }))
   route('/modules/community/install', async (req) => {
     const b = await readBody(req)
     return { ...(await community.install(String(b.id || ''), { confirmReplace: b.confirmReplace === true })), modules: mods.status() }

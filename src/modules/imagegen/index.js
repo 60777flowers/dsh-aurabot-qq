@@ -61,7 +61,7 @@ export default {
 
     // 生图模块开着就把工具挂上；「没开启 / 没填地址 / Codex 没登录」在执行时再如实提示。
     // 不能按登录状态决定挂不挂：Codex 订阅常是「先开会话、后登录」，那样工具会缺失（unknown tool）。
-    api.tool(({ chat, sessionId }) => (((api.config().imageGen.enabled || local?.active('image')) && chat.kind !== 'system') ? defineTool({
+    api.tool(({ chat, sessionId }) => ((api.config().imageGen.enabled && chat.kind !== 'system') ? defineTool({
       name: 'qq_draw_image',
       description: '画一张图并发到当前 QQ 聊天里。prompt 详细描述画面，shape 可按用途选择方图、竖图、横图或宽幅；不填就沿用面板默认构图 / 图片尺寸。画好会直接发出去，并给你一个画作编号（换头像、收成表情时用这个编号）。回复里简单说一句就行。',
       properties: {

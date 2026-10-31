@@ -2,6 +2,7 @@
 
 import { dataDir, readJson, writeJson } from '../core/store.js'
 import { askModel } from '../core/llm.js'
+import { cleanText, clipText } from '../core/text.js'
 
 // ---------------- 心情 ----------------
 // 0~100，基线 60。聊天里的话按关键词推一推，随时间按半衰期回到基线。
@@ -88,6 +89,7 @@ export function createMood({ getConfig, dsh, log }) {
     const before = current()
     s.value = Math.max(5, Math.min(100, before + d))
     s.at = Date.now()
+    reason = cleanText(reason)
     s.reason = reason
     // 保留 200 条：20 条只够两小时，出问题查不到原因（实测需要回溯半天以上）
     s.history = [{ at: Date.now(), from: before, to: Math.round(s.value), reason }, ...(s.history || [])].slice(0, 200)
@@ -109,7 +111,7 @@ export function createMood({ getConfig, dsh, log }) {
       const d0 = scoreText(text)
       if (!d0) return
       const d = Math.round(d0 * (direct ? 1 : 0.3) * (owner ? 1.5 : 1))
-      nudge(d, `${who || '有人'}说「${String(text).slice(0, 20)}」`)
+      nudge(d, `${who || '有人'}说「${clipText(text, 20)}」`)
     },
     /**
      * 模型判心情（可选）：一轮聊完，看「对方说的 + 她回的」判断心情往哪走。没把握的（confidence < 0.6）不算。
@@ -145,7 +147,7 @@ export function createMood({ getConfig, dsh, log }) {
       const label = moodLabel(v)
       const style = MOOD_STYLE[label]
       if (!style) return ''
-      return `（你现在${label}${s.reason ? '，因为' + s.reason : ''}。这会自然地影响你说话：${style}。不用说出来自己心情如何。）`
+      return `（你现在${label}${s.reason ? '，因为' + cleanText(s.reason) : ''}。这会自然地影响你说话：${style}。不用说出来自己心情如何。）`
     },
   }
 }
@@ -189,11 +191,47 @@ export function createSpeakUp({ getConfig, hub, log, isMuted }) {
     await hub.pushToSession({ chatId: `private:${cfg.ownerQQ}`, kind: 'private', userId: cfg.ownerQQ, nickname: owner }, [{ type: 'text', text: prompt }], '')
   }
 
+  /** 找白名单里的人：不提主人的事，这是她和对方自己的聊天。 */
+  async function fireFriend(qq) {
+    const idle = Math.round((Date.now() - (hub.lastPrivateAt?.(qq) || 0)) / 60000)
+    const angle = ANGLES[Math.floor(Math.random() * ANGLES.length)]
+    const prompt = `【系统提醒，不是对方说的话】你已经 ${idle > 600 ? '很久' : idle + ' 分钟'}没和这位朋友私聊了，想主动找对方说点什么。这次的由头：${angle}。只说你和对方之间的事，别提主人或别人的私事。`
+    log.info(`主动搭话（白名单 ${qq}）`)
+    await hub.pushToSession({ chatId: `private:${qq}`, kind: 'private', userId: qq, nickname: qq }, [{ type: 'text', text: prompt }], '')
+  }
+
+  /** 白名单：每人单独算次数和间隔，一分钟最多找一个人，不一口气群发。 */
+  async function tickFriends(cfg, s) {
+    const c = cfg.speakUp
+    const h = new Date().getHours()
+    if (!(h >= c.awakeFrom && h < c.awakeTo)) return false
+    const today = new Date().toDateString()
+    s.friends = s.friends || {}
+    for (const qq of c.allow || []) {
+      if (qq === String(cfg.ownerQQ) || isMuted?.(`private:${qq}`)) continue
+      const f = s.friends[qq] || (s.friends[qq] = {})
+      if (f.day !== today) Object.assign(f, { day: today, count: 0 })
+      if (!f.nextAt) schedule(f, c)
+      if (Date.now() - (hub.lastPrivateAt?.(qq) || 0) > c.idleMinutes * 60_000 && f.count < c.maxPerDay && Date.now() >= f.nextAt) {
+        f.count++
+        schedule(f, c)
+        save(s)
+        await fireFriend(qq)
+        return true
+      }
+    }
+    return false
+  }
+
   async function tick() {
     const cfg = getConfig()
     const c = cfg.speakUp
     if (!cfg.enabled || !c.enabled) return
-    if (isMuted?.(`private:${cfg.ownerQQ}`)) return // 主人在私聊里让她闭嘴了
+    if (isMuted?.(`private:${cfg.ownerQQ}`)) { // 主人在私聊里让她闭嘴了：只管主人这边，白名单照旧
+      const s = load()
+      if (!(await tickFriends(cfg, s))) save(s)
+      return
+    }
     const s = load()
     const today = new Date().toDateString()
     if (s.day !== today) Object.assign(s, { day: today, count: 0 })
@@ -218,7 +256,7 @@ export function createSpeakUp({ getConfig, hub, log, isMuted }) {
       await fire()
       return
     }
-    save(s)
+    if (!(await tickFriends(cfg, s))) save(s)
   }
 
   return { tick, fire, state: load }
