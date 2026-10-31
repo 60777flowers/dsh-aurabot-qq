@@ -99,6 +99,12 @@ export function search(idx, query, o = {}) {
   return scored.filter((x) => x.score >= (o.minScore ?? 0.35)).slice(0, o.limit ?? 6)
 }
 
+/** 「私人记忆」：关于某个人的，或她自己 / 主人手动记的；B站、桌宠、空间日记等经历不算。 */
+export function isPersonalMemory(it) {
+  if (!it) return false
+  return Boolean(it.about) || ['tool', 'auto', 'import', 'manual', 'diary'].includes(it.source)
+}
+
 /** 「刚才」「3 小时前」「昨天」这样的说法。 */
 export function agoText(at, now = Date.now()) {
   const m = Math.max(0, Math.round((now - at) / 60000))
@@ -318,17 +324,27 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
   }
 
   const recallLog = [] // 最近几次想起了什么（给面板看）
-  function recall(query, { about, limit, where = '', context = '', onlyAbout } = {}) {
+  function recall(query, { about, limit, where = '', context = '', onlyAbout, preferPersonal } = {}) {
     const max = limit ?? getConfig().memory.recallCount
-    const hits = search(index(), query, { about, limit: max, onlyAbout })
+    const prefer = preferPersonal ?? (getConfig().memory?.preferPersonal !== false)
+    const take = prefer ? Math.max(max, 1) * 4 : max
+    // 私人记忆优先只改排序：先放「关于人 / 她自己记的」，剩下的按相关度补满，不降低召回量。
+    const pick = (list) => {
+      if (!prefer) return list.slice(0, max)
+      const personal = list.filter((h) => isPersonalMemory(h.it))
+      const other = list.filter((h) => !isPersonalMemory(h.it))
+      return [...personal, ...other].slice(0, max)
+    }
+    let hits = pick(search(index(), query, { about, limit: take, onlyAbout }))
     // 这一句没想起几条（「嗯嗯」「然后呢」）：用上一句再找找，分数打折
     if (context && hits.length < max) {
       const have = new Set(hits.map((h) => h.it.id))
-      for (const h of search(index(), context, { about, limit: max, minScore: 0.5, onlyAbout })) {
+      for (const h of pick(search(index(), context, { about, limit: take, minScore: 0.5, onlyAbout }))) {
         if (hits.length >= max) break
         if (!have.has(h.it.id)) hits.push({ ...h, score: h.score * 0.6, why: [...(h.why || []), '（上一句）'] })
       }
     }
+    hits = pick(hits)
     recallLog.unshift({ at: Date.now(), where, query: String(query).slice(0, 120), hits: hits.map((h) => ({ id: h.it.id, text: h.it.text, score: Number(h.score.toFixed(2)), why: h.why || [] })) })
     recallLog.length = Math.min(recallLog.length, 20)
     if (hits.length) {
@@ -497,11 +513,11 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
     // 内容一变就多一份快照；放在用户消息里（recallHint）只占当轮，不会越滚越大。
     // 兜底字数上限：各段条数都有上限（相处经验 8 条、说话方式按 key 限条），但单条长度没有约束，
     // 长期相处这段会慢慢变长，而它每轮都进上下文。超了从尾部截断，宁可少一句也不无声膨胀。
-    const RESIDENT_MAX_CHARS = 600
+    const residentMax = Math.min(4000, Math.max(200, Number(getConfig().memory?.residentMaxChars) || 1200))
     let resident = parts.join('\n')
-    if (resident.length > RESIDENT_MAX_CHARS) {
-      resident = resident.slice(0, RESIDENT_MAX_CHARS) + '…'
-      log.debug(`常驻记忆超长，已截断到 ${RESIDENT_MAX_CHARS} 字`)
+    if (resident.length > residentMax) {
+      resident = resident.slice(0, residentMax) + '…'
+      log.debug(`常驻记忆超长，已截断到 ${residentMax} 字`)
     }
     return resident
   }

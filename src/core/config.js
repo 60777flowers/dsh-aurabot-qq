@@ -210,7 +210,7 @@ export const DEFAULTS = {
   },
   mood: { enabled: true, halfLifeHours: 3, judge: false, base: 60 }, // base：心情基线（0~100 里算「平常」的那个值）；judge：每轮聊完用模型判一次心情（更准，每轮多一次很短的调用）；关着用关键词
   chat: { seedHistory: false, seedHistoryCount: 20 }, // seedHistory：新会话第一次说话时先补最近几条历史（默认关）
-  memory: { enabled: true, recallCount: 6, dailyConsolidate: true, consolidateTimes: ['04:00', '16:00'], keepChatlogDays: 0, mergeGroups: false }, // keepChatlogDays：聊天流水保留（0 = 整理完就删，-1 = 永久，N = 留 N 天）；mergeGroups：整理时把同一个人名下的重复条目合并（默认关，每组多一次模型调用）；consolidateTimes：每天这几个时间把临时记忆整理进长期记忆、相处经验和说话方式
+  memory: { enabled: true, recallCount: 6, dailyConsolidate: true, consolidateTimes: ['04:00', '16:00'], keepChatlogDays: 0, mergeGroups: false, residentMaxChars: 1200, preferPersonal: true }, // residentMaxChars：每轮常驻记忆最多多少字（默认 1200）；preferPersonal：相关记忆里优先带关于人的记忆，而不是 B站/日记这类经历
   song: {
     enabled: false,
     root: '', // 翻唱环境目录，留空 = 自动（老安装 C:\Aurabot\rvc，新安装在用户目录下）
@@ -414,6 +414,8 @@ export function normalize(raw) {
   c.memory.recallCount = num(c.memory.recallCount, 6, 0, 20)
   c.memory.keepChatlogDays = num(c.memory.keepChatlogDays, 0, -1, 3650)
   c.memory.mergeGroups = bool(c.memory.mergeGroups, false)
+  c.memory.residentMaxChars = num(c.memory.residentMaxChars, 1200, 200, 4000)
+  c.memory.preferPersonal = bool(c.memory.preferPersonal, true)
   g.interests = (Array.isArray(g.interests) ? g.interests : String(g.interests || '').split(/[\s,，]+/)).map((s) => String(s).trim()).filter(Boolean)
   g.minRelevance = num(g.minRelevance, 0.25, 0, 1)
   // @ 了别人时不算叫她（只挡必回，仍然可以插话）；默认关，保持原行为
