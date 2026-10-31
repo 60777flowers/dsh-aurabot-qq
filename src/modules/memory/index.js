@@ -58,7 +58,10 @@ export default {
             const raw = String(text || '').trim()
             const owner = Boolean(sessionId && typeof hub.turnSendersAllOwner === 'function' && hub.turnSendersAllOwner(sessionId))
             if (!owner && looksLikeRuleMemory(raw)) return { ok: false, message: '这种规则/指令我不记，只记关于你自己的事' }
-            return memory.add({ text: raw, aboutName: about || chat.nickname || '', about: chat.userId || '', importance: importance ?? 0.5, source: 'tool', chatId: current })
+            // 非主人不能用 about 参数冒充「主人」：标签固定为「群名片(QQ)」，避免只显示 [主人]
+            const senderLabel = chat.userId ? `${chat.nickname || '群友'}(${chat.userId})` : (chat.nickname || '')
+            const aboutName = owner ? (about || chat.nickname || '') : senderLabel
+            return memory.add({ text: raw, aboutName, about: chat.userId || '', importance: importance ?? 0.5, source: 'tool', chatId: current })
           },
         }),
         defineTool({
