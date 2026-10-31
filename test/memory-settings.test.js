@@ -33,13 +33,18 @@ test('常驻记忆按面板上限截断，默认比旧的 600 更宽', () => {
   assert.ok(ctx.endsWith('…'))
 })
 
-test('私人记忆优先：B站事件分高也会让关于人的记忆先被想起，关掉后按纯相关度', () => {
+test('私人记忆优先：没在问 B站时先私人；问具体 B站视频仍以视频为准', () => {
   const mem = store(mk({ preferPersonal: true }))
   mem.add({ text: '白恒aead和白米饭约定：晚上吃白米饭', about: owner, aboutName: '白恒aead', source: 'auto', importance: 1 })
   mem.add({ text: '在B站看了《白米饭的一百种做法》视频，做法很简单', source: 'event', importance: 1 })
 
-  const on = mem.recall('B站 视频 做法', { about: owner, limit: 3 })
-  assert.match(on[0].it.text, /约定/)
-  const off = mem.recall('B站 视频 做法', { about: owner, limit: 3, preferPersonal: false })
+  // 模糊问题：私人记忆先出来
+  const vague = mem.recall('你还记得我们之前说好什么吗', { about: owner, limit: 2 })
+  assert.match(vague[0].it.text, /约定/)
+
+  // 明确问 B站视频：相关度高的视频仍然优先，不被私人记忆无条件压过
+  const bili = mem.recall('B站 视频 做法', { about: owner, limit: 2 })
+  assert.match(bili[0].it.text, /B站看了/)
+  const off = mem.recall('B站 视频 做法', { about: owner, limit: 2, preferPersonal: false })
   assert.match(off[0].it.text, /B站看了/)
 })

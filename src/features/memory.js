@@ -92,7 +92,10 @@ export function search(idx, query, o = {}) {
     const aboutHit = Boolean(it.about) && aboutSet.has(String(it.about))
     if (s <= 0 && !aboutHit) continue
     const importance = 0.6 + 0.8 * (Number(it.importance) || 0.5)
-    const score = (s + (aboutHit ? 0.8 : 0)) * importance * (0.55 + 0.45 * retention(it, now))
+    let score = (s + (aboutHit ? 0.8 : 0)) * importance * (0.55 + 0.45 * retention(it, now))
+    // 私人记忆优先是「相关度接近时优先」，不是无条件压过更相关的 B站/经历；
+    // 这样问「B站视频」时仍先想起视频，问「你还记得我吗」时先想起人。
+    if (o.preferPersonal && isPersonalMemory(it)) score *= 1.4
     scored.push({ it, score, why: why.sort((x, y) => y[1] - x[1]).slice(0, 3).map((w) => w[0]).concat(aboutHit ? ['（关于这个人）'] : []) })
   }
   scored.sort((x, y) => y.score - x.score)
@@ -104,6 +107,9 @@ export function isPersonalMemory(it) {
   if (!it) return false
   return Boolean(it.about) || ['tool', 'auto', 'import', 'manual', 'diary'].includes(it.source)
 }
+
+/** 这句话明显在问 B站 / 视频 / 最近看了什么：这时不该让私人记忆抢在前面。 */
+const EVENT_QUERY = /(B站|b站|视频|看了|看过|刷到|番剧|番|电影|直播|UP主|弹幕|做法|教程|音乐|歌曲|唱歌|抖音|空间|日记)/i
 
 /** 「刚才」「3 小时前」「昨天」这样的说法。 */
 export function agoText(at, now = Date.now()) {
@@ -326,9 +332,10 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
   const recallLog = [] // 最近几次想起了什么（给面板看）
   function recall(query, { about, limit, where = '', context = '', onlyAbout, preferPersonal } = {}) {
     const max = limit ?? getConfig().memory.recallCount
-    const prefer = preferPersonal ?? (getConfig().memory?.preferPersonal !== false)
+    const prefer = (preferPersonal ?? (getConfig().memory?.preferPersonal !== false)) && !EVENT_QUERY.test(String(query || ''))
     const take = prefer ? Math.max(max, 1) * 4 : max
-    // 私人记忆优先只改排序：先放「关于人 / 她自己记的」，剩下的按相关度补满，不降低召回量。
+    // 私人记忆优先只在「没在问 B站/视频/最近看了什么」时把关于人的记忆提前；
+    // 明确问视频时仍按相关度，B站记忆不会被挤掉。
     const pick = (list) => {
       if (!prefer) return list.slice(0, max)
       const personal = list.filter((h) => isPersonalMemory(h.it))
