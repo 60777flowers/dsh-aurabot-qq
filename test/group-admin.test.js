@@ -18,7 +18,7 @@ function boot ({ ownerTurn = true, dryRun = false } = {}) {
   })
   const api = {
     core: {
-      hub: { turnHasOwner: () => ownerTurn, groupName: async () => '测试群' },
+      hub: { turnHasOwner: () => ownerTurn, turnSendersAllOwner: () => ownerTurn, groupName: async () => '测试群' },
       onebot: { call: async (action, params) => { calls.push({ action, params }); return {} } },
       groupRoles: { peek: () => 'owner', get: async () => 'owner', canManage: () => true, label: () => '群主' },
     },

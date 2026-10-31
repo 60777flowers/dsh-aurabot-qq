@@ -273,7 +273,7 @@ test('B 站模块：截图库路由预览 / 删除、工具固定发当前会话
     config: () => cfg, lazy: () => null, log: { info() {}, warn() {}, debug() {} },
     on() {}, every() {}, tool: (build) => builders.push(build), route: (p, handler) => routes.set(p, handler),
     core: {
-      hub: { sendImage: async (chatId, src) => { sent.push({ chatId, src }); return { message_id: 8 } }, turnHasOwner: () => true },
+      hub: { sendImage: async (chatId, src) => { sent.push({ chatId, src }); return { message_id: 8 } }, turnHasOwner: () => true, turnSendersAllOwner: () => true },
       http: { query: (req) => req.query, body: async (req) => req.body, send: (_res, status, body, type) => ({ status, body, type }) },
     },
   }

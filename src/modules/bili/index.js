@@ -43,7 +43,7 @@ export default {
           properties: { link: str('B 站链接或 BV 号'), text: str('评论内容') },
           required: ['link', 'text'],
           execute: async ({ link, text }) => {
-            if (!hub.turnHasOwner(sessionId)) return { ok: false, message: '只有主人能让我去发评论' }
+            if (!hub.turnSendersAllOwner(sessionId)) return { ok: false, message: '只有主人能让我去发评论' }
             return bili.comment(String(link || ''), String(text || ''))
           },
         }),
@@ -54,7 +54,7 @@ export default {
           properties: { query: str('可选：视频标题关键词，或想看的内容') },
           required: [],
           execute: async ({ query }) => {
-            if (!hub.turnHasOwner(sessionId)) return { ok: false, message: '截图只给主人看' }
+            if (!hub.turnSendersAllOwner(sessionId)) return { ok: false, message: '截图只给主人看' }
             return bili.sendShot({ chatId: chat.chatId, query: String(query || '') })
           },
         }),
@@ -64,7 +64,7 @@ export default {
           properties: { query: str('可选，按视频标题筛选') },
           required: [],
           execute: async ({ query }) => {
-            if (!hub.turnHasOwner(sessionId)) return { ok: false, message: '截图只给主人看' }
+            if (!hub.turnSendersAllOwner(sessionId)) return { ok: false, message: '截图只给主人看' }
             return bili.listShots(String(query || ''))
           },
         }),

@@ -59,8 +59,8 @@ export default {
             if (!item) return { ok: false, message: '表情库里没找到这张' }
             const label = item.name || item.md5.slice(0, 8)
             if (del) {
-              // 删表情一律要主人发话：表情库里可能有别人发过的，不能让人用一句话清空
-              if (!hub.turnHasOwner(sessionId)) return { ok: false, message: '删表情要主人发话' }
+              // 删表情一律要主人单独发话：同轮混进别人就不能借主人的在场删库
+              if (!hub.turnSendersAllOwner(sessionId)) return { ok: false, message: '删表情要主人发话' }
               const r = await store.remove(item.md5)
               return r.ok ? { ok: true, message: `删掉了「${label}」` } : { ok: false, message: r.reason || '没删成' }
             }
@@ -136,7 +136,7 @@ export default {
           painting: str('画作编号（如 #1）：存你自己刚画的图时填'),
         },
         execute: async ({ name, tags, painting }) => {
-          if (!hub.turnHasOwner(sessionId)) return { ok: false, message: '只有主人能让我存表情' }
+          if (!hub.turnSendersAllOwner(sessionId)) return { ok: false, message: '只有主人能让我存表情' }
           let buf
           if (painting) {
             const p = resolvePainting(current, painting)
@@ -163,7 +163,7 @@ export default {
         name: 'qq_import_qq_stickers',
         description: '把你 QQ「我喜欢的」收藏里已有的表情全部导进表情库（已经有的跳过），之后就能用 <sticker:名字> 发它们。主人让你「导入收藏的表情」「同步一下 QQ 表情」时用。',
         execute: async () => {
-          if (!hub.turnHasOwner(sessionId)) return { ok: false, message: '只有主人能让我导入收藏的表情' }
+          if (!hub.turnSendersAllOwner(sessionId)) return { ok: false, message: '只有主人能让我导入收藏的表情' }
           return store.importFromQQ()
         },
       }))

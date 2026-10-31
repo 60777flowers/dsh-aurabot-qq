@@ -1,4 +1,4 @@
-﻿// 内置模块：群管。主人开口时禁言、解禁、踢人、改头衔、发公告；她知道自己在每个群是什么身份。
+// 内置模块：群管。主人开口时禁言、解禁、踢人、改头衔、发公告；她知道自己在每个群是什么身份。
 
 import { defineTool, str, int } from '../../tools/tools.js'
 
@@ -33,8 +33,8 @@ export default {
         },
         required: ['action'],
         execute: async ({ action, group_id, user_id, minutes, text }) => {
-          // 这一轮里主人说过话才行；群里别人顺带插话不影响，但谁都不能拿群管对付主人
-          if (!hub.turnHasOwner(sessionId)) return { ok: false, message: '只有主人能让我做群管操作' }
+          // 必须是主人单独发话：同轮只要混进别人，就不能拿群管去对付人
+          if (!hub.turnSendersAllOwner(sessionId)) return { ok: false, message: '只有主人能让我做群管操作' }
           const cfg = api.config()
           const gid = Number(group_id || (chat.kind === 'group' ? chat.groupId : 0))
           if (!gid) return { ok: false, message: '不知道是哪个群' }
