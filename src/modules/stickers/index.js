@@ -59,8 +59,8 @@ export default {
             if (!item) return { ok: false, message: '表情库里没找到这张' }
             const label = item.name || item.md5.slice(0, 8)
             if (del) {
-              // 主人亲手加的表情，主人开口才删
-              if ((item.from === 'manual' || item.from === 'panel') && !hub.turnHasOwner(sessionId)) return { ok: false, message: '这张是主人加的，主人说删才删' }
+              // 删表情一律要主人发话：表情库里可能有别人发过的，不能让人用一句话清空
+              if (!hub.turnHasOwner(sessionId)) return { ok: false, message: '删表情要主人发话' }
               const r = await store.remove(item.md5)
               return r.ok ? { ok: true, message: `删掉了「${label}」` } : { ok: false, message: r.reason || '没删成' }
             }

@@ -293,8 +293,8 @@ test('人物小档案：按这个人的记忆写，聊天时常驻；群里带�
   const g = mem.contextFor({ kind: 'group', groupId: '7', chatId: 'group:7' }, 's7')
   assert.match(g, /你对正在说话的人的印象：小明——小明是主人/)
   assert.equal(await mem.buildProfile('99999999'), false, '记忆太少不写')
-  hubState.speakers = []
   hubState.text = ''
+  hubState.speakers = []
 })
 
 test('短句（「嗯嗯」）想不起东西时，连上一句一起找', () => {
@@ -305,10 +305,13 @@ test('短句（「嗯嗯」）想不起东西时，连上一句一起找', () =>
   assert.ok(mem.recalls()[0].hits.some((h) => h.why.includes('（上一句）')))
   hubState.text = ''
   hubState.prev = ''
+  hubState.speakers = []
 })
 
 test('相关记忆提示有长度上限（#79：上下文增长优化）', () => {
   for (let i = 0; i < 20; i++) mem.add({ text: '测试记忆第' + i + '条，内容是阿花喜欢的东西和周末计划', about: '30000003', aboutName: '阿花', importance: 0.5, source: 'tool' })
+  hubState.speakers = ['30000003']
   const hint = mem.recallHint({ kind: 'group', groupId: '555', chatId: 'group:555' }, '阿花喜欢什么 周末计划')
   assert.ok(hint.length > 0 && hint.length <= 350, 'hint 长度 ' + hint.length)
+  hubState.speakers = []
 })

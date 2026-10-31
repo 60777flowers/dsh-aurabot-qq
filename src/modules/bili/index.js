@@ -53,14 +53,20 @@ export default {
           description: '把你在 B 站视频里截到的画面发到当前聊天。主人说「发张截图」「给我看看你刷到的」「刚才那个视频长啥样」这类话时用。query 填视频标题里的词或想看的内容，不填就挑最近的一张。',
           properties: { query: str('可选：视频标题关键词，或想看的内容') },
           required: [],
-          execute: async ({ query }) => bili.sendShot({ chatId: chat.chatId, query: String(query || '') }),
+          execute: async ({ query }) => {
+            if (!hub.turnHasOwner(sessionId)) return { ok: false, message: '截图只给主人看' }
+            return bili.sendShot({ chatId: chat.chatId, query: String(query || '') })
+          },
         }),
         defineTool({
           name: 'qq_list_shots',
           description: '看看你手上还有哪些 B 站截图（来自哪个视频、第几秒）。挑截图之前可以先看一眼。',
           properties: { query: str('可选，按视频标题筛选') },
           required: [],
-          execute: async ({ query }) => bili.listShots(String(query || '')),
+          execute: async ({ query }) => {
+            if (!hub.turnHasOwner(sessionId)) return { ok: false, message: '截图只给主人看' }
+            return bili.listShots(String(query || ''))
+          },
         }),
       ]
     })

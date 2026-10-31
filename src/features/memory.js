@@ -66,10 +66,16 @@ export function search(idx, query, o = {}) {
   const q = [...new Set(tokenize(query))]
   const now = o.now ?? Date.now()
   const aboutSet = new Set((Array.isArray(o.about) ? o.about : o.about ? [o.about] : []).map(String))
+  const onlyAbout = o.onlyAbout
+    ? new Set((Array.isArray(o.onlyAbout) ? o.onlyAbout : [o.onlyAbout]).map(String))
+    : null
   const k1 = 1.4
   const b = 0.7
   const scored = []
   for (const d of idx.docs) {
+    // 群聊 / 非主人私聊里只允许想起「和这一段说话的人有关」的记忆，避免把主人的私事带出来；
+    // 没有标注「关于谁」的通用记忆仍然可以想起（如阿强喜欢钓鱼这种没有 QQ 号的旧档案）。
+    if (onlyAbout && d.it.about && !onlyAbout.has(String(d.it.about))) continue
     let s = 0
     const why = []
     for (const t of q) {
@@ -312,13 +318,13 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
   }
 
   const recallLog = [] // 最近几次想起了什么（给面板看）
-  function recall(query, { about, limit, where = '', context = '' } = {}) {
+  function recall(query, { about, limit, where = '', context = '', onlyAbout } = {}) {
     const max = limit ?? getConfig().memory.recallCount
-    const hits = search(index(), query, { about, limit: max })
+    const hits = search(index(), query, { about, limit: max, onlyAbout })
     // 这一句没想起几条（「嗯嗯」「然后呢」）：用上一句再找找，分数打折
     if (context && hits.length < max) {
       const have = new Set(hits.map((h) => h.it.id))
-      for (const h of search(index(), context, { about, limit: max, minScore: 0.5 })) {
+      for (const h of search(index(), context, { about, limit: max, minScore: 0.5, onlyAbout })) {
         if (hits.length >= max) break
         if (!have.has(h.it.id)) hits.push({ ...h, score: h.score * 0.6, why: [...(h.why || []), '（上一句）'] })
       }
@@ -514,9 +520,13 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
     const recent = recentEvents()
     const shown = new Set(recent.map((m) => m.id))
     const about = chat && chat.kind === 'private' ? chat.userId : (speakers || hub?.speakersOf?.(sessionId) || [])
+    // 群聊 / 非主人私聊只许想起和这一段说话的人有关的记忆；主人的私事不能带出来
+    const owner = String(getConfig().ownerQQ || '')
+    const ownerPrivate = chat && chat.kind === 'private' && String(chat.userId) === owner
+    const onlyAbout = ownerPrivate ? undefined : about
     // 「嗯嗯」「然后呢」这种短句单看检索不到东西，把上一句也带上
     const ctxText = q.length < 12 ? String(prevText || '').slice(-300) : ''
-    const hits = recall(q, { about, where: (chat && chat.chatId) || '', context: ctxText }).filter((h) => !shown.has(h.it.id)).slice(0, 4)
+    const hits = recall(q, { about, onlyAbout, where: (chat && chat.chatId) || '', context: ctxText }).filter((h) => !shown.has(h.it.id)).slice(0, 4)
     if (!hits.length) return backdrop
     let body = hits.map((h) => memoryLine(h.it)).join('；')
     if (body.length > 300) body = body.slice(0, 300) + '…'
