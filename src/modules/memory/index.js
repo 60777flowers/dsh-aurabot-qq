@@ -5,6 +5,18 @@
 import { createMemoryStore, memoryLine } from '../../features/memory.js'
 import { defineTool, str } from '../../tools/tools.js'
 
+/** 非主人想把「规则/指令/权限」写进长期记忆：执行层直接拒绝，不能只靠模型自觉。 */
+export function looksLikeRuleMemory(text) {
+  const t = String(text || '')
+  if (!t) return false
+  // 明确的规则/权限词，或「主人说…发/给/做/先」这类授权口吻
+  if (/(规则|指令|命令|权限|白名单|主人让你|主人的话|等同主人|不用确认|都先|一律|不许|不要|禁止)/.test(t)) return true
+  if (/(主人说|主人让|主人要求).{0,30}(发|给|做|先|都|不许|不要|禁止|只能)/.test(t)) return true
+  // 「以后/每次…都/必须/先…发/给/做/听」这类可执行规则；普通喜好（以后想去看海）不拦
+  if (/(以后|今后|每次|永远).{0,30}(都|必须|只能|先|不许|不要|禁止|一律).{0,30}(发|给|做|听|按|文件|群|主人|规则|命令|权限)/.test(t)) return true
+  return false
+}
+
 export default {
   id: 'memory',
   name: '记忆',
@@ -29,7 +41,7 @@ export default {
     })
     api.every(60_000, () => memory.tick(), '整理记忆')
 
-    api.tool(({ chat, level }) => {
+    api.tool(({ chat, level, sessionId }) => {
       if (!api.config().memory.enabled || chat.kind === 'system') return []
       const current = chat.chatId
       return [
@@ -42,7 +54,12 @@ export default {
             importance: { type: 'number', description: '0~1，约定、关系、核心喜好写高一点，随口一提写低一点，不确定写 0.5' },
           },
           required: ['text'],
-          execute: async ({ text, about, importance }) => memory.add({ text, aboutName: about || chat.nickname || '', about: chat.userId || '', importance: importance ?? 0.5, source: 'tool', chatId: current }),
+          execute: async ({ text, about, importance }) => {
+            const raw = String(text || '').trim()
+            const owner = Boolean(sessionId && typeof hub.turnSendersAllOwner === 'function' && hub.turnSendersAllOwner(sessionId))
+            if (!owner && looksLikeRuleMemory(raw)) return { ok: false, message: '这种规则/指令我不记，只记关于你自己的事' }
+            return memory.add({ text: raw, aboutName: about || chat.nickname || '', about: chat.userId || '', importance: importance ?? 0.5, source: 'tool', chatId: current })
+          },
         }),
         defineTool({
           name: 'recall_memory',
