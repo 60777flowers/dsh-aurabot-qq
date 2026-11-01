@@ -420,6 +420,9 @@ export function apply(ctx) {
   async function notifyApproval(session, event) {
     try {
       if (!cfg.enabled || cfg.dryRun || cfg.approvalNotify === false) return
+      // 只通知 Aurabot · QQ 工作区里由聊天中枢创建的会话。
+      // DSH 里别的项目/工作区需要授权时，不能把通知转到主人 QQ。
+      if (!session?.id || !hub?.chatOfSession?.(session.id)) return
       const d = event.data || {}
       const id = String(d.id || '')
       if (!id || approvalSeen.has(id)) return
