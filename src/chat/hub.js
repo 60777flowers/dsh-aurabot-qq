@@ -9,6 +9,7 @@ import { appendFileSync, mkdirSync, readFileSync, existsSync, readdirSync, statS
 import { basename, isAbsolute, join, relative, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { dataDir, readJson, writeJson } from '../core/store.js'
+import { isDefiniteFailure } from '../onebot/client.js'
 import { parseMessageEvent, gifFrames } from './inbound.js'
 import { parseReply, bubbleDelay, wantsVoice } from './reply.js'
 import { decideGroupReply, policyFor, topicRelevance } from './group-policy.js'
@@ -26,7 +27,6 @@ import { expandMentions, hasMention } from './mentions.js'
 import { cleanContent, cleanText } from '../core/text.js'
 import { createRecentMedia } from './recent-media.js'
 import { createTitleFilter } from './title-filter.js'
-import { isDefiniteFailure } from '../onebot/client.js'
 
 // QQ 会话的工作区目录，第一次收到消息时自动创建。面板「连接」页能改（config.workspaceDir，#32）；
 // 没填就用环境变量 AURABOT_WORKSPACE，再没有：老安装沿用 C:\Aurabot\qq-chats，新安装放在用户目录下（不用往 C 盘根目录写）
@@ -61,7 +61,7 @@ const sessionKey = (id) => {
 // 模拟测试：这里面发出去的消息只记下来，不真发
 const captureStore = new AsyncLocalStorage()
 const failStore = new AsyncLocalStorage() // deliver 这一次里发失败的原因，好让调用方如实告诉她
-export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildTools, contextProviders, onActivity, memoryScore, onCommand, isMuted, moodEffects, localApi, hooks, availableModels, toolsGeneration }) {
+export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, buildTools, contextProviders, onActivity, memoryScore, onCommand, isMuted, moodEffects, localApi, hooks, availableModels, toolsGeneration }) {
   // 心情对行为的影响（表情 / 语音概率、回复快慢、插话积极程度），没接就是 1
   const mood = () => (typeof moodEffects === 'function' ? moodEffects() : null) || { sticker: 1, voice: 1, delay: 1, chatty: 1 }
   const mapFile = () => dataDir('sessions.json')
@@ -544,7 +544,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     return kind === 'group' ? { kind: 'group', id } : kind === 'private' ? { kind: 'private', id } : null
   }
 
-  async function sendSegments(chatId, message, note, { force = false, isCurrent = null, throwOnError = false } = {}) {
+  async function sendSegments(chatId, message, note, { force = false, isCurrent = null, throwOnError = false, queueKind = 'reply', queueTtlMs } = {}) {
     if (disposed) return null
     const cfg = getConfig()
     const tgt = targetOf(chatId)
@@ -585,6 +585,16 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       bump('sent')
       return r
     } catch (error) {
+      // 网关预热/短暂不可达：确定没发出去的消息放进补发队列，连上后按 TTL 补发。
+      // 超时（uncertain）不入队，避免同一条消息发两次。
+      if (outbox && isDefiniteFailure(error)) {
+        const q = outbox.add({ action, params, chatId, note, kind: queueKind, ttlMs: queueTtlMs })
+        if (q.ok) {
+          log.warn(`发到 ${chatId} 时网关还没就绪，已排队补发：${note || error.message}`)
+          return { queued: true, queuedId: q.id }
+        }
+        log.warn(`发到 ${chatId} 失败，且无法入队（${q.message}）：`, error.message)
+      }
       bump('errors')
       log.warn(`发到 ${chatId} 失败：`, error.message)
       if (throwOnError) throw error
