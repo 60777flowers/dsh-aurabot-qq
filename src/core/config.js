@@ -33,9 +33,9 @@ export const DEFAULTS = {
   // 单个文件有大小上限；主人私聊里能触发，群里只在主人开口那一轮能触发（可以发给白名单里的人和群）。日志里会记下发了什么。
   // imageByPath（#169）：本地图片先按路径直发，被网关明确拒绝才改用 base64；网关和 NapCat 没共享挂载时会自动回退。
   files: { enabled: true, maxMB: 50, imageByPath: true, dirs: [] },
-  // 危险命令确认（可选保护，默认关）：她在私聊里执行删根目录/格式化/关机/下载后直接执行等
+  // 危险命令确认（默认开）：她在私聊里执行删根目录/格式化/关机/下载后直接执行等
   // 终端命令前，先发 QQ 私聊问主人，回复「确认」才执行；超时或「取消」就拦下。
-  security: { dangerConfirm: false, ssrfMode: 'strict' },
+  security: { dangerConfirm: true, ssrfMode: 'strict' },
   update: { unstable: null }, // 订阅不稳定版本（beta、rc）；null = 没选过，按正在用的版本定
   snowluma: {
     dir: 'C:\\Aurabot\\snowluma', // 主人自己下载解压到这里（EULA 不允许自动部署）
@@ -327,7 +327,7 @@ export function normalize(raw) {
   // 发文件：开关、大小上限、额外允许的目录（只认绝对路径；空行忽略）
   if (!isObj(c.files)) c.files = {}
   if (!isObj(c.security)) c.security = {}
-  c.security.dangerConfirm = bool(c.security.dangerConfirm, false)
+  c.security.dangerConfirm = bool(c.security.dangerConfirm, true)
   c.security.ssrfMode = c.security.ssrfMode === 'loose' ? 'loose' : 'strict'
   c.update = { unstable: typeof c.update?.unstable === 'boolean' ? c.update.unstable : null }
   c.files.enabled = bool(c.files.enabled, true)
