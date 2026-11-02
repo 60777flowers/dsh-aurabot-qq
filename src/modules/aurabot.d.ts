@@ -236,5 +236,7 @@ export interface AurabotModule {
   panel?: string | boolean
   /** 设置和面板放进哪个内置标签页（比如 'song'），不写就单独一页 */
   tab?: string
+  /** 标签页状态点看哪个设置（相对这个模块的设置，比如 'loggedIn'）。不写时有 enabled 设置就看它，否则不显示点 */
+  flag?: string
   setup(api: Api): any
 }

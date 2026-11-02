@@ -19,6 +19,7 @@ export class OneBotError extends Error {
 
 /** 只有确定没连上或网关明确拒绝时，才能换一种方式发送。 */
 export function isDefiniteFailure(error) {
+  if (error instanceof OneBotError && !error.uncertain && Number(error.data?.retcode || 0) !== 0 && /highway|upload/i.test(String(error.data?.message || error.message))) return true // 语音传不上去，消息肯定没发出去
   if (!(error instanceof OneBotError) || error.uncertain || /超时|timeout|timed?\s*out/i.test(String(error.data?.message || error.message))) return false
   return error.transport || error.data?.status === 'failed' || (error.data?.retcode != null && Number(error.data.retcode) !== 0)
 }

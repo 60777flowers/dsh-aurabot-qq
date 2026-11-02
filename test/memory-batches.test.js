@@ -29,7 +29,7 @@ function setup(t, lines, day = dateKey(new Date())) {
     yield { type: 'finish', reason: { kind: 'completed' } }
   } } }
   const hub = { chatLogDays: () => [...logs.keys()], chatLogOf: (d) => logs.get(d) || [], deleteChatLog: (d) => logs.delete(d) }
-  const cfg = normalize({ model: { provider: 'p', model: 'm' } })
+  const cfg = normalize({ model: { provider: 'p', model: 'm' }, memory: { keepChatlogDays: 0, keepChatlogSet: true } })
   const make = () => createMemoryStore({ dsh, getConfig: () => cfg, hub, log })
   t.after(() => {
     if (old === undefined) delete process.env.AURABOT_DATA_DIR

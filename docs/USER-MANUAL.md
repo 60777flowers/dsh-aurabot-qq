@@ -142,6 +142,7 @@ SnowLuma 的协议不允许别的程序替你下载安装，所以这一步要�
 | 语音发不出来 | 会自动改发文字。想要更好听的声音，在「语音」标签点「安装 edge-tts」。 |
 | 回复很慢 | 「模型」标签里把思考强度选「低」；也取决于模型服务本身的速度。 |
 | DSH 启动时报「Web authentication failed」 | 这是 DSH 自己的问题（本机登录 Cookie 攒太多）。关掉 DSH，删除 `%APPDATA%\@deepseek-ai\dsh-desktop\Network\Cookies` 里 127.0.0.1 的旧 Cookie 后重开即可；或者把报告发给我处理。 |
+| 桌宠明明在跑，面板却一直显示「离线」 | 先看 DSH 桌面端的「浏览器访问」开关开没开：它关着时，桌宠客户端发出的所有请求（包括心跳）都会被 DSH 当成普通浏览器请求拦下（一律 403），在线状态就永远登记不上——桌宠程序本身没坏。把开关打开，桌宠下一次心跳（半分钟内）就会自动上线。 |
 
 所有日志都在：`%USERPROFILE%\.dsh\plugins-data\aurabot\logs\`
 所有数据（设置、人格、表情、日记、记忆）都在：`%USERPROFILE%\.dsh\plugins-data\aurabot\`

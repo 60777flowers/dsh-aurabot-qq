@@ -15,6 +15,7 @@ export const SLOTS = {
   image: { file: 'image.mjs', title: '生图', timeoutMs: 300_000, example: 'SD WebUI（http://127.0.0.1:7860）或 ComfyUI（http://127.0.0.1:8188）' },
   song: { file: 'song-convert.mjs', title: '翻唱换声', timeoutMs: 20 * 60_000, example: '我自己训练的 so-vits-svc 模型（项目在 D:/so-vits-svc，模型 logs/44k/G_10000.pth）' },
   asr: { file: 'asr.mjs', title: '语音识别', timeoutMs: 60_000, example: 'FunASR / faster-whisper 的本地服务（http://127.0.0.1:8000）' },
+  video: { file: 'video.mjs', title: '生视频', timeoutMs: 20 * 60_000, example: 'ComfyUI（http://127.0.0.1:8188）跑的视频工作流' },
 }
 
 /** 生图脚本的各种返回值统一成 Buffer。 */
@@ -50,6 +51,8 @@ export function createLocal({ getConfig, log }) {
     const spec = SLOTS[slot]
     const file = pathOf(slot)
     const t = Date.now()
+    // 生视频比别的慢得多，超时可以在面板单独调
+    const timeoutMs = slot === 'video' ? (Number(getConfig().local?.videoTimeoutMin) || 20) * 60_000 : spec.timeoutMs
     try {
       // 带上修改时间：脚本改了就重新加载
       const mod = await import(pathToFileURL(file).href + '?v=' + statSync(file).mtimeMs)
@@ -60,7 +63,7 @@ export function createLocal({ getConfig, log }) {
       let timer
       const result = await Promise.race([
         fn({ ...args, outDir: outDir(), log: child }),
-        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`超过 ${Math.round(spec.timeoutMs / 1000)} 秒没完成`)), spec.timeoutMs) }),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`超过 ${Math.round(timeoutMs / 1000)} 秒没完成`)), timeoutMs) }),
       ]).finally(() => clearTimeout(timer))
       last[slot] = { ok: true, at: Date.now(), message: `用时 ${((Date.now() - t) / 1000).toFixed(1)} 秒` }
       return result

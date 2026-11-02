@@ -47,9 +47,9 @@ test('备份、暂存、启动时换上：内容一致，旧文件留底，排�
 
   // 备份来自别的路径：配置里的旧路径要换成这台电脑的
   const pending = join(root, '.restore-pending.json')
-  const oldRoot = 'C:\\old\\aurabot'
+  const oldRoot = join(tmpdir(), 'old', 'aurabot')
   const stageConfig = join(root, '.restore', 'config.json')
-  writeFileSync(stageConfig, JSON.stringify({ ownerQQ: '1', dir: oldRoot + '\\songs' }))
+  writeFileSync(stageConfig, JSON.stringify({ ownerQQ: '1', dir: join(oldRoot, 'songs') }))
   writeFileSync(pending, JSON.stringify({ ...JSON.parse(readFileSync(pending, 'utf8')), dataDir: oldRoot }))
 
   assert.equal(api.applyPendingRestore(123), 7)

@@ -20,6 +20,7 @@ import { createOneBotClient } from './onebot/client.js'
 import { createOutbox } from './onebot/outbox.js'
 import { createSnowLumaManager, DOWNLOAD_PAGE } from './snowluma/manager.js'
 import { createHub, workspaceDirOf } from './chat/hub.js'
+import { grantOwner, moveWorkspace, realWorkspace } from './core/workspace-move.js'
 import { createLocal, fileOf, toImageBuffer } from './local/local.js'
 import { createGroupRoles } from './chat/group-roles.js'
 import { defaultModel, askModel, modelReasoning, modelVision, clearReasoningCache, clearVisionCache } from './core/llm.js'
@@ -30,10 +31,11 @@ import { parseCommand, runCommand, createMutes, commandList } from './chat/comma
 import { listPersonas, readPersona, savePersona, deletePersona, currentPersonaText, rulesText, seedPersonas } from './persona/personas.js'
 import { createModules, API_VERSION } from './core/modules.js'
 import { createCommunity } from './core/community.js'
+import { createApprovalRelay } from './security/approval.js'
 import { applyPendingRestore, cancelRestore, createBackup, listBackups, pendingModules, pendingRestore, saveUpload, setPendingModules, stageRestore } from './core/backup.js'
 import { cleanText } from './core/text.js'
 import { createBridge } from './core/bridge.js'
-import { createDangerGuard } from './security/danger.js'
+import { createDangerGuard, safeOwnedSession } from './security/danger.js'
 import { setSsrpMode } from './core/net.js'
 import { BUILTINS } from './modules/index.js'
 
@@ -121,6 +123,7 @@ export function apply(ctx) {
   let pendingEvents = []
   let hub = null
   let dangerGuard = null // 危险命令确认（security.dangerConfirm 开着才生效）
+  let approvalRelay = null // DSH 要授权时在 QQ 私聊问主人（approvalViaQQ 开着才生效）
   async function checkLogin() {
     verifying = true
     pendingEvents = []
@@ -167,13 +170,18 @@ export function apply(ctx) {
             ? ev.message.filter((seg) => seg && seg.type === 'text').map((seg) => String(seg.data?.text || '')).join('')
             : ''
           if (dangerGuard.handleReply(`private:${ev.user_id}`, ev.user_id, text)) return
+          if (approvalRelay?.handleReply(`private:${ev.user_id}`, ev.user_id, text)) return
         }
         hub.onMessage(ev).catch((error) => log.error('处理消息出错：', error.message))
       }
+    } else if (ev.post_type === 'notice' && ev.notice_type === 'bot_offline') {
+      log.warn(`QQ 账号离线${ev.tag ? '（' + String(ev.tag).slice(0, 100) + '）' : ''}${ev.message ? '：' + String(ev.message).slice(0, 300) : ''}`)
     } else if (ev.post_type === 'notice' && ev.notice_type === 'notify' && ev.sub_type === 'poke') {
       hub.onPoke(ev).catch((error) => log.error('处理戳一戳出错：', error.message))
     } else if (ev.post_type === 'notice' && ev.notice_type === 'group_upload') {
       hub.onGroupFile(ev).catch((error) => log.error('处理群文件出错：', error.message))
+    } else if (ev.post_type === 'notice') {
+      hub.onNotice(ev).catch((error) => log.debug('处理通知出错：', error.message))
     }
   }
   const outbox = createOutbox({ log: logger.child('outbox') })
@@ -267,10 +275,13 @@ export function apply(ctx) {
     stickers,
     tts,
     buildTools: (where) => mods.buildTools(where),
+    // 模块声明的能力（module.json capabilities）：子智能体委派这类要本机权限的能力靠它把关（一审 #177）
+    capabilitiesOf: (id) => (typeof mods.capabilitiesOf === 'function' ? mods.capabilitiesOf(id) : []),
     contextProviders: [(args) => mods.contextFor(args)],
     onActivity: (a) => mods.emit('activity', a),
     // 群聊话题和她的记忆有多相关（插话判断用）
     memoryScore: (text) => use('memory')?.topicScore?.(text) ?? 0,
+    onMemoryCommand: (msg, text) => use('memory')?.handleCommand?.(msg, text),
     // QQ 里的主人命令（模块加的命令优先）
     onCommand: async (msg) => {
       const cmd = parseCommand(msg.text, mods.commands())
@@ -286,6 +297,7 @@ export function apply(ctx) {
     hooks: {
       message: (msg) => mods.claim('message', msg),
       reply: (text, info) => mods.filter('reply', text, info),
+      secrets: () => [rulesText('private', cfg, rulesOpts('private')), rulesText('social', cfg, rulesOpts('social')), currentPersonaText(cfg.persona.current)],
       deniedTools: () => bridge?.deniedTools() || [],
       groupDecide: (decision, info) => mods.filter('group/decide', decision, info),
       prompt: (content, info) => mods.filter('prompt', content, info),
@@ -368,9 +380,19 @@ export function apply(ctx) {
     log: logger.child('危险命令'),
     deliver: (chatId, text) => hub.sendText(chatId, text),
     chatOfSession: (sessionId) => { try { return hub.chatOfSession?.(sessionId) || '' } catch (error) { return '' } },
+    // tools/pre-execute 是进程级的，同一个 DSH 里主人自己开的会话也会走到这里；那些会话不归这个守卫管
+    // 判断不出来（hub.isOwnedSession 缺失 / 抛错）时 safeOwnedSession 返回 true，走原 deny 逻辑；
+    // 只有明确 false（宿主自己的 GUI/CLI 会话）才放行给 DSH 自己的权限系统，别在异常时 fail-open。
+    isOwnedSession: safeOwnedSession(typeof hub?.isOwnedSession === 'function' ? (sessionId) => hub.isOwnedSession(sessionId) : null),
     ownerQQ: () => cfg.ownerQQ,
   })
   core.dangerGuard = dangerGuard
+  approvalRelay = createApprovalRelay({ getConfig, deliver: (chatId, text) => hub.sendText(chatId, text), chatOfSession: (id) => hub.chatOfSession(id), log })
+  ctx.effect(() => {
+    let off = null
+    try { off = ctx.on('approval/request', (request, next) => approvalRelay.onRequest(request, next)) } catch (error) { log.debug('挂审批应答失败：', error.message) }
+    return () => { try { if (typeof off === 'function') off() } catch (error) {} }
+  }, 'aurabot: QQ 审批')
   ctx.effect(() => {
     let off = null
     try { off = ctx.on('tools/pre-execute', (exec, next) => dangerGuard.preExecute(exec, next)) } catch (error) { log.debug('挂危险命令确认失败：', error.message) }
@@ -439,13 +461,18 @@ export function apply(ctx) {
       const id = String(d.id || '')
       if (!id || approvalSeen.has(id)) return
       approvalSeen.set(id, Date.now())
+      // 等一下看 QQ 有没有问：问了就不用再通知；没问（比如审批没走到插件）照常通知，主人不会什么都收不到
+      if (approvalRelay?.handles(session?.id)) {
+        await new Promise((r) => setTimeout(r, 1500))
+        if (approvalRelay.askedRecently()) return
+      }
       if (approvalSeen.size > 200) { for (const [k, t] of approvalSeen) if (Date.now() - t > 6 * 3600_000) approvalSeen.delete(k) }
       let title = ''
       try { title = String(session?.title || session?.id || '') } catch (error) {}
       const lines = ['【要授权】' + (d.toolName || '未知工具')]
       if (d.reason) lines.push('原因：' + String(d.reason).slice(0, 300))
       if (title) lines.push('会话：' + title.slice(0, 60))
-      lines.push('这个得在 DSH 界面里点「批准」，QQ 这边没法代答。')
+      lines.push('这个会话的授权要在 DSH 界面里点「批准」。')
       await hub.sendText(`private:${cfg.ownerQQ}`, lines.join('\n'))
     } catch (error) {
       log.debug?.('审批通知失败：', error.message)
@@ -499,6 +526,7 @@ export function apply(ctx) {
     unloaded = true
     clearTimeout(firstWatch)
     dangerGuard?.dispose()
+    approvalRelay?.dispose()
     hub.dispose()
     bridge.dispose()
     mods.dispose()
@@ -552,6 +580,7 @@ export function apply(ctx) {
       song: use('song')?.status?.() ?? null,
       sessions: hub.sessions(),
       workspaceDir: workspaceDirOf(cfg),
+      workspaceReal: realWorkspace(workspaceDirOf(cfg)),
       personas: listPersonas(),
       modules: mods.status(),
       bridge: { dshTools: cfg.bridge.dshTools, http: cfg.bridge.http, hasToken: Boolean(cfg.bridge.token), tools: bridge.deniedTools(), toolsService: Boolean(ctx.get?.('tools')) },
@@ -695,6 +724,24 @@ export function apply(ctx) {
     }
     // 人物大小倍率：0.5~2.0，步进 0.05；坏值忽略（别把桌宠缩没了）
     if (Number.isFinite(b.petScale)) patch.petScale = Math.min(2, Math.max(0.5, Math.round(b.petScale * 20) / 20))
+    // 松手后落地：布尔透传（模块侧缺省当开，别让老面板把抛掷关没）
+    if (typeof b.petReleaseLand === 'boolean') patch.petReleaseLand = b.petReleaseLand
+    // 对话框（pet 1.0.5 起在模块库，模块自己的 settings 同样不渲染成表单；这里仍是唯一写入通道）
+    for (const k of ['petChatEnabled', 'petChatBlurHide']) {
+      if (typeof b[k] === 'boolean') patch[k] = b[k]
+    }
+    // 快捷键 / 关闭关键字 / 天气城市：纯文本，按模块 settings 的口径截断（空串合法 = 关掉该项）
+    for (const [k, max] of [['petChatHotkey', 40], ['petChatCloseKeyword', 20], ['petWeatherCity', 40]]) {
+      if (typeof b[k] === 'string') patch[k] = b[k].trim().slice(0, max)
+    }
+    // 天气接口模板：只收 http/https（留空 = 用模块内置默认 wttr.in）
+    if (typeof b.petWeatherUrl === 'string') {
+      const u = b.petWeatherUrl.trim().slice(0, 500)
+      if (!u || /^https?:\/\//i.test(u)) patch.petWeatherUrl = u
+    }
+    // 历史上限与保留天数：与模块 settings 的 min/max 对齐（10~2000 条；0 天 = 永久保留）
+    if (Number.isFinite(b.petChatMaxEntries)) patch.petChatMaxEntries = Math.min(2000, Math.max(10, Math.round(b.petChatMaxEntries)))
+    if (Number.isFinite(b.petChatRetentionDays)) patch.petChatRetentionDays = Math.min(3650, Math.max(0, Math.round(b.petChatRetentionDays)))
     if (typeof b.whisperLines === 'string') patch.whisperLines = b.whisperLines.slice(0, 4000)
     // 素材包下载地址：内建模块的 settings 字段不渲染成表单（同上），这里是它唯一的写入通道。
     // 只收 http/https（或空 = 回到内置默认），别把 file:// 之类塞进来当下载源
@@ -891,6 +938,14 @@ export function apply(ctx) {
   // 控制台密码：看一眼（打开 SnowLuma 自己的控制台要用）、自己设一个
   route('/snowluma/password', async () => ({ ok: true, password: snowluma.password(), auto: cfg.snowluma.passwordAuto }))
   route('/snowluma/set-password', async (req) => snowluma.setPassword(String((await readBody(req)).password || '')))
+  route('/workspace/move', async (req) => {
+    const r = moveWorkspace(workspaceDirOf(cfg), (await readBody(req)).to)
+    if (r.ok) {
+      await grantOwner(r.target, log)
+      log.info(r.message)
+    }
+    return r
+  })
   route('/setup/done', async (req) => {
     const body = await readBody(req)
     if (!cfg.botQQ || !cfg.ownerQQ || cfg.botQQ === cfg.ownerQQ) return { ok: false, message: '先填好不同的机器人 QQ 和你的 QQ' }

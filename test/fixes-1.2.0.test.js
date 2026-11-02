@@ -261,7 +261,9 @@ test('心情基线可配，衰减往基线靠（#139）', async () => {
 test('聊天流水保留和新开关的配置规范化（#140 #141 #142 #143）', async () => {
   const { normalize } = await import('../src/core/config.js')
   const d = normalize({})
-  assert.equal(d.memory.keepChatlogDays, 0)
+  assert.equal(d.memory.keepChatlogDays, 7)
+  assert.equal(normalize({ memory: { keepChatlogDays: 0 } }).memory.keepChatlogDays, 7, '老配置的默认值')
+  assert.equal(normalize({ memory: { keepChatlogDays: 0, keepChatlogSet: true } }).memory.keepChatlogDays, 0, '面板里选的 0 要算数')
   assert.equal(d.memory.mergeGroups, false)
   assert.equal(d.chat.seedHistory, false)
   assert.equal(d.group.ignoreAtOthers, false)
@@ -281,7 +283,7 @@ test('@ 了别人时不算叫她，但只在开关打开时生效（#143）', as
   assert.match(String(off.reason), /叫到了/)
 })
 
-function historyTool({ mode, level = 'chat', chat = { kind: 'group', groupId: '100', chatId: 'group:100' }, owner = false, senders = ['7'], members = ['7'] }) {
+function historyTool({ mode, level = 'chat', chat = { kind: 'group', groupId: '100', chatId: 'group:100' }, owner = false, allOwner = owner, senders = ['7'], members = ['7'] }) {
   const calls = []
   const builders = []
   const onebot = {
@@ -294,7 +296,7 @@ function historyTool({ mode, level = 'chat', chat = { kind: 'group', groupId: '1
     },
   }
   qqTools.setup({
-    core: { hub: { turnHasOwner: () => owner, turnSenders: () => senders }, onebot },
+    core: { hub: { turnHasOwner: () => owner, turnSendersAllOwner: () => allOwner, turnSenders: () => senders }, onebot },
     config: () => ({ botQQ: '1', files: { enabled: false }, allow: { groups: ['100', '200', '300'] }, group: { crossRead: mode } }),
     tool: (builder) => builders.push(builder),
   })
@@ -309,6 +311,13 @@ test('跨群只读（#120）：关掉后没有这个参数，直接传也不能�
   assert.equal(JSON.stringify(tool).includes('想看白名单'), false)
   assert.equal((await tool.execute({ group: '200' })).ok, false)
   assert.equal(read(calls), false)
+})
+
+test('跨群只读（#120）：混合说话人时群友不能借主人读别的群（H01 同类）', async () => {
+  const mixed = historyTool({ mode: 'group', owner: true, allOwner: false, senders: ['7', '8'] })
+  const out = await mixed.tool.execute({ group: '200' })
+  assert.equal(out.ok, false)
+  assert.equal(read(mixed.calls), false)
 })
 
 test('跨群只读（#120）：主人随时能看，别的群内容标明不是指令', async () => {
