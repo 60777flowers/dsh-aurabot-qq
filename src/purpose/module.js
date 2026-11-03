@@ -10,6 +10,7 @@
 // 想换引擎的主人自己开关，迁移说明见 docs/PURPOSE_MODULE_API.md。
 
 import { dataDir, readJson, writeJson } from '../core/store.js'
+import { cleanOutboundText } from '../chat/reply.js'
 import {
   DEFAULT_PURPOSE_CONFIG, PURPOSE_NEEDS, NEED_LABELS,
   normalizePurposeConfig, createPurposeState, normalizePurposeState,
@@ -67,13 +68,13 @@ export function purposeConfig(cfg = {}) {
 }
 
 /** 模型回包清洗：去掉备忘段、引号、「大肥鱼：」前缀；空/沉默返回 ''。 */
-export function cleanReply(raw) {
+export function cleanReply(raw, options) {
   let s = String(raw ?? '')
   const cut = /(^|\n)\s*(?:[【\[]\s*(?:目的|需求|情绪|类型|状态|待续)\s*[】\]]|[【\[]?\s*内部备忘)/.exec(s)
   if (cut) s = s.slice(0, cut.index) // 内部备忘不发到 QQ
   s = s.replace(/^[「“"'']+/, '').replace(/[」”"'']+$/, '')
   s = s.replace(new RegExp(`^${ROLE}\\s*[:：]\\s*`), '')
-  s = s.trim()
+  s = cleanOutboundText(s, options).trim()
   if (!s || s.replace(/\s/g, '').startsWith(SILENCE)) return ''
   return s
 }
@@ -229,7 +230,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     } catch {}
   }
   /**
-   * carrier=pet 时的投递决策。返回 'pet'（已推气泡）| 'qq'（调用方走原 hub.deliver）| 'silent'（本轮不发）。
+   * carrier=pet 时的投递决策。返回 'sent'（已投递）| 'qq'（调用方投递）| 'silent'（不发）| 'failed'（结果不确定，不重发）。
    * 在线才调 pet.dispatch（避免它内部回落路径绕过 own/userText 心情链路）；离线由 purpose 自己决定回落或静默；
    * dispatch 返回非 ok（如专注模式 focus：不发也不回落）按契约映射，绝不在一个回合里两头都发。
    */
@@ -245,12 +246,16 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
       try {
         r = await pet.dispatch({ text, purpose: String(purposeLabel || '').slice(0, 40) })
       } catch (error) {
-        log.warn?.('目的：桌宠气泡投递出错：', error?.message)
+        // dispatch 可能已经发出后才抛错；结果不确定时不能再发一次。
+        log.warn?.('目的：桌宠气泡投递出错，结果不确定，不再重发：', error?.message)
+        return 'failed'
       }
       if (r && r.ok && r.via !== 'qq') hub.noteSaid?.(chatIdOf(getConfig()), text) // 气泡没法回，主人在 QQ 接话时她得知道说过什么
-      if (r && r.ok) return r.via === 'qq' ? 'qq' : 'pet' // dispatch 内部竞态回落（极小概率）也只发了一处
+      if (r && r.ok) return 'sent' // dispatch 内部竞态回落 QQ 时也已发出，调用方不能再发
       if (r && r.reason === 'focus') return 'silent' // 专注模式开着：不发也不回落
-      return su.petFallbackToQQ ? 'qq' : 'silent'
+      if (r && r.reason === 'pet-offline') return su.petFallbackToQQ ? 'qq' : 'silent' // 已确认尚未投递
+      log.warn?.('目的：桌宠投递未确认成功，不再重发')
+      return 'failed'
     }
     // pet 离线 / 模块没在跑：按回落开关决定 purpose 自己走 QQ（带 own/userText，保住心情与流水链路）或静默
     return su.petFallbackToQQ ? 'qq' : 'silent'
@@ -306,16 +311,18 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
       log.warn?.('目的：生成出错：', error?.message)
     }
     const memo = parsePurposeMemo(raw)
-    const text = cleanReply(raw)
+    const text = cleanReply(raw, { warn: (message) => log.warn?.(`目的：${message}`) })
     let outcome
     if (!text) {
       outcome = genError ? 'failed' : 'silent' // 模型有权跳过（【状态】跳过 / [沉默]），silent 不硬发
     } else {
       const where = friend ? 'qq' : await deliverByCarrier(text, picked.purpose.text) // 桌宠气泡只给主人看
-      if (where === 'pet') {
-        outcome = 'sent' // 气泡已推桌宠：本轮不发 QQ，正常结算次数与心情
+      if (where === 'sent') {
+        outcome = 'sent' // dispatch 已推气泡或回落 QQ：正常结算次数与心情
       } else if (where === 'silent') {
         outcome = 'silent' // carrier=pet 且关闭回落（或专注模式）：静默，不硬补
+      } else if (where === 'failed') {
+        outcome = 'delivery-failed' // dispatch 结果不确定：不补发，避免重复
       } else {
         try {
           const r = await hub.deliver(chatIdOf(cfg, friend), text, { own: true, userText: MOOD_PREFIX })
@@ -362,7 +369,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     const prompt = `【系统提醒，不是${owner}说的话】你刚才跟${owner}说「${String(lb.text || '').slice(-60)}」，${owner}已经 ${idle} 分钟没回了。可以轻轻追一句（比如「人呢」「睡着啦？」，或者换个话题），别催、别抱怨；觉得${owner}在忙就只回 ${SILENCE}。这一轮不能用工具，直接输出那句话。`
     try {
       const raw = await hub.runSystemTurn('purpose-nudge', 'QQ · 主动搭话（追问）', prompt, { timeoutMs: 120000, noTools: true })
-      const text = cleanReply(raw)
+      const text = cleanReply(raw, { warn: (message) => log.warn?.(`目的：${message}`) })
       if (text) await hub.deliver(chatIdOf(cfg), text, { own: true, userText: MOOD_PREFIX })
     } catch (error) {
       log.warn?.('目的：追问出错：', error?.message)
@@ -398,7 +405,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     if (!config.enabled || !cfg.ownerQQ) return
     if (!isMuted?.(chatIdOf(cfg)) && await tickOne(cfg, config)) return
     for (const qq of cfg.speakUp?.allow || []) {
-      if (String(qq) === String(cfg.ownerQQ) || isMuted?.(chatIdOf(cfg, qq))) continue
+      if (String(qq) === String(cfg.ownerQQ) || isMuted?.(chatIdOf(cfg, qq)) || memoryOf()?.dislikes?.(qq)) continue
       if (await tickOne(cfg, config, String(qq))) return
     }
   }
