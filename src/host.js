@@ -25,12 +25,14 @@ import { createLocal, fileOf, toImageBuffer } from './local/local.js'
 import { createGroupRoles } from './chat/group-roles.js'
 import { defaultModel, askModel, modelReasoning, modelVision, clearReasoningCache, clearVisionCache } from './core/llm.js'
 import { mimeOf } from './chat/inbound.js'
+import { buildFaceIndex } from './chat/faces.js'
+import { FACE_TABLE } from './chat/face-table.js'
 import { dataDir, ensureDir } from './core/store.js'
 import { createUpdateChecker, changelogSection } from './core/update.js'
 import { parseCommand, runCommand, createMutes, commandList } from './chat/commands.js'
 import { listPersonas, readPersona, savePersona, deletePersona, currentPersonaText, rulesText, seedPersonas } from './persona/personas.js'
 import { createModules, API_VERSION } from './core/modules.js'
-import { createCommunity } from './core/community.js'
+import { createCommunity, REGISTRY_URL } from './core/community.js'
 import { createApprovalRelay } from './security/approval.js'
 import { captureSystemPrompt } from './security/leak-guard.js'
 import { applyPendingRestore, cancelRestore, createBackup, listBackups, pendingModules, pendingRestore, saveUpload, setPendingModules, stageRestore } from './core/backup.js'
@@ -1461,6 +1463,20 @@ export function apply(ctx) {
     const b = await readBody(req)
     return { ...(await community.remove(String(b.id || ''), { purge: b.purge === true })), modules: mods.status() }
   })
+  // 模块市场地址：换索引源（自建索引 / 国内镜像 / 内网部署）用。留空 = 回到内置 GitHub 地址；
+  // 只收 http/https，别把 file:// 之类塞进来当下载源。单一真相在 ext.market.registryUrl，
+  // community.js 读取时按 config > AURABOT_REGISTRY_URL > 内置默认 的优先级解析。
+  route('/panel/market/registry', async (req) => {
+    if (String(req?.method || 'GET').toUpperCase() === 'POST') {
+      const b = await readBody(req)
+      const u = String(b.registryUrl ?? '').trim().slice(0, 1000).replace(/\/+$/, '')
+      if (u && !/^https?:\/\//i.test(u)) return { ok: false, message: '要填 http(s):// 开头的完整地址，如 https://example.com/registry/index.json' }
+      setConfig(mergeFromPanel(cfg, { ext: { market: { registryUrl: u } } }))
+      log.info(`面板已保存模块市场地址｜${u || '（留空，回到内置 GitHub 索引）'}`)
+      return { ok: true, registryUrl: community.registryUrl(), message: u ? '已换成自定义模块市场地址' : '已恢复内置 GitHub 索引地址' }
+    }
+    return { ok: true, registryUrl: community.registryUrl(), default: REGISTRY_URL }
+  })
   route('/modules/reload', async (req) => {
     const id = String((await readBody(req)).id || '')
     if (!id) { await mods.sync(); return { ok: true, message: '检查过了', list: mods.status() } }
@@ -1543,6 +1559,40 @@ export function apply(ctx) {
     const src = mods.panelSource(String(query(req).id || ''))
     if (src === null) return send(res, 404, '')
     send(res, 200, src, 'text/javascript; charset=utf-8')
+  })
+
+  // 贴表情：面板要展示「当前有哪些表情可以贴」——内置常用 + 网关系统表情目录（取不到就只用内置）
+  // emoji 走 Unicode 码点，QQ 老表情走它自己那套编号，两套在 set_msg_emoji_like 里都能直接用。
+  const REACT_EMOJIS = [
+    { char: '👍', name: '赞', id: '128077' },
+    { char: '❤️', name: '爱心', id: '10084' },
+    { char: '😂', name: '笑哭', id: '128514' },
+    { char: '😭', name: '大哭', id: '128557' },
+    { char: '🤔', name: '思考', id: '129300' },
+    { char: '😅', name: '冷汗', id: '128517' },
+    { char: '😳', name: '脸红', id: '128563' },
+    { char: '🥺', name: '委屈', id: '129402' },
+    { char: '🎉', name: '庆祝', id: '127881' },
+    { char: '🌹', name: '玫瑰', id: '127801' },
+    { char: '🍬', name: '糖', id: '127852' },
+    { char: '✨', name: '闪', id: '10024' },
+    { char: '🔥', name: '火', id: '128293' },
+    { char: '🙏', name: '拜托', id: '128591' },
+  ]
+  route('/panel/faces', async () => {
+    // 先用内置整表（329 条）打底：网关取不到目录时，面板也不会只剩 65 个常用表情
+    let byId = new Map(FACE_TABLE.map((f) => [String(f.id), f.name]))
+    try {
+      const r = await onebot.call('fetch_sys_faces', {}, { timeoutMs: 8000 })
+      const built = buildFaceIndex(r?.packs ? r : r?.data)
+      if (built.byId.size) byId = new Map([...byId, ...built.byId])
+    } catch (error) {
+      logger.child('faces').debug('取系统表情目录失败，只用内置的：', error.message)
+    }
+    const faces = [...byId.entries()]
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => Number(a.id) - Number(b.id))
+    return { ok: true, faces, emojis: REACT_EMOJIS }
   })
 
   // 联动

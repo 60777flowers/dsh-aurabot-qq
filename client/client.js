@@ -87,6 +87,8 @@ window.__ModuleLoader__.load({
       return Object.fromEntries(Object.keys(MEMORY_CAPACITY_DEFAULT).map((key, i) => [key, limits[i]]))
     }
     const pct = (v) => Math.round((Number(v) || 0) * 100)
+    // 和 src/features/companion.js 的 moodEffects 严丝合缝：心情区间 → 贴表情系数
+    const REACT_MOOD_BANDS = [['85 以上', 1.6], ['70–84', 1.25], ['50–69', 1], ['35–49', 0.5], ['35 以下', 0.3]]
     const cx = (...a) => a.filter(Boolean).join(' ')
     // 音调存的是 '+20Hz' 这种字符串，滑条要数字；合法范围 ±80Hz（再往上 edge-tts 服务端会夹）
     const pitchNum = (s) => {
@@ -639,6 +641,83 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         h('b', null, o.icon || null, o.label), o.desc ? h('small', null, o.desc) : null)))
     }
 
+    /** 贴表情的映射表：QQ 系统表情（自己的编号）＋ emoji（Unicode 码点），两种都能直接填给 set_msg_emoji_like。 */
+    /** QQ 系统表情的预览图：社区维护的 QFace 图库按 id 取 png；取不到就把图藏起来，只留名字。 */
+    const QFACE_IMG = (id) => 'https://koishi.js.org/QFace/assets/qq_emoji/' + id + '/png/' + id + '.png'
+
+    function FaceMapCard() {
+      const [data, setData] = useState(null)
+      const [q, setQ] = useState('')
+      const [kind, setKind] = useState('all')
+      const [copied, setCopied] = useState('')
+      useEffect(() => {
+        let alive = true
+        get('/panel/faces')
+          .then((r) => { if (alive && r && r.ok !== false) setData(r) })
+          .catch(() => {})
+        return () => { alive = false }
+      }, [])
+      const faces = data ? data.faces || [] : []
+      const emojis = data ? data.emojis || [] : []
+      const all = [
+        ...faces.map((x) => ({ kind: 'face', name: String(x.name), id: String(x.id), label: String(x.name) })),
+        ...emojis.map((x) => ({ kind: 'emoji', name: String(x.name), id: String(x.id), label: x.char + ' ' + x.name })),
+      ]
+      const key = String(q || '').trim().toLowerCase()
+      const rows = all.filter((x) => (kind === 'all' || x.kind === kind) &&
+        (!key || x.name.toLowerCase().includes(key) || x.id.includes(key) || x.label.toLowerCase().includes(key)))
+      const copy = (x) => {
+        try { navigator.clipboard.writeText(x.id) } catch (e) {}
+        setCopied(x.id)
+        setTimeout(() => setCopied(''), 1200)
+      }
+      return h(Card, {
+        title: '可用映射' + (all.length ? '（' + all.length + ' 条）' : ''),
+        desc: '两种编号混着用都行。点一行复制编号，填进贴表情或让她自己挑。',
+      },
+        h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' } },
+          h(Seg, {
+            value: kind,
+            options: [
+              { value: 'all', label: '全部' },
+              { value: 'face', label: 'QQ 表情 ' + faces.length },
+              { value: 'emoji', label: 'emoji ' + emojis.length },
+            ],
+            onChange: setKind,
+          }),
+          h('input', {
+            className: 'ab-input sm',
+            placeholder: '搜名字或编号',
+            value: q,
+            onChange: (e) => setQ(e.target.value),
+            style: { width: 180 },
+          }),
+          copied ? h('span', { className: 'ab-small', style: { color: 'var(--ab-ok)' } }, '已复制 ' + copied) : null),
+        data === null
+          ? h('div', { className: 'ab-muted ab-small' }, '正在读表情目录…')
+          : rows.length === 0
+            ? h('div', { className: 'ab-muted ab-small' }, '没有匹配的')
+            : h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(148px, 1fr))', gap: 6, maxHeight: 260, overflow: 'auto', paddingRight: 4 } },
+                rows.map((x) => h('button', {
+                  key: x.kind + x.id,
+                  type: 'button',
+                  title: '复制 ' + x.id,
+                  onClick: () => copy(x),
+                  style: { display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', font: 'inherit', fontSize: 12, padding: '4px 8px', borderRadius: 6, border: '1px solid rgba(127,127,127,.22)', background: 'rgba(127,127,127,.06)', color: 'inherit', cursor: 'pointer', textAlign: 'left' },
+                },
+                  h('span', { style: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 } },
+                    x.kind === 'face'
+                      ? h('img', {
+                          src: QFACE_IMG(x.id), alt: '', width: 18, height: 18, loading: 'lazy',
+                          style: { flex: '0 0 auto', width: 18, height: 18, objectFit: 'contain' },
+                          onError: (e) => { e.currentTarget.style.visibility = 'hidden' },
+                        })
+                      : null,
+                    h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, x.kind === 'emoji' ? x.label : x.name)),
+                  h('span', { style: { fontFamily: 'ui-monospace, Consolas, monospace', opacity: 0.75 } }, x.id)))),
+      )
+    }
+
     /** 滑块 + 数值，比纯数字框直观。 */
     function Range({ value, min, max, step, onChange, fmt }) {
       return h('div', { className: 'ab-range' },
@@ -692,6 +771,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       { id: 'group', label: '聊天', flag: 'group' },
       { id: 'model', label: '模型' },
       { id: 'voice', label: '语音', flag: 'voice.enabled' },
+      { id: 'asr', label: '语音识别', flag: 'voice.asr' },
       { id: 'stickers', label: '表情包', flag: 'stickers.enabled' },
       { id: 'imagegen', label: '生图', flag: 'imageGen.enabled' },
       { id: 'diary', label: '空间日记', flag: 'diary.enabled' },
@@ -712,7 +792,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       { id: 'logs', label: '日志' },
     ]
     // 内置标签页属于哪个模块：模块都没在跑就不显示这一页
-    const TAB_MODS = { voice: ['voice'], stickers: ['stickers'], imagegen: ['imagegen'], diary: ['diary', 'qzone-social'], speakup: ['speakup', 'purpose'], pet: ['pet'], mood: ['mood', 'memory'], persona: ['memory'], song: ['song'], bili: ['bili'], douyin: ['douyin'], heybox: ['heybox'] }
+    const TAB_MODS = { voice: ['voice'], asr: ['voice'], stickers: ['stickers'], imagegen: ['imagegen'], diary: ['diary', 'qzone-social'], speakup: ['speakup', 'purpose'], pet: ['pet'], mood: ['mood', 'memory'], persona: ['memory'], song: ['song'], bili: ['bili'], douyin: ['douyin'], heybox: ['heybox'] }
     const modOn = (st, id) => (st.modules || []).some((m) => m.id === id && m.running)
 
     // 两层导航：上面一排是分组，下面一排是这组里的页面；每组记住上次看的那页，Alt+K 查找功能
@@ -720,7 +800,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     const NAV_GROUPS = [
       { id: 'home', label: '概览', icon: 'M3 10.5 12 3l9 7.5M5.5 9v11.5h13V9M10 20.5v-6h4v6', tabs: ['overview'] },
       { id: 'self', label: '人设', icon: 'M12 12.5a4.25 4.25 0 1 0 0-8.5 4.25 4.25 0 0 0 0 8.5zM4.5 20.5c.9-3.6 3.9-5.5 7.5-5.5s6.6 1.9 7.5 5.5', tabs: ['character', 'group', 'speakup', 'mood', 'persona'] },
-      { id: 'express', label: '表达', icon: 'M20.5 11.5a8 8 0 0 1-11.7 7.1L4 20l1.4-4.4A8 8 0 1 1 20.5 11.5zM9 13.2s1.1 1.5 3 1.5 3-1.5 3-1.5M9.5 9.6h.01M14.5 9.6h.01', tabs: ['voice', 'stickers', 'imagegen', 'song', 'pet'] },
+      { id: 'express', label: '表达', icon: 'M20.5 11.5a8 8 0 0 1-11.7 7.1L4 20l1.4-4.4A8 8 0 1 1 20.5 11.5zM9 13.2s1.1 1.5 3 1.5 3-1.5 3-1.5M9.5 9.6h.01M14.5 9.6h.01', tabs: ['voice', 'asr', 'stickers', 'imagegen', 'song', 'pet'] },
       { id: 'platform', label: '平台', icon: 'M3.5 6.5h17v11h-17zM10.5 9.8v4.4l3.8-2.2z', tabs: ['diary', 'bili', 'douyin', 'heybox'] },
       { id: 'system', label: '系统', icon: 'M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1M15 5v4M9 10v4M17 15v4', tabs: ['connect', 'model', 'access', 'security', 'backup', 'about', 'logs'] },
       { id: 'market', label: '模块', icon: 'M4 9.5 5.5 4h13L20 9.5M4 9.5a2.7 2.7 0 0 0 5.3 0 2.7 2.7 0 0 0 5.4 0 2.7 2.7 0 0 0 5.3 0M5.5 12.5V20h13v-7.5M10 20v-4.5h4V20', tabs: ['market', 'modules', 'local'] },
@@ -731,7 +811,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     const navOrder = (g, t) => { const i = g.tabs.indexOf(t.id); return i >= 0 ? i : g.tabs.length - (g.tabs.includes('logs') ? 1.5 : 0) }
     const NAV_ALIAS = {
       overview: '首页 状态', connect: 'qq 网关 snowluma onebot 登录 工作区', character: '人设 性格 设定 头像', persona: '人物 画像 小档案 群印象 梗概 时间轴 相处经验 说话方式', access: '主人 白名单 权限 群管 改资料',
-      group: '群聊 插话 合并', model: 'ai 大模型 视觉 思考强度', voice: '语音 tts 说话 音色 edge', stickers: '表情 小黄脸 gif 商城表情',
+      group: '群聊 插话 合并', model: 'ai 大模型 视觉 思考强度', voice: '语音 tts 说话 音色 edge', asr: '语音识别 听语音 转文字 asr 语音转文本', stickers: '表情 小黄脸 gif 商城表情',
       imagegen: '画图 图片', diary: '空间 说说 日记', speakup: '搭话 主动', mood: '心情 记忆', song: '唱歌 翻唱 rvc 点歌',
       bili: 'b站 bilibili 视频', douyin: '抖音 短视频 私信', pet: '桌宠 宠物 悬浮窗 气泡 electron', local: '本地 接口 sd sovits', security: '安全 防护 ssrf 内网 图片 下载', modules: '扩展 自己写 模板 安全模式', market: '模块 市场 插件 社区 下载 安装 桌宠 抖音 小黑盒 群管', logs: '日志 报错', about: '关于 关于我们 版本 许可 鸣谢 开源', backup: '备份 恢复 换电脑 迁移 导入 导出',
     }
@@ -1560,6 +1640,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h(Row, { label: '能不能看别的群', hint: '只读白名单里的群，一次最多 50 条，主人随时能看。开到「群里也行」后，ta在 A 群的回答全群都看得到，里面可能有不在 B 群的人；读到的内容也会留在这个会话里。' }, f.choices('group.crossRead', [{ value: 'off', label: '关', desc: '只看当前聊天' }, { value: 'private', label: '私聊可以', desc: '主人，以及私聊里问的人本身在那个群（默认）' }, { value: 'group', label: '群里也行', desc: '再加上群里问的人都在那个群' }])),
           h(Row, { label: '@ 了别人不算叫ta', hint: '有人 @ 别人时顺口提到ta的名字，不算在叫ta；ta还是可以按平时的频率插话。默认关' }, f.sw('group.ignoreAtOthers')),
           h(Row, { label: '新会话先补看聊天记录', hint: '会话第一次开口时先读最近几条，接得上话。默认关' }, f.sw('chat.seedHistory')),
+          h(Row, { label: '每段都发', hint: '一轮里她分几段说，就发几条。私聊多半是闲聊，连着说的几句常常各说各的，关着只发最后一段，看起来就像只回了一个话题；干活时前面多是「我先去查」这类过程话，开着会啰嗦。默认关' }, f.sw('chat.everyStep')),
+          h(Row, { label: '话写在思考里也捞出来', hint: '她偶尔把要说的话全写在思考里，正文是空的，这一轮就什么都发不出去。打开后从思考里找她自己定稿的那段，找不到就不发。默认关' }, f.sw('chat.rescueFromThinking')),
           h(Row, { label: '唤醒词', hint: '一行一个' },f.list('group.wakeWords', { placeholder: '大肥鱼\n肥鱼' })),
         ),
         h(Card, { title: '安全刹车', desc: '只防失控（比如和别的机器人聊停不下来）：ta在一个群里短时间说太多就歇一会儿；别人 @ ta、引用 ta、喊 ta 名字或追问 ta 不算主动接话，不会被刹车拦。平时碰不到。' },
@@ -1721,17 +1803,86 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         h('div', { className: 'ab-muted ab-small' }, !s ? '正在查翻唱音色…' : (s.available ? '变声要跑一次 RVC，会比普通语音慢几秒；单次变声失败会自动用原声。' : (s.message || '翻唱环境还没装好（面板「翻唱」页一键安装、导入音色后才能给语音条变声）')))) 
     }
 
+    /** 豆包语音（火山）：地址 / 请求头 / 请求体都内置好了，这里只挑音色、填 Key。 */
+    function VolcanoVoice({ draft, setDraft }) {
+      const f = useField(draft, setDraft)
+      const [list, setList] = useState(null)
+      const [pv, setPv] = useState({ src: '', busy: false, err: '' })
+      useEffect(() => {
+        get('/voice/volcano-voices').then((r) => setList(r && r.voices ? r.voices : [])).catch(() => setList([]))
+      }, [])
+      const cv = draft.voice.volcano || {}
+      const voices = list || []
+      // 1.0 和 2.0 是两个产品：只开通了 2.0 的账号选 1.0 音色会报「模型没开通」，所以在选项里先标出来
+      const opts = voices.map((v) => ({ value: v.id, label: v.name, desc: [v.ver, v.scene || '通用场景', v.ver === '1.0' ? '要另开通 1.0' : ''].filter(Boolean).join(' · '), group: v.group }))
+      // 面板里存着清单外的 id（自己从控制台复制的）时，也得能正常显示，别变成一个空格子
+      if (list && cv.voiceType && !voices.some((v) => v.id === cv.voiceType)) {
+        opts.unshift({ value: cv.voiceType, label: cv.voiceType, desc: '自定义音色 id（不在预置清单里）', group: '自定义' })
+      }
+      const cur = voices.find((v) => v.id === cv.voiceType)
+      // 选音色时把模型版本一起写掉：1.0 的音色配 2.0 的模型会直接报 speaker permission denied
+      const pick = (id) => {
+        const hit = voices.find((v) => v.id === id)
+        setDraft(setPath(setPath(draft, 'voice.volcano.voiceType', id), 'voice.volcano.resourceId', hit ? hit.resourceId : ''))
+        setPv({ src: '', busy: false, err: '' })
+      }
+      // 试听用面板上现在这一份（Key 没保存也能听），不用先存配置
+      const preview = async () => {
+        setPv({ src: '', busy: true, err: '' })
+        const r = await post('/voice/volcano-preview', { apiKey: cv.apiKey || '', voiceType: cv.voiceType || '', resourceId: cv.resourceId || '', speedRatio: cv.speedRatio })
+        if (r && r.ok) setPv({ src: 'data:' + r.mime + ';base64,' + r.data, busy: false, err: '' })
+        // 后端还是老进程时，这个接口根本不存在，插件框架会统一回「模块没开」——别让人去翻「已安装」
+        else if (r && r.moduleOff) setPv({ src: '', busy: false, err: '试听接口还没生效：把 DeepSeek Harness 关掉重开一次，再回来点这个' })
+        else setPv({ src: '', busy: false, err: (r && r.message) || '试听失败' })
+      }
+      return [
+        h(Row, { key: 'k', label: 'API Key', hint: '火山控制台左侧「API Key」里那一串；只存在这台电脑上，存过就不再显示' },
+          f.text('voice.volcano.apiKey', { type: 'password', size: 'wide', placeholder: cv.apiKeySet ? '已保存（不改就留空）' : '粘进来就行，别的都不用填' }),
+          h('a', { key: 'open', className: 'ab-btn sm', href: 'https://console.volcengine.com/speech/new/setting/apikeys?projectName=default', target: '_blank', rel: 'noreferrer', style: { marginLeft: 8 } }, '打开控制台拿 Key')),
+        h(Row, { key: 'v', label: '音色', hint: cur ? cur.ver + ' 音色，自动配 ' + cur.resourceId : '清单里没有的 id，直接填在配置里也能用' },
+          list === null
+            ? h('span', { className: 'ab-muted' }, '正在读音色清单…')
+            : voices.length
+              ? [
+                h(Select, { key: 's', value: cv.voiceType || '', options: opts, width: 320, onChange: pick }),
+                h(Btn, { key: 'b', small: true, disabled: pv.busy, onClick: preview }, pv.busy ? '念着呢…' : '试听这个'),
+              ]
+              : h('span', { className: 'ab-muted' }, '没读到音色清单：把 DeepSeek Harness 关掉重开一次，再打开面板')),
+        h(Row, { key: 's', label: '语速', hint: '1.0 是原速；拖动调整，范围 0.5～2.0' },
+          h(Range, {
+            min: 0.5,
+            max: 2,
+            step: 0.05,
+            value: Number(cv.speedRatio) || 1,
+            fmt: (v) => Number(v).toFixed(2) + ' 倍',
+            onChange: (v) => setDraft(setPath(draft, 'voice.volcano.speedRatio', Number(v))),
+          })),
+        pv.err ? h('div', { key: 'e', className: 'ab-small', style: { color: 'var(--ab-err, #d9534f)' } }, pv.err) : null,
+        pv.src ? h('div', { key: 'a' }, h('audio', { src: pv.src, controls: true, autoPlay: true, style: { height: 32 } })) : null,
+        h('div', { key: 'n', className: 'ab-muted ab-small' },
+          voices.length ? '共 ' + voices.length + ' 个官方预置音色（2.0 ' + voices.filter((v) => v.ver === '2.0').length + ' 个，1.0 ' + voices.filter((v) => v.ver === '1.0').length + ' 个），版本跟着音色自动配。' : '',
+          '还出不了声就看这两处：',
+          h('a', { key: 'k2', href: 'https://console.volcengine.com/speech/new/setting/apikeys?projectName=default', target: '_blank', rel: 'noreferrer' }, 'API Key'),
+          '（别的服务的 Key 不通用）、',
+          h('a', { key: 'o2', href: 'https://console.volcengine.com/speech/app', target: '_blank', rel: 'noreferrer' }, '开通管理'),
+          '（新账号要在「语音合成大模型」那一项点开通，开通后等几分钟生效）。音色也要账号里开通过才能念，报「speaker permission denied」就换一个。'),
+      ]
+    }
+
     function Voice({ st, draft, setDraft, toast, reload }) {
       const f = useField(draft, setDraft)
+      const voiceDirty = Boolean(st && st.config) && JSON.stringify(draft.voice) !== JSON.stringify(st.config.voice)
       const [txt, setTxt] = useState('晚安啦，今天也辛苦了，明天见～')
       const [src, setSrc] = useState('')
       return h('div', { className: 'ab-grid' },
         h(Card, { title: '说话（文字转语音）', right: f.sw('voice.enabled'), desc: '回复里写了 <voice>…</voice> 的部分会变成 QQ 语音条；对方明确要语音时一定发语音；短回复也有一定概率整条变语音。' },
+          voiceDirty ? h('div', { className: 'ab-note' }, '语音设置有未保存的改动：点「生成」试听会直接用当前设置；真正聊天要等点底部「保存设置」后生效。') : null,
           h('div', { style: { margin: '4px 0 12px' } }, f.choices('voice.engine', [
             { value: 'auto', label: '自动', desc: 'edge-tts 优先，不行用 Windows 语音' },
             { value: 'edge', label: '微软 edge-tts', desc: st.voice.edgeInstalled ? '在线，音色自然（已装好）' : '在线，音色自然（还没装）' },
             { value: 'cosyvoice', label: '本地 CosyVoice', desc: '自己部署的 CosyVoice 服务，可克隆音色' },
             { value: 'gptsovits', label: '本地 GPT-SoVITS', desc: 'GPT-SoVITS api_v2，用参考音频定音色' },
+            { value: 'volcano', label: '豆包语音（火山）', desc: '只填 API Key，选个音色就行' },
             { value: 'http', label: '其他 HTTP 接口', desc: '任意返回音频的地址' },
             { value: 'windows', label: 'Windows 自带', desc: '离线可用，机械感重一些' },
           ])),
@@ -1765,6 +1916,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             h(Row, { key: 'a', label: '参考音频路径', hint: '服务那台电脑上的路径' }, f.text('voice.gptsovits.refAudio', { size: 'wide' })),
             h(Row, { key: 'p', label: '参考音频的文字' }, f.text('voice.gptsovits.promptText', { size: 'wide' })),
           ] : null,
+          draft.voice.engine === 'volcano' ? h(VolcanoVoice, { key: 'volcano', draft, setDraft }) : null,
           draft.voice.engine === 'http' ? [
             h(Row, { key: 'u', label: '接口地址', hint: 'GET：地址里带 {text}；POST：填接口地址就行' }, f.text('voice.http.urlTemplate', { size: 'wide', placeholder: 'https://openspeech.bytedance.com/api/v1/tts' })),
             h(Row, { key: 'm', label: '请求方式' }, f.select('voice.http.method', [{ value: 'GET', label: 'GET' }, { value: 'POST', label: 'POST' }], { width: 140 })),
@@ -1776,13 +1928,50 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h(Row, { label: '短回复变语音的概率' }, f.percent('voice.autoChance')),
           h(Row, { label: '多短算短回复' }, f.range('voice.autoMaxChars', 10, 200, 5, (v) => v + ' 字')),
           h(Row, { label: '表情和语音分开发', hint: '语音条里的表情 / emoji 不念出来，语音发完再单独补一条文字发出去（没有表情就不补）；关掉 = 表情直接丢掉，不补发' }, f.sw('voice.emojiSeparate')),
-          h(Row, { label: '试听', hint: '先保存设置再试听' },
+          h(Row, { label: '试听', hint: '用当前页面设置试听（没保存也生效；本地接口不会把这里顶掉）' },
             h('input', { className: 'ab-input', value: txt, onChange: (e) => setTxt(e.target.value) }),
-            h(Btn, { small: true, onClick: async () => { const r = await post('/voice/test', { text: txt }); if (r.ok) setSrc('data:' + r.mime + ';base64,' + r.data); else toast(r.message) } }, '生成'),
-            src ? h('audio', { src, controls: true, autoPlay: true, style: { height: 32 } }) : null),
+            h(Btn, { small: true, onClick: async () => {
+              setSrc('')
+              const r = await post('/voice/test', { text: txt, voice: draft.voice })
+              if (r.ok) setSrc('data:' + r.mime + ';base64,' + r.data)
+              else toast(r.message)
+            } }, '生成'),
+            src ? h('audio', { key: src, src, controls: true, autoPlay: true, style: { height: 32 } }) : null),
         ),
         h(VoiceSongModel, { draft, setDraft }),
-        h(Card, { title: '听语音（语音转文字）', right: f.sw('voice.asr'), desc: '别人发来的语音会先转成文字再交给ta：优先用 QQ 自带的转文字，不行再用 DSH 自带的语音识别（要在 DSH「插件」里开启「语音输入」）。' },
+      )
+    }
+
+    /** 语音识别单独一页：和「语音」「表情包」同级，不再塞在语音合成下面。 */
+    function Asr({ draft, setDraft, toast }) {
+      const f = useField(draft, setDraft)
+      return h('div', { className: 'ab-grid' },
+        h(Card, { title: '听语音（语音转文字）', right: f.sw('voice.asr'), desc: '别人发来的语音会先转成文字再交给ta：本地接口 → QQ 自带转文字 → 云端识别（可选）→ DSH 自带识别。任何一层失败都会继续试下一层。' },
+          h(Row, { label: '云端识别', hint: '可选；不选就维持原来的顺序（本地 → QQ → DSH）' },
+            f.select('voice.asrApi.provider', [
+              { value: '', label: '不用云端识别' },
+              { value: 'siliconflow', label: '硅基流动' },
+              { value: 'openai', label: 'OpenAI' },
+              { value: 'custom', label: '自定义 OpenAI 兼容' },
+            ], { width: 220 })),
+          draft.voice.asrApi?.provider ? [
+            h(Row, { key: 'u', label: '服务地址', hint: '只填到 /v1，不要带 /audio/transcriptions；留空用预置：硅基 https://api.siliconflow.cn/v1；OpenAI https://api.openai.com/v1' },
+              f.text('voice.asrApi.baseUrl', { size: 'wide', placeholder: draft.voice.asrApi.provider === 'siliconflow' ? 'https://api.siliconflow.cn/v1' : draft.voice.asrApi.provider === 'openai' ? 'https://api.openai.com/v1' : 'http://127.0.0.1:8000/v1' })),
+            h(Row, { key: 'm', label: '模型', hint: '留空用预置：硅基 FunAudioLLM/SenseVoiceSmall；OpenAI whisper-1。换 XingChenASR 要带完整 ID：XingChenAGI/XingChenASR-V3.2-Ultra' },
+              f.text('voice.asrApi.model', { size: 'wide', placeholder: draft.voice.asrApi.provider === 'siliconflow' ? 'FunAudioLLM/SenseVoiceSmall' : draft.voice.asrApi.provider === 'openai' ? 'whisper-1' : 'whisper-1' })),
+            h(Row, { key: 'k', label: 'API Key', hint: '只存在本机，面板不回显；本地服务可留空' },
+              f.text('voice.asrApi.apiKey', { type: 'password', placeholder: draft.voice.asrApi?.apiKeySet ? '已保存（不改就留空）' : '没有就留空' })),
+            h(Row, { key: 'l', label: '语言', hint: '可留空；只对支持 language 的模型有效' },
+              f.text('voice.asrApi.language', { placeholder: 'zh' })),
+            h(Row, { key: 'p', label: '先用谁', hint: 'QQ 通常 1~2 秒；硅基 SenseVoice 实测约 14 秒，建议先 QQ' },
+              f.select('voice.asrApi.prefer', [{ value: 'qq', label: '先 QQ 自带（推荐）' }, { value: 'cloud', label: '先云端识别' }], { width: 220 })),
+            h(Row, { key: 't', label: '测试', hint: '先用内置语音念一句，再交给云端识别；用当前页面设置，没保存也生效' },
+              h(Btn, { small: true, onClick: async () => {
+                toast('正在合成并识别，可能要十几秒…')
+                const r = await post('/voice/asr-provider-test', { text: '今天想吃白米饭', voice: draft.voice })
+                toast(r.ok ? '念的是「' + r.said + '」，听成了「' + r.heard + '」' : r.message)
+              } }, '测试云端识别')),
+          ] : null,
           h(AsrStatus, { toast })),
       )
     }
@@ -1952,6 +2141,39 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             h('div', { className: cx('ab-stickers', picking && 'picking') },
               items.map((it) => h(StickerCell, { key: it.md5, it, onChanged: load, toast, picking, selected: picked.includes(it.md5), onToggle: toggle }))),
         ),
+        h(Card, {
+          title: '贴表情',
+          right: f.sw('stickers.react'),
+          desc: '默认关。打开后看到谁的消息，就可能贴个表情——不一定回话，只在旁边看着也行。emoji 直接给 Unicode 码点（🍬 127852、👍 128077），QQ 老表情是另一套编号（❓ 10068），两种混着用都行。',
+        },
+          h(Row, { label: '主动贴表情的概率', hint: '默认 15%，和「表情包」那张卡里的自动配表情各算各的，互不影响；心情好会更频繁' },
+            h(Range, {
+              min: 0,
+              max: 100,
+              value: pct(draft.stickers.reactChance ?? 0.15),
+              onChange: (v) => setDraft(setPath(draft, 'stickers.reactChance', v / 100)),
+              fmt: (v) => v + '%',
+            })),
+          h(Row, { label: '概率表', hint: '实际概率 = 拖拽条的值 × 心情系数（心情越高越爱贴；超过 100% 就是必贴）' },
+            (() => {
+              const base = Number(draft.stickers.reactChance ?? 0.15) || 0
+              const cell = (key, text, extra) => h('td', { key, style: Object.assign({ padding: '3px 16px 3px 0' }, extra) }, text)
+              return h('table', { style: { borderCollapse: 'collapse', fontSize: 12, marginTop: 2 } },
+                h('thead', null, h('tr', null,
+                  cell('h0', '心情', { opacity: 0.55, fontWeight: 500 }),
+                  cell('h1', '系数', { opacity: 0.55, fontWeight: 500, textAlign: 'right' }),
+                  cell('h2', '实际概率', { opacity: 0.55, fontWeight: 500, textAlign: 'right', paddingRight: 0 }),
+                )),
+                h('tbody', null, REACT_MOOD_BANDS.map(([label, mult]) => h('tr', { key: label },
+                  cell('m', label, { opacity: 0.8 }),
+                  cell('k', mult + '×', { opacity: 0.55, textAlign: 'right' }),
+                  cell('p', Math.min(100, Math.round(base * mult * 1000) / 10) + '%', { textAlign: 'right', paddingRight: 0, fontVariantNumeric: 'tabular-nums' }),
+                ))),
+              )
+            })()),
+          h(Row, { label: '每小时上限', hint: '每个会话单独算，免得在热闹的群里刷屏' }, f.range('stickers.reactMaxPerHour', 0, 60, 1, (v) => v + ' 次')),
+        ),
+        h(FaceMapCard, null),
       )
     }
 
@@ -2875,11 +3097,59 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h(Row, { label: '多久以前的事开始浓缩', hint: '这些天以前的琐碎记忆才会被概括；最近的事先留着具体细节。默认 14 天' }, f.num('memory.compressAfterDays', { min: 1, max: 365 }), h('span', { className: 'ab-muted' }, '天')),
           h(Row, { label: '私聊时想起别处的话', hint: '和你私聊时，带上她最近 24 小时在别的聊天里说过的话，每轮多占约 300 字。只进你的私聊，别处一律不带。默认关。' }, f.sw('memory.crossContext')),
           h('div', { className: 'ab-section-title' }, '向量检索（实验性）'),
-          h('div', { className: 'ab-note' }, '默认关闭。请自己准备兼容 OpenAI 的 embedding 服务，例如 Ollama 的 bge-m3。开启后会把记忆文字和查询文字发给填写的地址；使用云端服务时请自行确认。'),
-          h(Row, { label: '向量检索（实验性）', hint: '补充按意思找记忆；已同步 ' + (stats ? stats.vector || 0 : '–') + ' 条（可刷新页面查看）' }, f.sw('memory.vector.enabled')),
-          h(Row, { label: '服务地址', hint: '填写兼容 OpenAI 的接口根地址，一般以 /v1 结尾' }, f.text('memory.vector.baseUrl', { size: 'wide', placeholder: 'http://127.0.0.1:11434/v1' })),
-          h(Row, { label: '模型' }, f.text('memory.vector.model', { size: 'wide', placeholder: 'bge-m3' })),
-          h(Row, { label: 'API Key', hint: '不需要密钥的本地服务可留空' }, f.text('memory.vector.apiKey', { type: 'password', placeholder: draft.memory.vector?.apiKeySet ? '已保存（不改就留空）' : '没有就留空' })),
+          h('div', { className: 'ab-note' }, '默认关闭。开启后会把记忆文字和查询文字发给填写的 embedding 服务，向量只存在本机；不填 Key 的本地服务（Ollama / LM Studio）也能用。服务出错或超时会自动只用关键词。'),
+          h(Row, { label: '向量检索（实验性）', hint: '补充按意思找记忆；本机已同步 ' + (stats ? stats.vector || 0 : '–') + ' 条（可刷新页面查看）' }, f.sw('memory.vector.enabled')),
+          h(Row, { label: '服务预设', hint: '只是帮你填地址和模型，填完还能改' },
+            f.select('memory.vector.provider', [
+              { value: 'siliconflow', label: '硅基流动' },
+              { value: 'ark', label: '火山方舟（豆包）' },
+              { value: 'openai', label: 'OpenAI' },
+              { value: 'ollama', label: '本地 Ollama' },
+              { value: 'custom', label: '其他兼容服务' },
+            ], { width: 220 }),
+            h(Btn, {
+              small: true, kind: 'ghost',
+              onClick: () => {
+                const p = draft.memory.vector?.provider || 'siliconflow'
+                const preset = {
+                  siliconflow: ['https://api.siliconflow.cn/v1', 'BAAI/bge-m3'],
+                  ark: ['https://ark.cn-beijing.volces.com/api/v3', 'doubao-embedding-large-text-250515'],
+                  openai: ['https://api.openai.com/v1', 'text-embedding-3-small'],
+                  ollama: ['http://127.0.0.1:11434/v1', 'bge-m3'],
+                }[p]
+                if (!preset) return toast('自定义服务请自己填地址和模型')
+                let next = setPath(draft, 'memory.vector.baseUrl', preset[0])
+                next = setPath(next, 'memory.vector.model', preset[1])
+                setDraft(next)
+              },
+            }, '填入推荐值')),
+          h(Row, { label: '服务地址', hint: 'OpenAI 兼容接口根地址，一般以 /v1 结尾；方舟是 /api/v3' }, f.text('memory.vector.baseUrl', { size: 'wide', placeholder: 'https://api.siliconflow.cn/v1' })),
+          h(Row, { label: '模型', hint: '硅基 BAAI/bge-m3；方舟填控制台开通的 doubao-embedding-*' }, f.text('memory.vector.model', { size: 'wide', placeholder: 'BAAI/bge-m3' })),
+          h(Row, { label: 'API Key', hint: '只存在本机，面板不回显；本地服务可留空' }, f.text('memory.vector.apiKey', { type: 'password', placeholder: draft.memory.vector?.apiKeySet ? '已保存（不改就留空）' : '没有就留空' })),
+          h(Row, { label: '自定义请求头', hint: '一行一个「Key: Value」；给 OneAPI/NewAPI 之类加额外头。填了 Authorization 就不再自动加 Bearer' },
+            f.area('memory.vector.headers', { size: 'wide', rows: 2, placeholder: 'X-Api-Key: ...' })),
+          h(Row, { label: '向量维度', hint: '0 = 不传；Qwen3 / OpenAI 的 MRL 模型可以截断，改完建议重建索引' }, f.num('memory.vector.dimensions', { min: 0, max: 8192 })),
+          h(Row, { label: '每批多少条', hint: '方舟等单次 input 上限小，默认 10；本地服务可以调大' }, f.num('memory.vector.batchSize', { min: 1, max: 64 })),
+          h(Row, { label: '查询超时', hint: '超过就这一轮先用关键词，不拖慢回复' }, f.num('memory.vector.queryTimeoutMs', { min: 500, max: 15000, step: 500 })),
+          h('div', { className: 'ab-flex', style: { marginTop: 6 } },
+            h(Btn, { small: true, onClick: async () => { const r = await post('/memory/vector/test', { text: '今天想吃白米饭' }); toast(r.ok ? `向量正常：${r.dims} 维，用时 ${r.ms}ms` : r.message) } }, '测试'),
+            h(Btn, { small: true, kind: 'ghost', onClick: async () => { toast('正在按已保存的设置重建，条数多会分批…'); const r = await post('/memory/vector/rebuild', {}); toast(r.message); setTimeout(() => load(q), 1500) } }, '重建索引')),
+          h('div', { className: 'ab-muted ab-small' }, '「测试」用已保存的设置；改完先点底部保存，再测试/重建。'),
+          h('div', { className: 'ab-section-title' }, '重排候选（Reranker，可选）'),
+          h('div', { className: 'ab-note' }, '对已经找出来的候选重新打分，把真正相关的排前面。默认关闭；超时或失败会退回原来的关键词 + 向量顺序，不影响回复。地址/Key 留空时复用上面的向量服务。'),
+          h(Row, { label: '重排候选', hint: '候选多、说法含糊、记忆库大时提升更明显' }, f.sw('memory.rerank.enabled')),
+          h(Row, { label: '模型', hint: '硅基 `BAAI/bge-reranker-v2-m3` 免费' }, f.text('memory.rerank.model', { size: 'wide', placeholder: 'BAAI/bge-reranker-v2-m3' })),
+          h(Row, { label: '服务地址', hint: '留空复用向量服务地址；一般和 embedding 是同一个 /v1' }, f.text('memory.rerank.baseUrl', { size: 'wide', placeholder: 'https://api.siliconflow.cn/v1' })),
+          h(Row, { label: 'API Key', hint: '留空复用向量服务的 Key；本地服务可留空' }, f.text('memory.rerank.apiKey', { type: 'password', placeholder: '留空复用向量 Key' })),
+          h(Row, { label: '候选数', hint: '每次送多少条给 reranker；越多越慢，20 左右够用' }, f.num('memory.rerank.topN', { min: 2, max: 50 })),
+          h(Row, { label: '超时', hint: '超过就这一轮用原顺序，不拖慢回复' }, f.num('memory.rerank.timeoutMs', { min: 500, max: 10000, step: 500 })),
+          h('div', { className: 'ab-flex', style: { marginTop: 6 } },
+            h(Btn, { small: true, onClick: async () => {
+              const r = await post('/memory/rerank/test', { text: '主人喜欢吃什么' })
+              if (r.moduleOff) toast('重排接口还没生效：把 DSH 完全退出再打开，不是刷新页面')
+              else toast(r.ok ? `重排正常：${r.model}，最高分 ${Number(r.score).toFixed(3)}` : r.message)
+            } }, '测试重排')),
+          h('div', { className: 'ab-muted ab-small' }, '重排只处理已经通过群聊/人物权限过滤的候选，不会看到不该带出的记忆。'),
           h('div', { className: 'ab-section-title' }, '手动加一条'),
           h('div', { className: 'ab-flex' },
             h('input', { className: 'ab-input', style: { flex: '2 1 260px' }, placeholder: '要ta记住的事，例如：主人不吃香菜', value: adding.text, onChange: (e) => setAdding({ ...adding, text: e.target.value }) }),
@@ -3625,8 +3895,22 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const [q, setQ] = useState('')
       const [show, setShow] = useState('all')
       const [cat, setCat] = useState('')
+      const [hot, setHot] = useState(true)
       const load = (force) => get('/modules/community' + (force ? '?force=1' : '')).then(setData)
       useEffect(() => { load() }, [])
+      // 模块市场地址：换索引源（自建索引 / 国内镜像 / 内网部署）。拉取当前值与默认值，改完可保存或恢复内置。
+      const [regUrl, setRegUrl] = useState('')
+      const [regDef, setRegDef] = useState('')
+      const loadReg = () => get('/panel/market/registry').then((r) => { if (r.ok) { setRegUrl(r.registryUrl || ''); setRegDef(r.default || '') } })
+      useEffect(() => { loadReg() }, [])
+      const saveReg = async () => {
+        setBusy('reg')
+        try {
+          const r = await post('/panel/market/registry', { registryUrl: String(regUrl).trim() })
+          if (!r.ok) toast(r.message || '没成功', 'err')
+          else { toast(r.message || '保存好了', 'ok'); loadReg(); load(true) }
+        } catch (e) { toast(e.message) } finally { setBusy('') }
+      }
       // 一直查进度：恢复备份、老用户迁移时模块在后台装，不是从这个页面点的
       useEffect(() => {
         let was = false
@@ -3673,10 +3957,17 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         try { await done(await post('/modules/community/remove', { id: m.id, purge })) } finally { setBusy('') }
       }
       const list = (data && data.list) || []
+      const stats = (data && data.downloads) || {}
       const counts = { all: list.length, installed: list.filter((m) => m.installed).length, update: list.filter((m) => m.update).length }
       const word = q.trim().toLowerCase()
       const cats = [...new Set(list.map((m) => m.category).filter(Boolean))]
+      // 安装量只能从 GitHub 读，读不到时不按热度排，保持索引里的顺序
+      const canHot = !stats.failed && list.some((m) => Number(m.downloads) > 0)
+      const byHot = (a, b) => (Number(b.downloads) || 0) - (Number(a.downloads) || 0) || String(a.name || a.id).localeCompare(String(b.name || b.id), 'zh')
       const shown = list.filter((m) => (!cat || m.category === cat) && (show === 'all' || (show === 'installed' && m.installed) || (show === 'update' && m.update)) && (!word || (m.name + ' ' + m.id + ' ' + (m.description || '') + ' ' + (m.tags || []).join(' ')).toLowerCase().includes(word)))
+      // 关掉热度排序时保持索引里的原顺序，别悄悄改成按名字排
+      if (hot && canHot) shown.sort(byHot)
+      const num = (n) => (Number(n) >= 10000 ? (Number(n) / 10000).toFixed(1).replace(/\.0$/, '') + ' 万' : String(Number(n) || 0))
       const openSettings = (m) => {
         const running = (st.modules || []).find((x) => x.id === m.id)
         return running && running.tab ? () => go(running.tab) : null
@@ -3688,6 +3979,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         return h('div', { key: m.id, className: 'ab-card', style: { display: 'flex', flexDirection: 'column' } },
           h('h3', null, m.name, m.update ? h('span', { className: 'ab-badge' }, '可更新') : null),
           h('div', { className: 'ab-small ab-muted' }, 'v' + (m.installed || m.version) + (m.update ? ' → v' + m.version : '') + (CATEGORY_LABEL[m.category] ? ' · ' + CATEGORY_LABEL[m.category] : '') + (m.author ? ' · ' + m.author : '') + (m.license ? ' · ' + m.license : '')),
+          canHot ? h('div', { className: 'ab-small ab-muted', style: { marginTop: 2 } }, '下载 ' + num(m.downloads) + ' 次' + (m.delisted ? '' : ' · 含更新')) : null,
           h('p', { className: 'ab-desc', style: { margin: '8px 0' } }, m.description),
           capText(m).length ? h('div', { className: 'ab-small ab-muted', style: { marginBottom: 10 } }, '会用到：' + capText(m).join('、')) : null,
           note ? h('div', { className: 'ab-note warn', style: { marginBottom: 10 } }, note) : null,
@@ -3699,12 +3991,20 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       }
       return h('div', { className: 'ab-grid' },
         progBar,
-        h(Card, { title: '模块市场', desc: '给ta装更多本事。模块由社区提供、维护者审核后上架；它们和插件在同一进程运行，能接触账号配置，装之前看清下面列的能力。', right: h(Btn, { small: true, kind: 'ghost', onClick: () => load(true) }, '刷新') },
+        h(Card, { title: '模块市场', desc: '给ta装更多本事。模块由社区提供、维护者审核后上架；它们和插件在同一进程运行，能接触账号配置，装之前看清下面列的能力。下载次数来自模块库 GitHub Releases（更新也算一次），只是热度参考。', right: h(Btn, { small: true, kind: 'ghost', onClick: () => load(true) }, '刷新') },
           h('div', { className: 'ab-flex' },
             h('input', { className: 'ab-input', placeholder: '搜模块', value: q, onChange: (e) => setQ(e.target.value) }),
-            chip('all', '全部'), chip('installed', '已安装'), chip('update', '可更新')),
+            chip('all', '全部'), chip('installed', '已安装'), chip('update', '可更新'),
+            canHot ? h('button', { type: 'button', className: cx('ab-chip', hot && 'on'), onClick: () => setHot((v) => !v), title: '按模块安装包在 GitHub 上的下载次数排序' }, '按热度') : null),
           cats.length > 1 ? h('div', { className: 'ab-flex', style: { marginTop: 10 } }, [''].concat(cats).map((c) => h('button', { key: c || 'any', type: 'button', className: cx('ab-chip', cat === c && 'on'), onClick: () => setCat(c) }, c ? CATEGORY_LABEL[c] || c : '全部分类'))) : null,
+          stats.failed && list.length ? h('div', { className: 'ab-small ab-muted', style: { marginTop: 8 } }, '这次没读到下载次数（GitHub 接口连不上或额度用完了），先按上架顺序排。') : null,
           ((data && data.revoked) || []).map((r) => h('div', { key: r.id, className: 'ab-note err', style: { marginTop: 10 } }, '「' + r.id + '」' + r.version + ' 已撤回：' + r.reason + '。建议关闭或卸载。'))),
+        h(Card, { title: '模块市场地址', desc: '换成你自己的索引源——自建索引、国内镜像（如 gitee / ghproxy 中转）、内网部署都行。留空 = 用内置的 GitHub 地址。换好后市场会立即按新地址刷新。' },
+          h(Row, { label: '索引地址', hint: '完整 http(s) 链接，指向 index.json。默认：' + (regDef || 'GitHub 仓库') },
+            h('input', { className: 'ab-input', style: { width: 'min(420px, 100%)' }, value: regUrl, placeholder: 'https://…/registry/index.json', onChange: (e) => setRegUrl(e.target.value) })),
+          h('div', { className: 'ab-flex', style: { marginTop: 8 } },
+            h(Btn, { small: true, disabled: busy === 'reg', onClick: saveReg }, busy === 'reg' ? '保存中…' : '保存地址'),
+            h(Btn, { small: true, disabled: busy === 'reg' || !regUrl, onClick: () => { setRegUrl(''); saveReg() } }, '恢复内置 GitHub 地址'))),
         !data ? h(Empty, { icon: '⏳', text: '加载中…' }) : null,
         data && data.ok === false ? h('div', { className: 'ab-note warn' }, '市场打不开：' + data.message) : null,
         data && data.ok !== false && !shown.length ? h(Empty, { icon: '🐟', text: list.length ? '没有符合条件的模块' : '市场里还没有模块' }) : null,
@@ -5095,11 +5395,11 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       tabs.splice(tabs.findIndex((t) => t.id === 'logs'), 0, ...extTabs)
       const curTab = tabs.find((t) => t.id === tab) || tabs[0]
       const body = curTab.ext ? ExtPage : {
-        overview: Overview, connect: Connect, character: Persona, access: Access, group: Group, model: Model, voice: Voice,
+        overview: Overview, connect: Connect, character: Persona, access: Access, group: Group, model: Model, voice: Voice, asr: Asr,
         stickers: Stickers, imagegen: ImageGen, diary: Diary, speakup: SpeakUp, pet: PetPanel, mood: Mood, persona: PersonaMemory, song: Song, bili: Bili, douyin: Douyin, heybox: Heybox, local: LocalApi, security: Security, market: Market, modules: Modules, logs: Logs, about: About, backup: Backup,
       }[curTab.id] || Overview
       // 哪些标签有没保存的改动
-      const TAB_KEYS = { connect: ['snowluma', 'botQQ'], access: ['ownerQQ', 'ownerName', 'ownerLevel', 'approvalNotify', 'approvalViaQQ', 'qqApi', 'longTasks', 'profilePerms', 'allow'], group: ['group', 'merge', 'titleFilter', 'chat'], model: ['model', 'chatModels'], voice: ['voice'], stickers: ['stickers'], imagegen: ['imageGen'], diary: ['diary', 'qzoneSocial'], speakup: ['speakUp'], pet: [], mood: ['mood', 'memory'], song: ['song'], bili: ['bili'], douyin: ['douyin'], heybox: ['heybox'], local: ['local'], security: ['security', 'update'] }
+      const TAB_KEYS = { connect: ['snowluma', 'botQQ'], access: ['ownerQQ', 'ownerName', 'ownerLevel', 'approvalNotify', 'approvalViaQQ', 'qqApi', 'longTasks', 'profilePerms', 'allow'], group: ['group', 'merge', 'titleFilter', 'chat'], model: ['model', 'chatModels'], voice: ['voice'], asr: ['voice'], stickers: ['stickers'], imagegen: ['imageGen'], diary: ['diary', 'qzoneSocial'], speakup: ['speakUp'], pet: [], mood: ['mood', 'memory'], song: ['song'], bili: ['bili'], douyin: ['douyin'], heybox: ['heybox'], local: ['local'], security: ['security', 'update'] }
       const tabDirty = (id) => {
         if (!dirty) return false
         if (id.startsWith('ext:')) { const k = id.slice(4); return JSON.stringify((draft.ext || {})[k]) !== JSON.stringify((cfg.ext || {})[k]) }
