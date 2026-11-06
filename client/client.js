@@ -4985,19 +4985,22 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         if (path.endsWith('/login')) setWaiting({ url: r.url, needPaste: r.needPaste })
         else { setWaiting(null); refresh(); toast(path.endsWith('/logout') ? '已退出 ChatGPT' : path.endsWith('/cancel') ? '已取消登录' : '登录成功') }
       }
+      // 1455 被系统保留时：没登录（或正在登录）才提示并显示粘贴框；登录完成后收起，只留「重新登录」
+      const callbackUnavailable = Boolean(status && status.callback && status.callback.available === false)
+      const needManualCallback = callbackUnavailable && (!status?.loggedIn || Boolean(waiting))
       return h('div', null,
         h('div', { className: 'ab-note', style: { margin: '8px 0' } }, '实验性订阅接法：使用非公开图片端点，可用性和额度由账号、工作区及服务端决定。登录信息仅存本机。'),
-        status && status.callback && status.callback.available === false
+        needManualCallback
           ? h('div', { className: 'ab-note warn', style: { margin: '8px 0' } }, '本机 1455 端口被系统保留（Windows 开了 Hyper-V / WSL 时常见）：插件没法自动接收回调，浏览器会显示「无法访问」，但地址栏里就是完整回调地址，复制回来粘贴即可完成登录。')
           : null,
         h(Row, { label: 'ChatGPT 账号' },
           h('span', { className: 'ab-small' }, status === null ? '读取登录状态…' : status.loggedIn ? '已登录：' + (status.email || status.accountId) : '尚未登录'),
-          h(Btn, { small: true, onClick: act('/image/codex/login'), disabled: busy || Boolean(waiting) }, '登录 ChatGPT'),
+          h(Btn, { small: true, onClick: act('/image/codex/login'), disabled: busy || Boolean(waiting) }, status?.loggedIn ? '重新登录 ChatGPT' : '登录 ChatGPT'),
           status?.loggedIn ? h(Btn, { small: true, onClick: act('/image/codex/logout'), disabled: busy }, '退出') : null),
-        (waiting || (status && status.callback && status.callback.available === false)) ? h('div', { className: 'ab-note' },
+        (waiting || needManualCallback) ? h('div', { className: 'ab-note' },
           h('div', null, waiting
             ? (waiting.needPaste ? '1455 收不到回调：' : '') + '在浏览器完成登录后，把地址栏里的完整回调地址粘到下面。'
-            : '先在浏览器完成登录，再把地址栏里的完整回调地址粘到下面；点上面的「登录 ChatGPT」会生成并打开授权链接。'),
+            : '先在浏览器完成登录，再把地址栏里的完整回调地址粘到下面；点上面的登录按钮会生成并打开授权链接。'),
           waiting?.url
             ? h('a', { href: waiting.url, target: '_blank', rel: 'noreferrer', style: { display: 'block', wordBreak: 'break-all' } }, '打开 ChatGPT 授权页')
             : null,
