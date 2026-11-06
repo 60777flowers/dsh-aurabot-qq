@@ -254,10 +254,13 @@ export const DEFAULTS = {
   //   只发最后一段会让人以为她只回了一个话题；干活时前面多是工具调用前后的过程话，开着会显得啰嗦
   // rescueFromThinking：整轮一段正文都没写时，从思考里捞出她自己定稿的那段（默认关，捞不到就不发）
   chat: { seedHistory: false, seedHistoryCount: 20, everyStep: false, rescueFromThinking: false },
+  // 原话档案独立于摘要记忆；默认关闭，由使用者明确开启并管理保留期限。
+  conversationContext: { enabled: false },
   memory: {
     enabled: true, recallCount: 6, recallMode: 'always', recallTriggers: ['上次', '上回', '之前', '以前', '那天', '那次', '还记得', '记不记得', '说过', '提过', '答应', '约好', '那时候'],
     dailyConsolidate: true, consolidateTimes: ['04:00', '16:00'], keepChatlogDays: 7, keepChatlogSet: false, mergeGroups: false, compress: true, compressAfterDays: 14, instantCommands: true, groupMemory: true, searchRrf: true,
     profileFieldChars: 40, profilePeople: 2, profileChars: 240, chatImpression: true, chatImpressionChars: 120, dislikeSilence: 0.85,
+    followUp: true, // 惦记尚无结果的重要事，主动聊天时顺口问问
     shortTerm: true, shortTermHours: 2, shortTermIdleMinutes: 3, shortTermChars: 150,
     gistEnabled: true, gistDays: 180, impressionDays: 365, gistDailyBatches: 6, tierDays: { 1: 7, 2: 30, 3: 90 },
     extractIdleMinutes: 30, extractMinLines: 20, extractDailyBatches: 24, capacity: { auto: 2000, event: 600, diary: 400 }, eventExpireDays: 90, vector: {
@@ -371,6 +374,7 @@ export function normalize(raw) {
   const c = deepMerge(DEFAULTS, raw)
   c.enabled = bool(c.enabled, false)
   c.dryRun = bool(c.dryRun, true)
+  c.conversationContext = { enabled: bool(c.conversationContext?.enabled, false) }
   c.botQQ = qq(c.botQQ)
   c.ownerQQ = qq(c.ownerQQ)
   c.approvalNotify = bool(c.approvalNotify, true)
@@ -603,7 +607,7 @@ export function normalize(raw) {
   // 遗忘基数：1~365 天。超出范围或非数字回默认 20，不让脏配置把记忆一夜清空。
   c.memory.retentionBase = Math.round(num(c.memory.retentionBase, 20, 1, 365))
   c.memory.recallTriggers = [...new Set((Array.isArray(c.memory.recallTriggers) ? c.memory.recallTriggers : String(c.memory.recallTriggers || '').split(/[\n,，;；]+/)).filter((x) => typeof x === 'string').map((x) => x.trim().slice(0, 40)).filter(Boolean))].slice(0, 100)
-  for (const k of ['chatImpression', 'gistEnabled', 'shortTerm']) c.memory[k] = bool(c.memory[k], true)
+  for (const k of ['chatImpression', 'gistEnabled', 'shortTerm', 'followUp']) c.memory[k] = bool(c.memory[k], true)
   c.memory.dislikeSilence = num(c.memory.dislikeSilence, 0.85, 0, 1)
   c.memory.shortTermHours = num(c.memory.shortTermHours, 2, 0.1, BIG)
   c.memory.shortTermIdleMinutes = num(c.memory.shortTermIdleMinutes, 3, 0, BIG)

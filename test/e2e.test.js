@@ -30,6 +30,8 @@ function fakePng(w, h, salt = 0) {
 
 // 「模型」脚本
 async function brain({ preset, text, images, callTool }) {
+  // 脚本按聊天内容匹配分支；每轮的时间/心情提示由独立回归检查，不当作用户新说的话。
+  text = text.split('\n').filter(line => !line.startsWith('【当前本机时间】') && !line.startsWith('（你现在')).join('\n')
   if (text.includes('at+表情测试')) return '<at:10000001> 看这个<sticker:开心>'
   if (text.includes('热重载探针')) { const r = await callTool('probe73', {}); return r ? '探针:' + r.message : '没有探针工具' }
   if (text.includes('慢工具测试')) { const r = await callTool('slow74', {}); return r ? '慢工具好了' : '没有慢工具' }
@@ -481,11 +483,18 @@ test('群聊刹车：主动接话才歇着，群友 @ / 叫名字 / 追问都能
   for (let i = 0; i < 20 && quiet !== mock.calls.length; i++) { quiet = mock.calls.length; await sleep(200) }
   // 刚说完被人追问「人呢」：也算在叫
   turns = fake.turns.length
+  sends = sentTo('group', '559').length
+  mock.push(grp('559', '714', text('人呢')))
+  await until(() => fake.turns.length > turns, 5000)
+  await until(() => sentTo('group', '559').length > sends, 5000)
+  await sleep(600)
+  turns = fake.turns.length
   mock.push(grp('559', '713', text('你们先聊')))
   await sleep(1200)
   assert.equal(fake.turns.length, turns, '没人叫她的普通消息不回')
   mock.push(grp('559', '714', text('人呢')))
-  await until(() => fake.turns.length > turns, 5000)
+  await sleep(1200)
+  assert.equal(fake.turns.length, turns, '群友互相追问不抢答')
   // 主人 @ 照常能叫动
   turns = fake.turns.length
   mock.push(grp('559', OWNER, at('在吗 主人来了'), 'xiaoming'))
@@ -1153,7 +1162,8 @@ test('#58 在 DSH 会话窗口里直接打字：这一轮按主人说的算（�
   const n = fake.turns.length
   mock.push(priv(OWNER, text('在吗')))
   await until(() => fake.turns.length > n)
-  const sid = fake.workspaces[0].sessionIds.at(-1)
+  // 后台任务也会创建会话；用 QQ 映射定位，不能假定最后一个会话就是主人私聊。
+  const sid = api.hub.sessions()['private:' + OWNER]?.sessionId
   assert.ok(sid, '新会话建出来了')
   // 模拟主人在 DSH 会话窗口里直接打字（DSH 会发 user/message，source.kind = 'user'）
   api.hub.onSessionEvent({ id: sid }, { type: 'user/message', data: { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '帮我把 B 站头像改一下' }] } })
