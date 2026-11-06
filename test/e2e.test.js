@@ -29,7 +29,12 @@ function fakePng(w, h, salt = 0) {
 }
 
 // 「模型」脚本
-async function brain({ preset, inputText: text, images, callTool }) {
+async function brain({ preset, text, images, callTool }) {
+  // 脚本按聊天内容匹配分支；时间/记忆/心情等上下文提示由独立回归检查，不当作用户新说的话。
+  text = text.split('\n').filter(line => !line.startsWith('【当前本机时间】') && !line.startsWith('（你现在')).join('\n')
+  // 记忆等上下文可能整段挂在用户消息前面：从聊天正文那行截断
+  const chatLine = text.match(/【(?:私聊|群聊)[\s\S]*$/)
+  if (chatLine) text = chatLine[0]
   if (text.includes('at+表情测试')) return '<at:10000001> 看这个<sticker:开心>'
   if (text.includes('热重载探针')) { const r = await callTool('probe73', {}); return r ? '探针:' + r.message : '没有探针工具' }
   if (text.includes('慢工具测试')) { const r = await callTool('slow74', {}); return r ? '慢工具好了' : '没有慢工具' }
@@ -483,11 +488,18 @@ test('群聊刹车：主动接话才歇着，群友 @ / 叫名字 / 追问都能
   for (let i = 0; i < 20 && quiet !== mock.calls.length; i++) { quiet = mock.calls.length; await sleep(200) }
   // 刚说完被人追问「人呢」：也算在叫
   turns = fake.turns.length
+  sends = sentTo('group', '559').length
+  mock.push(grp('559', '714', text('人呢')))
+  await until(() => fake.turns.length > turns, 5000)
+  await until(() => sentTo('group', '559').length > sends, 5000)
+  await sleep(600)
+  turns = fake.turns.length
   mock.push(grp('559', '713', text('你们先聊')))
   await sleep(1200)
   assert.equal(fake.turns.length, turns, '没人叫她的普通消息不回')
   mock.push(grp('559', '714', text('人呢')))
-  await until(() => fake.turns.length > turns, 5000)
+  await sleep(1200)
+  assert.equal(fake.turns.length, turns, '群友互相追问不抢答')
   // 主人 @ 照常能叫动
   turns = fake.turns.length
   mock.push(grp('559', OWNER, at('在吗 主人来了'), 'xiaoming'))
@@ -1078,7 +1090,7 @@ test('翻聊天记录：读当前聊天更早的消息', async () => {
   assert.match(fake.turns.at(-1).toolCalls[0].result.message, /老张：上周说好去吃火锅/)
 })
 
-const lastCall = (word) => until(() => { const t = fake.turns.at(-1); return t?.inputText.includes(word) && t.toolCalls.length ? t.toolCalls[0] : null })
+const lastCall = (word) => until(() => { const t = fake.turns.at(-1); return t && String(t.userText || t.inputText || '').includes(word) && t.toolCalls.length ? t.toolCalls[0] : null })
 
 test('#6 改资料：默认仅主人私聊，昵称 / 签名 / 头像走 SnowLuma 对应动作', async () => {
   mock.push(priv(OWNER, text('改昵称测试')))

@@ -1,4 +1,4 @@
-// Aurabot · 网页半边：侧栏「自动化任务」下面的「Aurabot」入口 + 整页面板（顶部标签切换功能）。
+﻿// Aurabot · 网页半边：侧栏「自动化任务」下面的「Aurabot」入口 + 整页面板（顶部标签切换功能）。
 // 只读写宿主半边的 /aurabot/api/* 接口，不直接碰会话和 QQ。
 // 视觉：沿用 DSH 的主题变量（--dsw-alias-*），浅色 / 深色自动跟随；点缀用大肥鱼的深蓝、海蓝、白。
 
@@ -776,6 +776,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       { id: 'imagegen', label: '生图', flag: 'imageGen.enabled' },
       { id: 'diary', label: '空间日记', flag: 'diary.enabled' },
       { id: 'speakup', label: '主动搭话', flag: 'speakUp.enabled' },
+      { id: 'autotelic', label: '自驱引擎', flag: 'ext.autotelic.enabled' },
       { id: 'pet', label: '桌宠' },
       { id: 'mood', label: '心情与记忆', flag: 'mood.enabled' },
       { id: 'persona', label: '人物记忆', flag: 'memory.enabled' },
@@ -792,14 +793,14 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       { id: 'logs', label: '日志' },
     ]
     // 内置标签页属于哪个模块：模块都没在跑就不显示这一页
-    const TAB_MODS = { voice: ['voice'], asr: ['voice'], stickers: ['stickers'], imagegen: ['imagegen'], diary: ['diary', 'qzone-social'], speakup: ['speakup', 'purpose'], pet: ['pet'], mood: ['mood', 'memory'], persona: ['memory'], song: ['song'], bili: ['bili'], douyin: ['douyin'], heybox: ['heybox'] }
+    const TAB_MODS = { voice: ['voice'], asr: ['voice'], stickers: ['stickers'], imagegen: ['imagegen'], diary: ['diary', 'qzone-social'], speakup: ['speakup', 'purpose'], pet: ['pet'], mood: ['mood', 'memory'], persona: ['memory'], song: ['song'], bili: ['bili'], douyin: ['douyin'], heybox: ['heybox'], autotelic: ['autotelic'] }
     const modOn = (st, id) => (st.modules || []).some((m) => m.id === id && m.running)
 
     // 两层导航：上面一排是分组，下面一排是这组里的页面；每组记住上次看的那页，Alt+K 查找功能
     // （分组导航的思路来自社区贡献的「导航布局」扩展，这里改成面板自己实现）
     const NAV_GROUPS = [
       { id: 'home', label: '概览', icon: 'M3 10.5 12 3l9 7.5M5.5 9v11.5h13V9M10 20.5v-6h4v6', tabs: ['overview'] },
-      { id: 'self', label: '人设', icon: 'M12 12.5a4.25 4.25 0 1 0 0-8.5 4.25 4.25 0 0 0 0 8.5zM4.5 20.5c.9-3.6 3.9-5.5 7.5-5.5s6.6 1.9 7.5 5.5', tabs: ['character', 'group', 'speakup', 'mood', 'persona'] },
+      { id: 'self', label: '人设', icon: 'M12 12.5a4.25 4.25 0 1 0 0-8.5 4.25 4.25 0 0 0 0 8.5zM4.5 20.5c.9-3.6 3.9-5.5 7.5-5.5s6.6 1.9 7.5 5.5', tabs: ['character', 'group', 'speakup', 'autotelic', 'mood', 'persona'] },
       { id: 'express', label: '表达', icon: 'M20.5 11.5a8 8 0 0 1-11.7 7.1L4 20l1.4-4.4A8 8 0 1 1 20.5 11.5zM9 13.2s1.1 1.5 3 1.5 3-1.5 3-1.5M9.5 9.6h.01M14.5 9.6h.01', tabs: ['voice', 'asr', 'stickers', 'imagegen', 'song', 'pet'] },
       { id: 'platform', label: '平台', icon: 'M3.5 6.5h17v11h-17zM10.5 9.8v4.4l3.8-2.2z', tabs: ['diary', 'bili', 'douyin', 'heybox'] },
       { id: 'system', label: '系统', icon: 'M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1M15 5v4M9 10v4M17 15v4', tabs: ['connect', 'model', 'access', 'security', 'backup', 'about', 'logs'] },
@@ -812,7 +813,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     const NAV_ALIAS = {
       overview: '首页 状态', connect: 'qq 网关 snowluma onebot 登录 工作区', character: '人设 性格 设定 头像', persona: '人物 画像 小档案 群印象 梗概 时间轴 相处经验 说话方式', access: '主人 白名单 权限 群管 改资料',
       group: '群聊 插话 合并', model: 'ai 大模型 视觉 思考强度', voice: '语音 tts 说话 音色 edge', asr: '语音识别 听语音 转文字 asr 语音转文本', stickers: '表情 小黄脸 gif 商城表情',
-      imagegen: '画图 图片', diary: '空间 说说 日记', speakup: '搭话 主动', mood: '心情 记忆', song: '唱歌 翻唱 rvc 点歌',
+      imagegen: '画图 图片', diary: '空间 说说 日记', speakup: '搭话 主动', autotelic: '自驱 自主 后台 账本 审计 做梦 立项', mood: '心情 记忆', song: '唱歌 翻唱 rvc 点歌',
       bili: 'b站 bilibili 视频', douyin: '抖音 短视频 私信', pet: '桌宠 宠物 悬浮窗 气泡 electron', local: '本地 接口 sd sovits', security: '安全 防护 ssrf 内网 图片 下载', modules: '扩展 自己写 模板 安全模式', market: '模块 市场 插件 社区 下载 安装 桌宠 抖音 小黑盒 群管', logs: '日志 报错', about: '关于 关于我们 版本 许可 鸣谢 开源', backup: '备份 恢复 换电脑 迁移 导入 导出',
     }
     const navIcon = (d) => h('svg', { viewBox: '0 0 24 24', 'aria-hidden': true }, h('path', { d }))
@@ -957,6 +958,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         cfg.enabled && !cfg.debug && cfg.dryRun ? h('div', { className: 'ab-note' }, '现在是试运行：她会照常思考回复，但只写进日志，不会真的发到 QQ。注意试运行**会照常写记忆**；只想试人格、不想留痕迹请切到「调试」。') : null,
         st.outbox && st.outbox.count ? h('div', { className: 'ab-note warn' }, `网关还没就绪：已有 ${st.outbox.count} 条消息排队，连接后会自动补发。`) : null,
         cfg.enabled && !conn ? h('div', { className: 'ab-note err' }, '还没连上 QQ 网关' + (st.onebot.problem ? '：' + st.onebot.problem + '。' : '。去「连接」标签看看 SnowLuma 有没有装好、启动没有。') + ' ', h('a', { href: '#', onClick: (e) => { e.preventDefault(); go('connect') } }, '去连接 →')) : null,
+        st.outbox && st.outbox.count ? h('div', { className: 'ab-note warn' }, `网关还没就绪：已有 ${st.outbox.count} 条消息排队，连接后会自动补发。`) : null,
         h('div', { className: 'ab-grid ab-g4' },
           [['今天收到', s.received, '📥'], ['今天发出', s.sent, '📤'], ['语音条', s.voice, '🎙️'], ['表情包', s.stickers, '😺']].map(([l, n, ic]) => h('div', { key: l, className: 'ab-card ab-stat' }, h('span', { className: 'ic', 'aria-hidden': true }, ic), h('div', { className: 'n' }, n || 0), h('div', { className: 'l' }, l))),
         ),
@@ -2428,6 +2430,297 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             h(Btn, { small: true, onClick: async () => { const r = await post('/speakup/fire'); toast(r.message) } }, '现在就让ta来找我')),
         ),
         h(PurposeStatus, { st, toast }),
+        h(OutboundPolicy, { toast }),
+      )
+    }
+
+    // 「自驱引擎」独立页（少爷定的：不属于主动搭话，单独一页）。
+    // P0 只有地基（审计哈希链 + 状态），引擎闭环（立项/做事/做梦）在 P1 之后逐期点亮；
+    // 数据走 /autotelic/status，参数就是 ext.autotelic.*（模块 defaults 里全有）。
+    function Autotelic({ st, draft, setDraft, toast }) {
+      const f = useField(draft, setDraft)
+      const [s, setS] = useState(null)
+      const [pv, setPv] = useState(null)
+      const [showPv, setShowPv] = useState(false)
+      const [busy, setBusy] = useState('')
+      const [jr, setJr] = useState(null)
+      const [openDay, setOpenDay] = useState(null)
+      const load = () => get('/autotelic/status').then((r) => { if (r.ok) setS(r); else setS(null) }).catch(() => setS(null))
+      const loadJournal = () => get('/autotelic/journal').then((r) => { if (r.ok) setJr(r) }).catch(() => {})
+      useEffect(() => { load(); loadJournal(); const t = setInterval(load, 15000); return () => { clearInterval(t) } }, [])
+      const doPreview = async () => { setBusy('preview'); try { const r = await get('/autotelic/preview'); setPv(r); setShowPv(true) } catch (e) { toast(e.message, 'err') } finally { setBusy('') } }
+      const act = async (key, path) => {
+        setBusy(key)
+        try { const r = await post(path, {}); toast(r.message || '这轮结束了', r.ok === false ? 'err' : 'ok') }
+        catch (e) { toast(e.message, 'err') } finally { setBusy(''); load() }
+      }
+      const tasks = (s && s.tasks) || []
+      const sm = (s && s.summary) || {}
+      const TASK_BADGE = { active: '在办', done: '办成', failed: '失败', blocked: '卡住', abandoned: '放弃' }
+      // 点任务行 → 打开「这一天的记录」弹窗（当天审计流水 + 任务 + 复盘刊物）
+      const [dayM, setDayM] = useState(null) // { date, data }
+      const dkey = (ts) => { const d = new Date(ts); const p = (n) => String(n).padStart(2, '0'); return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) }
+      const openTaskDay = (t) => {
+        const date = dkey(t.updatedAt || t.createdAt)
+        setDayM({ date, taskId: t.id, data: null })
+        get('/autotelic/day?date=' + date + '&taskId=' + encodeURIComponent(t.id)).then((r) => { if (r.ok) setDayM({ date, taskId: t.id, data: r }); else { toast(r.message || '没读到', 'err'); setDayM(null) } }).catch((e) => { toast(e.message, 'err'); setDayM(null) })
+      }
+      const clipText = (v, n) => { const t = String(v || ''); return t.length > n ? t.slice(0, n) + '…' : t }
+      // 审计行用纯文本堆叠（不玩 flex 固定宽），样式全部沿用页面既有类
+      const auditLine = (a, i) => h('div', { key: i, className: 'ab-small', style: { padding: '3px 0', borderBottom: '1px dashed var(--ab-line, #dbe5ea)', wordBreak: 'break-all' } },
+        a.kind === 'tool/denied'
+          ? h('span', { style: { color: '#c62828' } }, '⛔ ' + clipText((a.at || '').slice(11, 19) + '　' + (a.kind || '') + (a.tool ? ' · ' + a.tool : '') + '　' + clipText(a.outcome || a.args || '', 160), 220))
+          : clipText((a.at || '').slice(11, 19) + '　' + (a.kind || '') + (a.tool ? ' · ' + a.tool : '') + '　' + clipText(a.outcome || (typeof a.args === 'string' ? a.args : JSON.stringify(a.args) || ''), 160), 260))
+      const dayModal = dayM ? h('div', { style: { position: 'fixed', top: '0px', left: '0px', right: '0px', bottom: '0px', background: 'rgba(12,28,38,.45)', zIndex: '80', overflowY: 'auto', padding: '24px' }, onClick: () => setDayM(null) },
+        h('div', { className: 'ab-card', style: { maxWidth: '760px', margin: '0px auto' }, onClick: (e) => e.stopPropagation() },
+          h('div', { className: 'ab-flex', style: { alignItems: 'center', marginBottom: '8px' } },
+            h('b', null, '这条任务的流水账'),
+            h('span', { style: { flex: '1 1 auto', display: 'inline-block' } }),
+            h(Btn, { small: true, onClick: () => setDayM(null) }, '关闭')),
+          !dayM.data ? h(Empty, { icon: '⏳', text: '读账本中…' }) : h(TaskDayBody, { data: dayM.data, clipText, TASK_BADGE, auditLine }),
+        )) : null
+      const chain = s && s.audit && s.audit.chain
+      const lastBeat = s && s.heartbeats && s.heartbeats.length ? s.heartbeats[s.heartbeats.length - 1] : null
+      // 状态 pill：一眼看清「她在不在动 + 账本干不干净」
+      const pill = (cls, text) => h('span', { className: 'ab-pill' }, h('i', { className: cx('ab-dot', cls) }), text)
+      const pills = !s ? [pill('', '加载中…')] : [
+        pill(s.enabled ? (s.running ? '' : 'ok') : '', s.enabled ? (s.running ? '正在想' : '开着 · 待心跳') : '已关闭'),
+        pill(chain ? (chain.ok ? 'ok' : 'err') : '', chain ? (chain.ok ? '账本完整 · 今日 ' + (s.audit.today || 0) + ' 条' : '⚠ 账本断了') : '账本…'),
+        pill(s.audit && s.audit.wired ? 'ok' : '', s.audit && s.audit.wired ? '审计已接线' : '审计未接线'),
+        s.enabled ? pill('', lastBeat ? '上次心跳 ' + timeAgo(lastBeat.at) : '还没心跳') : null,
+      ].filter(Boolean)
+      // 「她在想的事」分页 + 状态筛选（点行还是打开这条任务的流水账）
+      const [tFilter, setTFilter] = useState('all')
+      const [tPage, setTPage] = useState(0)
+      const PER_PAGE = 6
+      const tFiltered = tasks.filter((t) => tFilter === 'all' || t.status === tFilter)
+      const tPages = Math.max(1, Math.ceil(tFiltered.length / PER_PAGE))
+      const tPageSafe = Math.min(tPage, tPages - 1)
+      const tShown = tFiltered.slice(tPageSafe * PER_PAGE, tPageSafe * PER_PAGE + PER_PAGE)
+      const STATUS_OPTS = [['all', '全部'], ['active', '在办'], ['done', '办成'], ['failed', '失败'], ['blocked', '卡住'], ['abandoned', '放弃']]
+      const taskLine = (t) => h('div', { key: t.id, className: 'ab-li', style: { cursor: 'pointer' }, title: '点开看这条任务的流水账', onClick: () => openTaskDay(t) },
+        h('div', { className: 'meta' },
+          h('b', null, t.title), ' ',
+          h('span', { className: 'ab-badge' }, TASK_BADGE[t.status] || t.status),
+          h('div', null, '好奇 ' + (t.score != null ? t.score.toFixed(2) : '?')),
+          h('div', null, timeAgo(t.updatedAt || t.createdAt))),
+        // 注意：.ab-li 是横排 flex，meta 之外的所有内容必须包进单个 .body（flex:1），
+        // 多塞一个直接子项就会被挤成零宽、文字一字一行竖排（少爷真机抓到的就是这个）
+        h('div', { className: 'body ab-small' },
+          h('div', null, t.reason),
+          t.why ? h('div', { style: { color: '#c62828' } }, '→ ' + t.why) : null))
+      // 复盘刊物：默认只露标题，点开才看全文（页面不都被长文淹没）
+      const jLine = (kind, d) => {
+        const open = openDay === kind + d.day
+        const head = h('div', { className: 'meta', style: { cursor: 'pointer' }, onClick: () => setOpenDay(open ? null : kind + d.day) },
+          h('b', null, (kind === 'daily' ? '每日一页' : '做梦') + ' · ' + d.day), ' ', h('span', { className: 'ab-muted ab-small' }, open ? '▲ 收起' : '▼ 展开'))
+        return h('div', { key: kind + d.day, className: 'ab-li' }, head,
+          open ? h('div', { className: 'body ab-small', style: { whiteSpace: 'pre-wrap' } }, d.text) : null)
+      }
+      const jAll = jr ? [...(jr.daily || []).map((d) => jLine('daily', d)), ...(jr.dreams || []).map((d) => jLine('dream', d))] : null
+      // ---------- 控件：数值 = 滑块 + 文本框；时间 = 原生 time 控件 + 一键清空 ----------
+      const A = 'ext.autotelic.'
+      const aut = getPath(draft, A, {}) || {}
+      const ap = (patch) => setDraft((previous) => {
+        const cur = getPath(previous, A, {}) || {}
+        return setPath(previous, A, { ...cur, ...patch })
+      })
+      const dv = (k) => { const v = aut[k]; return v == null ? AUTOTELIC_DEFAULTS[k] : v }
+      // 数值双联：滑杆拖个大概，框里填精确值（照「桌宠·人物大小」那行的样式）
+      const NumRow = ({ label, hint, k, min, max, step = 1, suffix = '' }) => h(Row, { label, hint },
+        h('div', { className: 'ab-flex', style: { alignItems: 'center', gap: 8 } },
+          h('input', { type: 'range', min, max, step, style: { flex: 1, minWidth: 110, accentColor: 'var(--ab-sea, #2a86c6)' }, value: Number(dv(k)), onChange: (e) => ap({ [k]: Number(e.target.value) }) }),
+          h('input', { className: 'ab-input', type: 'number', min, max, step, style: { width: '84px' }, value: Number(dv(k)), onChange: (e) => { const v = Number(e.target.value); if (Number.isFinite(v)) ap({ [k]: v }) } }),
+          suffix ? h('span', { className: 'ab-muted ab-small', style: { whiteSpace: 'nowrap' } }, suffix) : null))
+      // 时间对（起~止）：原生 time 控件；两格都空 = 该功能关闭
+      const TimeRow = ({ label, hint, kf, kt, clearHint }) => h(Row, { label, hint },
+        h('div', { className: 'ab-flex', style: { alignItems: 'center', gap: 8 } },
+          h('input', { className: 'ab-input', type: 'time', style: { width: '118px' }, value: String(aut[kf] || ''), onChange: (e) => ap({ [kf]: e.target.value }) }),
+          h('span', { className: 'ab-muted ab-small' }, '到'),
+          h('input', { className: 'ab-input', type: 'time', style: { width: '118px' }, value: String(aut[kt] || ''), onChange: (e) => ap({ [kt]: e.target.value }) }),
+          h(Btn, { small: true, onClick: () => ap({ [kf]: '', [kt]: '' }) }, '清空=关'),
+          aut[kf] && aut[kt] ? h('span', { className: 'ab-muted ab-small' }, clearHint || '') : h('span', { className: 'ab-muted ab-small' }, '未启用')))
+      // 节奏预设：一键铺一整套作息；「恢复默认」回到出厂值
+      const PRESETS = {
+        default: { name: '恢复默认（出厂作息）', v: { quietFrom: '23:30', quietTo: '07:30', dailyReviewHour: 23, minBatchForReview: 3, dreamFrom: '03:00', dreamTo: '05:00', minCuriosity: 0.55, maxSteps: 8, maxTasksActive: 8, budgetActionsPerHour: 12, maxCandidates: 3 } },
+        standard: { name: '标准（23:30 睡，03 点做梦）', v: { quietFrom: '23:30', quietTo: '07:30', dailyReviewHour: 23, minBatchForReview: 3, dreamFrom: '03:00', dreamTo: '05:00' } },
+        night: { name: '夜猫子（02:00 睡，10:00 起）', v: { quietFrom: '02:00', quietTo: '10:00', dailyReviewHour: 1, minBatchForReview: 3, dreamFrom: '05:00', dreamTo: '07:00' } },
+        early: { name: '早起鸟（21:00 睡，05:00 起）', v: { quietFrom: '21:00', quietTo: '05:00', dailyReviewHour: 20, minBatchForReview: 3, dreamFrom: '23:00', dreamTo: '01:00' } },
+        always: { name: '全天候（不设安静时段）', v: { quietFrom: '', quietTo: '', dreamFrom: '', dreamTo: '', dailyReviewHour: 22, minBatchForReview: 3 } },
+      }
+      const [preset, setPreset] = useState('')
+      const applyPreset = (name) => {
+        setPreset(name)
+        if (name && PRESETS[name]) { ap(PRESETS[name].v); toast('已套用：' + PRESETS[name].name + '（记得点右下角「保存设置」）', 'ok') }
+      }
+      return h('div', { className: 'ab-grid' },
+        // ---------- 卡 1：总控 + 状态 + 动作 ----------
+        h(Card, { title: '自驱引擎（实验）', right: f.sw('ext.autotelic.enabled'), desc: '她自己的后台会话与一本别人代记的账：够好奇才立项，办完写复盘。账是框架机械记的，删了必断链。（实验性功能，行为可能随版本调整）' },
+          h('div', { className: 'ab-flex', style: { flexWrap: 'wrap', gap: 6, marginBottom: 10 } }, pills),
+          h(Row, { label: '允许后台会话指定 preset', hint: '开着她做事才带工具（fs 只读；无 shell、无 QQ 工具）；关着只「想」不动' }, f.sw('ext.autotelic.presetIdOverride')),
+          h(Row, { label: '允许动手（L1）', hint: '立项后一步一步办；失败 2 次自动卡住，同观察 2 次熔断' }, f.sw('ext.autotelic.allowAct')),
+          chain && !chain.ok ? h('div', { className: 'ab-note err', style: { marginTop: 8 } }, '⚠ 账本断链 @ ' + chain.brokenAt.file + ' 第 ' + chain.brokenAt.line + ' 条：' + chain.brokenAt.reason) : null,
+          h('div', { style: { marginTop: 10, paddingTop: 10, borderTop: '1px dashed var(--ab-line, #dbe5ea)' } },
+            h('div', { className: 'ab-small ab-muted', style: { marginBottom: 6 } }, '手动推一把（开着总开关才有反应）：'),
+            h('div', { className: 'ab-flex' },
+              h(Btn, { small: true, kind: 'primary', onClick: () => act('run', '/autotelic/run'), disabled: busy === 'run' }, busy === 'run' ? h(Fragment, null, h('i', { className: 'ab-spin' }), ' 正在想…') : '现在想一轮'),
+              h(Btn, { small: true, onClick: () => act('step', '/autotelic/step'), disabled: busy === 'step' }, busy === 'step' ? h(Fragment, null, h('i', { className: 'ab-spin' }), ' 正在做…') : '推进一步'),
+              h(Btn, { small: true, onClick: doPreview, disabled: busy === 'preview' }, busy === 'preview' ? '预览中…' : '预览'),
+              h('span', { className: 'ab-muted ab-small' }, s && s.running ? '上一轮还没结束' : '')),
+            showPv && pv ? h('div', { className: 'ab-note', style: { marginTop: 8 } },
+              h('div', { className: 'ab-small' }, '素材 ' + pv.materialCount + ' 条 · 候选 ' + pv.candidates.length + ' 个（阈值 ' + pv.thresholds.minCuriosity + '）'),
+              pv.candidates.map((c) => h('div', { key: c.title, className: 'ab-small', style: { marginTop: 4 } }, '✓ 「' + c.title + '」 ' + c.score.toFixed(2) + ' — ' + c.reason)),
+              pv.rejected.slice(0, 3).map((x, i) => h('div', { key: i, className: 'ab-small ab-muted', style: { marginTop: 2 } }, '✗ 「' + x.title + '」 ' + x.score.toFixed(2) + ' — ' + x.why)),
+              // 预审否决（账本里记着的，2026-11-05 少爷定）：让她「想办但被拦下」的东西看得见
+              (s && s.screenVetoes && s.screenVetoes.length)
+                ? h('div', { style: { marginTop: 8, paddingTop: 8, borderTop: '1px dashed var(--ab-line, #dbe5ea)' } },
+                  h('div', { className: 'ab-small ab-muted' }, '立项前预审拦下的（6 小时内不再送审）：'),
+                  s.screenVetoes.slice(-5).reverse().map((v, i) => h('div', { key: i, className: 'ab-small ab-muted', style: { marginTop: 2 } }, '⊘ 「' + v.title + '」 — ' + v.why)))
+                : null) : null),
+        ),
+        // ---------- 卡 2：她在想的事 ----------
+        h(Card, { title: '她在想的事', desc: '进行中 ' + (sm.active || 0) + ' · 办成 ' + (sm.done || 0) + ' · 卡住 ' + (sm.blocked || 0) + ' · 放弃 ' + (sm.abandoned || 0) },
+          h(Row, { label: '筛选', hint: '只看某一类任务；点行看这条的流水账' },
+            h(Select, { value: tFilter, width: 130, onChange: (v) => { setTFilter(v); setTPage(0) }, options: STATUS_OPTS.map(([value, label]) => ({ value, label })) }),
+            h('span', { className: 'ab-muted ab-small' }, '共 ' + tFiltered.length + ' 条 · 第 ' + (tPageSafe + 1) + ' / ' + tPages + ' 页'),
+            h(Btn, { small: true, disabled: tPageSafe <= 0, onClick: () => setTPage(tPageSafe - 1) }, '‹ 上一页'),
+            h(Btn, { small: true, disabled: tPageSafe >= tPages - 1, onClick: () => setTPage(tPageSafe + 1) }, '下一页 ›')),
+          !s ? h(Empty, { icon: '⏳', text: '加载中…' })
+            : tShown.length === 0 ? h(Empty, { icon: '💭', text: tFiltered.length ? '这一页没有内容' : '账本还空着（或这个筛选下没有任务）。开着总开关等她心跳，或点上面的「现在想一轮」。' })
+              : h('div', { className: 'ab-list' }, tShown.map(taskLine))),
+        // ---------- 卡 3：节奏与预算（预设 + 滑块/时间控件） ----------
+        h(Card, { title: '节奏与预算', desc: '上限是你定的；她能往下调，永远调不上来。' },
+          h(Row, { label: '作息预设', hint: '一键铺一整套作息（安静时段 / 做梦 / 每日一页）；套用后点右下角「保存设置」才生效' },
+            h(Select, { value: preset, width: 220, onChange: applyPreset, options: [{ value: '', label: '选一套预设…' }, ...Object.entries(PRESETS).map(([k, p]) => ({ value: k, label: p.name }))] })),
+          NumRow({ label: '好奇分阈值', hint: '低于不立项；落选原因在「预览」里看', k: 'minCuriosity', min: 0, max: 1, step: 0.05 }),
+          NumRow({ label: '一轮最多立项', hint: '同样的方向不重复开坑', k: 'maxCandidates', min: 1, max: 5 }),
+          NumRow({ label: '同时进行的任务', hint: '到顶就不开新坑，在办的不受影响', k: 'maxTasksActive', min: 1, max: 16 }),
+          NumRow({ label: '单任务步数上限', hint: '失败 2 次也会卡住，不无限重试', k: 'maxSteps', min: 1, max: 32 }),
+          NumRow({ label: '动作数 / 小时', hint: '她动手的次数上限；超了这小时只想想', k: 'budgetActionsPerHour', min: 1, max: 120 }),
+          TimeRow({ label: '安静时段', kf: 'quietFrom', kt: 'quietTo', hint: '只禁打扰你，不禁她做事；清空 = 不启用', clearHint: '这段时间她不吵你' }),
+          NumRow({ label: '每日一页（几点）', hint: '她的自我总结时间', k: 'dailyReviewHour', min: 0, max: 23, suffix: '点' }),
+          NumRow({ label: '攒几件才评', hint: '攒够件数或到点，先到者为准', k: 'minBatchForReview', min: 1, max: 20, suffix: '件' }),
+          TimeRow({ label: '做梦窗口', kf: 'dreamFrom', kt: 'dreamTo', hint: '安静时段最深处做离线整理；清空 = 关闭做梦', clearHint: '到点她会做一次离线整理' }),
+        ),
+        // ---------- 卡 4：她的手 ----------
+        h(Card, { title: '她的手', desc: '框架代码（src/）对她锁死；Python 和用户模块是她攒本事的两条路。' },
+          h(Row, { label: 'Python', hint: '留空自动探测（滤商店假货）；探测不到时手填全路径（会先验真再存）' },
+            s && s.env && (s.env.pythonBin || s.env.bin) ? h('span', { className: 'ab-small', style: { color: 'var(--ab-ok)' } }, '✓ ' + (s.env.pythonBin || s.env.bin) + '（' + s.env.version + '）' + (s.env.source === 'configured' ? ' · 手填' : ' · 自动探测，已持久化')) : h('span', { className: 'ab-muted ab-small' }, '没探测到'),
+            f.text('ext.autotelic.pythonBin', { placeholder: '留空自动探测' }),
+            h(Btn, { small: true, disabled: busy === 'env', onClick: async () => {
+              setBusy('env')
+              try { const r = await post('/autotelic/env', { probe: true }); toast(r.hint || (r.ok ? '检测完了' : '没检测到'), r.ok && r.env && r.env.pythonBin ? 'ok' : 'err'); load() }
+              catch (e) { toast(e.message, 'err') } finally { setBusy('') }
+            } }, busy === 'env' ? '检测中…' : '重新检测')),
+          h(Row, { label: '允许跑 Python' }, f.sw('ext.autotelic.allowPython')),
+          NumRow({ label: '脚本超时', hint: '到点强杀，不悬挂', k: 'scriptTimeoutMs', min: 5000, max: 600000, step: 5000, suffix: '毫秒' }),
+          h(Row, { label: '允许写用户模块', hint: '只能写她自己的 modules/<id>/，写不到框架' }, f.sw('ext.autotelic.allowUserModules')),
+          h('div', { className: 'ab-small ab-muted', style: { margin: '6px 0 2px 2px' } },
+            '提案 ' + (s && s.proposals || 0) + ' 篇 · 攒着没说 ' + (s && s.sayPending || 0) + ' 句' + (s && s.sayPending ? '（安静时段她先把话攒下了）' : '')),
+          s && (s.skills || []).length ? h('div', { className: 'ab-list', style: { marginTop: 6 } }, s.skills.map((k) => h('div', { key: k.id, className: 'ab-li' },
+            h('div', { className: 'meta' }, h('b', null, k.id), ' ', h('span', { className: 'ab-badge' }, k.status === 'learned' ? '已学会' : k.status === 'retired' ? '已退役' : '候选'),
+              ' · 连胜 ' + (k.streak && k.streak.ok || 0) + ' / 连败 ' + (k.streak && k.streak.fail || 0)),
+            h('div', { className: 'body ab-small ab-muted' }, k.title)))) : null,
+        ),
+        // ---------- 卡 5：复盘与做梦 ----------
+        h(Card, { title: '复盘与做梦', desc: '每日一页必有一段「今天没敢说的」（段落在，内容不约束）；真实性靠账本对账。点条目展开全文。' },
+          !jr ? h(Empty, { icon: '⏳', text: '加载中…' })
+            : jAll && jAll.length ? h('div', { className: 'ab-list' }, jAll)
+              : h(Empty, { icon: '🌙', text: '还没有复盘。攒够几件完结、或到了每日一页的点儿，她会自己写。' })),
+        dayModal,
+      )
+    }
+
+    // 「这条任务的流水账」弹窗正文：单任务详情 + 它生命周期内的审计流水。
+    // 拆成独立组件，避免在 Autotelic 里写深嵌套的三元 + IIFE（括号数容易错，少爷真机抓过两次）。
+    function TaskDayBody({ data, clipText, TASK_BADGE, auditLine }) {
+      const t = data.task
+      if (!t) return h(Empty, { icon: '🕳️', text: data.message || '账本里没有这条任务了（可能被修剪掉）' })
+      const from = t.createdAt ? new Date(t.createdAt).toLocaleString() : '?'
+      const to = t.updatedAt ? new Date(t.updatedAt).toLocaleString() : '?'
+      const n = (v) => (v == null ? '?' : Number(v).toFixed(2))
+      const stepLine = (st2, i) => h('div', { key: i, className: 'ab-muted' },
+        '· 步 ' + (i + 1) + ' ' + st2.desc + ' → ' + st2.status
+        + (st2.attempts ? '（试 ' + st2.attempts + ' 次）' : '')
+        + (st2.observation ? '：' + clipText(st2.observation, 80) : '')
+        + (st2.why ? '：' + st2.why : ''))
+      return h('div', null,
+        h('div', { className: 'ab-small ab-muted', style: { marginBottom: '8px' } },
+          '立项于 ' + from + ' · 最近活动 ' + to + ' · 流水 ' + (data.audit || []).length + ' 条 · 笔记 ' + (data.notes || []).length + ' 篇'),
+        (data.notes || []).length ? h('div', { style: { marginBottom: '10px' } },
+          h('div', { className: 'ab-small ab-muted', style: { marginBottom: '4px' } }, '她写的笔记（notes/）：'),
+          (data.notes || []).map((nt) => h('div', { key: nt.file, style: { marginBottom: '8px' } },
+            h('div', { className: 'ab-small ab-muted' }, '📄 ' + nt.file + ' · ' + new Date(nt.at).toLocaleTimeString()),
+            h('div', { className: 'ab-small', style: { whiteSpace: 'pre-wrap', background: 'var(--ab-bg, #f6fafb)', padding: '10px', borderRadius: '8px', marginTop: '2px' } }, nt.text)))) : null,
+        h('div', { className: 'ab-li' },
+          h('div', { className: 'meta' },
+            h('b', null, t.title), ' ', h('span', { className: 'ab-badge' }, TASK_BADGE[t.status] || t.status),
+            h('div', null, '好奇 ' + n(t.score))),
+          h('div', { className: 'body ab-small' },
+            h('div', null, t.reason),
+            (t.steps || []).map(stepLine),
+            t.why ? h('div', { style: { color: '#c62828' } }, '→ ' + t.why) : null)),
+        h('div', { className: 'ab-small ab-muted', style: { margin: '10px 0px 4px 2px' } }, '这条任务的流水账（机械记录，从立项到最近一次活动）：'),
+        (data.audit || []).length ? h('div', null, (data.audit || []).map(auditLine))
+          : h('div', { className: 'ab-small ab-muted' }, '这条任务期间账本上没有工具调用（她只是想了想，或做事回合还没落账）。'))
+    }
+
+    // 「主动发言出站策略」卡片：档位、引擎状态、拦截统计。数据走 /panel/outbound-policy，
+    // 后端已把机器值翻成中文（view 字段），前端只管排版，不另维护翻译表。
+    function OutboundPolicy({ toast }) {
+      const [d, setD] = useState(null)
+      const [busy, setBusy] = useState('')
+      const load = () => get('/panel/outbound-policy').then((r) => { if (r.ok) setD(r.view) })
+      useEffect(() => { load(); const t = setInterval(load, 10000); return () => { clearInterval(t) } }, [])
+      if (!d) return null
+      const save = (patch, key) => async () => {
+        setBusy(key)
+        try {
+          const r = await post('/panel/outbound-policy', patch)
+          if (!r.ok) toast(r.message || '没保存上', 'err')
+          else { setD(r.view); toast('保存好了', 'ok') }
+        } catch (e) { toast(e.message) } finally { setBusy('') }
+      }
+      const toneColor = d.tone === 'ok' ? '#2e7d32' : d.tone === 'bad' ? '#c62828' : '#ef6c00'
+      return h(Card, {
+        title: '主动发言出站策略',
+        desc: '决定刷抖音、逛小黑盒、热榜巡游这类模块「刷完之后能不能直接私聊你」。关掉纳管时它们照旧直接发；开成门闸后，要先问主动搭话/目的引擎的意见。',
+      },
+        // 总体状态条：一句话说清现在到底管没管
+        h('div', { className: 'ab-card', style: { padding: '10px 12px', marginBottom: 10, borderLeft: '3px solid ' + toneColor } },
+          h('b', { style: { color: toneColor } }, d.headline),
+          h('div', { className: 'ab-muted ab-small', style: { marginTop: 4, lineHeight: 1.6 } }, d.summary)),
+        // 档位
+        h(Row, { label: '纳管档位', hint: d.tierHint },
+          h(Select, {
+            value: d.tier,
+            options: (d.tiers || []).map((t) => ({ value: t.value, label: t.label })),
+            onChange: (v) => save({ tier: v }, 'tier')(),
+          })),
+        h('div', { className: 'ab-muted ab-small', style: { margin: '-4px 0 8px 2px' } }, d.tierLabel),
+        // 策略源（谁在做决定）
+        h(Row, { label: '谁来判该不该说', hint: '自动 = 用当前就绪的那个引擎' },
+          h(Select, {
+            value: d.activeMode,
+            options: (d.activeOptions || []).map((o) => ({ value: o.value, label: o.label })),
+            onChange: (v) => save({ activePolicy: v }, 'active')(),
+          })),
+        d.sources && d.sources.length
+          ? h('div', { className: 'ab-list', style: { margin: '6px 0' } }, d.sources.map((s) => h('div', { key: s.name, className: 'ab-li' },
+            h('div', { className: 'meta' },
+              s.title + ' · ' + s.stateLabel + (s.reason ? ' · ' + s.reason : '')))))
+          : h('div', { className: 'ab-note' }, '还没有可用的引擎：请先打开「主动搭话」或「目的引擎」，否则没人来决定该不该说。'),
+        // 统计
+        d.stats && d.stats.length
+          ? h('div', { className: 'ab-flex', style: { gap: 8, flexWrap: 'wrap', margin: '8px 0' } },
+            d.stats.map((s) => h('div', { key: s.label, className: 'ab-card', style: { flex: '1 1 88px', padding: '8px 10px' }, title: s.hint },
+              h('div', { className: 'ab-muted ab-small' }, s.label),
+              h('b', null, s.value))))
+          : null,
+        d.ledger && d.ledger.length
+          ? h(Row, { label: '投递账本', hint: '由宿主代发的条目当前分布' },
+            h('span', { className: 'ab-muted ab-small' }, d.ledger.map((x) => x.label + ' ' + x.count).join(' · ')))
+          : null,
       )
     }
 
@@ -5090,6 +5383,55 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       )
     }
 
+    /** 云备份（Gitee 私有仓库）：每天到点自动打包，把最新备份推上去，远端只留最近 N 份。 */
+    function RemoteBackup({ toast }) {
+      const [s, setS] = useState(null)
+      const [form, setForm] = useState(null)
+      const set = (k) => (e) => setForm({ ...form, [k]: k === 'keep' ? Math.max(1, Math.round(Number(e.target.value) || 1)) : (k === 'enabled' || k === 'autoCreate' || k === 'forceOverwrite' ? e.target.checked : e.target.value) })
+      const load = () => get('/backup/remote/state').then((st) => { setS(st); const v = st.remote || {}; setForm({ enabled: !!v.enabled, owner: v.owner || '', repo: v.repo || '', token: '', branch: v.branch || 'master', time: v.time || '03:30', keep: v.keep || 7, autoCreate: v.autoCreate !== false, forceOverwrite: !!v.forceOverwrite }) })
+      useEffect(() => { load() }, [])
+      const running = Boolean(s && s.job && s.job.running)
+      useEffect(() => { if (!running) return; const t = setInterval(load, 1000); return () => clearInterval(t) }, [running])
+      const call = (p, body) => fetch(API + p, { method: 'POST', headers: { 'x-aurabot-backup': '1', 'content-type': 'application/json' }, body: JSON.stringify(body || {}) }).then((r) => r.json())
+      const after = (r2) => { toast(r2.ok ? (r2.message || '好了') : r2.message, r2.ok ? 'ok' : 'err'); load() }
+      if (!form) return null
+      const job = s && s.job
+      const Input = (k, placeholder, type) => h('input', { className: 'ab-input', type: type || 'text', placeholder, value: form[k], onChange: set(k), style: { minWidth: 0 } })
+      const Field = (label, k, placeholder, type) => h('div', { style: { flex: 1, minWidth: 0 } },
+        h('div', { className: 'ab-small ab-muted', style: { marginBottom: 2 } }, label),
+        Input(k, placeholder, type))
+      return h(Card, { title: '云备份（Gitee 私有仓库）', desc: '每天到点自动打包一份备份，推到你自己的 Gitee 私有仓库，换电脑或坏盘时也能找回来。' },
+        h('div', { className: 'ab-note warn', style: { marginBottom: 10 } }, '⚠️ 仓库必须是「私有」的！备份里有你全部的聊天记录、记忆和账号凭证，推到公开仓库等于把它们挂到网上。推送前会先向 Gitee 核实仓库确实是私有的，公开仓库一律拒绝推。'),
+        h('div', { className: 'ab-flex', style: { alignItems: 'center' } },
+          h('label', { className: 'ab-small', style: { display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' } }, h('input', { type: 'checkbox', checked: form.enabled, onChange: set('enabled') }), '每天自动备份并推送'),
+          form.enabled ? h('span', { className: 'ab-small ab-muted' }, '下次：' + (s && s.nextAt ? String(s.nextAt).slice(0, 16).replace('T', ' ') : '到点就跑')) : null),
+        h('div', { className: 'ab-flex', style: { marginTop: 10 } },
+          Field('Gitee 用户名', 'owner', '如 gitee.com/小鱼 里的「小鱼」'),
+          Field('仓库名（私有）', 'repo', '如 aurabot-backup，没有会自动建'),
+          Field('分支（一般不用改）', 'branch', 'master')),
+        h('div', { className: 'ab-flex', style: { marginTop: 8 } },
+          Field('Gitee 私人令牌', 'token', s && s.remote && s.remote.hasToken ? '已保存，留空就不改' : '下面第 2 步生成的那串', 'password'),
+          Field('每天几点备份', 'time', '如 03:30'),
+          Field('远端留几份', 'keep', '如 7')),
+        h('div', { className: 'ab-flex', style: { marginTop: 8, alignItems: 'center', flexWrap: 'wrap' } },
+          h('label', { className: 'ab-small', style: { display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' } }, h('input', { type: 'checkbox', checked: form.autoCreate, onChange: set('autoCreate') }), '仓库不存在时自动建（建的就是私有，推荐开）'),
+          h('label', { className: 'ab-small', style: { display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' } }, h('input', { type: 'checkbox', checked: form.forceOverwrite, onChange: set('forceOverwrite') }), '允许覆盖已有内容的仓库'),
+          h('span', { className: 'ab-flex' },
+            h(Btn, { small: true, kind: 'primary', disabled: running, onClick: async () => { const body = { ...form }; if (!body.token) delete body.token; after(await call('/backup/remote/config', body)) } }, '保存设置'),
+            h(Btn, { small: true, disabled: running, onClick: async () => { if (!confirm('现在就把最新备份推到 Gitee？（不会重新打包，推 backups 里最新的一份）')) return; after(await call('/backup/push')) } }, running ? '推送中…' : '立即推送'))),
+        job && job.error ? h('div', { className: 'ab-note err', style: { marginTop: 10 } }, '推送失败：' + job.error) : null,
+        job && job.result ? h('div', { className: 'ab-small ab-muted', style: { marginTop: 10 } }, '上次推送：' + job.result.message) : null,
+        h('details', { open: !(s && s.remote && s.remote.hasToken), style: { marginTop: 10 } },
+          h('summary', { className: 'ab-small', style: { cursor: 'pointer' } }, '📖 第一次用？跟着下面 4 步做（点这里收起）'),
+          h('div', { className: 'ab-small ab-muted', style: { marginTop: 8, lineHeight: 1.8 } },
+            h('div', null, h('b', null, '第 1 步 · 注册 Gitee：'), '打开 ', h('a', { href: 'https://gitee.com/signup', target: '_blank', rel: 'noreferrer' }, 'gitee.com'), ' 注册一个账号（手机号或邮箱都行，免费的）。'),
+            h('div', null, h('b', null, '第 2 步 · 生成令牌：'), '登录后点右上角头像 →「设置」→ 左侧「安全设置」→「私人令牌」→「+ 生成新令牌」，勾选 ', h('b', null, 'projects'), ' 权限后提交，把显示出来的那串字符复制粘贴到上面的「Gitee 私人令牌」里（只显示一次，丢了就重新生成一个）。'),
+            h('div', null, h('b', null, '第 3 步 · 安装 git：'), '打开 ', h('a', { href: 'https://git-scm.com/downloads', target: '_blank', rel: 'noreferrer' }, 'git-scm.com/downloads'), '，下载 Windows 版，一路点「下一步」装完，然后重启 DSH。装过的可以跳过。'),
+            h('div', null, h('b', null, '第 4 步 · 填上面的表格：'), '「Gitee 用户名」填你个人主页地址 gitee.com/ 后面那串；「仓库名」自己起一个，比如 aurabot-backup；「私人令牌」粘第 2 步的；勾上「每天自动备份并推送」，点「保存设置」。仓库让插件自动建就行（建出来就是私有的）。如果自己在 Gitee 网页上建，右上角「+」→ 新建仓库时务必选 ', h('b', null, '「私有」'), '，不要勾「设置初始化 README」。'),
+            h('div', { style: { marginTop: 6 } }, '弄完点一次「立即推送」试试，提示「已推送」就成功了，之后每天都会自动备份。备份超过 95MB 会自动分成若干卷推送（文件名带 .part01、.part02…）；恢复时把各卷按顺序合并回一个 zip 再导入——Windows 命令示例：copy /b aurabot-backup-xxx.zip.part01+aurabot-backup-xxx.zip.part02+… 完整的.zip')),
+        h('div', { className: 'ab-small ab-muted', style: { marginTop: 10 } }, '令牌只存在本机配置里，不会上传；推送走电脑上装的 git。有报错看上面的红字，一般都是令牌权限没勾对或 git 没装。')))
+    }
+
     /** 备份：打包数据目录，换电脑时导入，重启 DSH 后换上。 */
     function Backup({ toast }) {
       const [s, setS] = useState(null)
@@ -5124,6 +5466,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           job && job.error ? h('div', { className: 'ab-note err', style: { marginTop: 10 } }, '备份失败：' + job.error) : null,
           job && job.result ? h('div', { className: 'ab-small ab-muted', style: { marginTop: 10 } }, '刚生成：' + job.result.name + '，' + job.result.files + ' 个文件' + (job.result.skipped.length ? '；有 ' + job.result.skipped.length + ' 个文件没能带上：' + job.result.skipped.slice(0, 5).join('、') : '')) : null,
           s && s.list.length ? h('div', { style: { marginTop: 10 } }, s.list.slice(0, 8).map((b) => h('div', { key: b.name, className: 'ab-small' }, b.name + ' · ' + size(b.bytes)))) : null),
+        h(RemoteBackup, { toast }),
         h(Card, { title: '恢复', desc: '在新电脑上先装好 DSH 和 Aurabot，再把备份拖进来。重启 DSH 后自动换上设置和数据、重新下载市场模块、放回 QQ 会话，原来的文件留在 backups 文件夹。' },
           s && s.modules && s.modules.length ? h('div', { className: 'ab-small ab-muted', style: { marginBottom: 8 } }, '还没装回来的模块：' + s.modules.join('、') + '（下次启动再试）') : null,
           s && s.pending ? h('div', { className: 'ab-note warn' }, '已导入 ' + s.pending.files + ' 个文件（备份于 ' + String(s.pending.createdAt || '').slice(0, 16).replace('T', ' ') + '），重启 DSH 后换上。',
@@ -5511,10 +5854,10 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const curTab = tabs.find((t) => t.id === tab) || tabs[0]
       const body = curTab.ext ? ExtPage : {
         overview: Overview, connect: Connect, character: Persona, access: Access, group: Group, model: Model, voice: Voice, asr: Asr,
-        stickers: Stickers, imagegen: ImageGen, diary: Diary, speakup: SpeakUp, pet: PetPanel, mood: Mood, persona: PersonaMemory, song: Song, bili: Bili, douyin: Douyin, heybox: Heybox, local: LocalApi, security: Security, market: Market, modules: Modules, logs: Logs, about: About, backup: Backup,
+        stickers: Stickers, imagegen: ImageGen, diary: Diary, speakup: SpeakUp, autotelic: Autotelic, pet: PetPanel, mood: Mood, persona: PersonaMemory, song: Song, bili: Bili, douyin: Douyin, heybox: Heybox, local: LocalApi, security: Security, market: Market, modules: Modules, logs: Logs, about: About, backup: Backup,
       }[curTab.id] || Overview
       // 哪些标签有没保存的改动
-      const TAB_KEYS = { connect: ['snowluma', 'botQQ'], access: ['ownerQQ', 'ownerName', 'ownerLevel', 'approvalNotify', 'approvalViaQQ', 'qqApi', 'longTasks', 'profilePerms', 'allow'], group: ['group', 'merge', 'titleFilter', 'chat'], model: ['model', 'chatModels'], voice: ['voice'], asr: ['voice'], stickers: ['stickers'], imagegen: ['imageGen'], diary: ['diary', 'qzoneSocial'], speakup: ['speakUp'], pet: [], mood: ['mood', 'memory'], song: ['song'], bili: ['bili'], douyin: ['douyin'], heybox: ['heybox'], local: ['local'], security: ['security', 'update'] }
+      const TAB_KEYS = { connect: ['snowluma', 'botQQ'], access: ['ownerQQ', 'ownerName', 'ownerLevel', 'approvalNotify', 'approvalViaQQ', 'qqApi', 'longTasks', 'profilePerms', 'allow'], group: ['group', 'merge', 'titleFilter', 'chat'], model: ['model', 'chatModels'], voice: ['voice'], asr: ['voice'], stickers: ['stickers'], imagegen: ['imageGen'], diary: ['diary', 'qzoneSocial'], speakup: ['speakUp'], autotelic: [], pet: [], mood: ['mood', 'memory'], song: ['song'], bili: ['bili'], douyin: ['douyin'], heybox: ['heybox'], local: ['local'], security: ['security', 'update'] }
       const tabDirty = (id) => {
         if (!dirty) return false
         if (id.startsWith('ext:')) { const k = id.slice(4); return JSON.stringify((draft.ext || {})[k]) !== JSON.stringify((cfg.ext || {})[k]) }

@@ -37,9 +37,11 @@ import { createCommunity, REGISTRY_URL, GITEE_MIRROR } from './core/community.js
 import { createApprovalRelay } from './security/approval.js'
 import { captureSystemPrompt } from './security/leak-guard.js'
 import { applyPendingRestore, cancelRestore, createBackup, listBackups, pendingModules, pendingRestore, saveUpload, setPendingModules, stageRestore } from './core/backup.js'
+import { pushBackup } from './core/backup-push.js'
 import { cleanText } from './core/text.js'
 import { createBridge } from './core/bridge.js'
 import { createDangerGuard, safeOwnedSession } from './security/danger.js'
+import { createAuditor } from './autotelic/audit.js'
 import { setSsrpMode, assertPublicUrl, fetchGuarded } from './core/net.js'
 import { BUILTINS } from './modules/index.js'
 
@@ -134,9 +136,13 @@ export function apply(ctx) {
   let cfg = loadConfig()
   let mods = null
   let bridge = null
+  // 备份与云备份推送的任务状态声明在顶部：setConfig 里改云备份设置时要提前排定时器
+  let backupJob = null // { running, done, total, error, result }
+  let pushJob = null // { running, ok, error, result, at }
+  let pushTimer = null // 云备份每日定时
   const getConfig = () => cfg
   setSsrpMode(() => (getConfig().security && getConfig().security.ssrfMode === 'loose' ? 'loose' : 'strict'))
-  const secrets = () => { for (const k of ['webuiPassword', 'httpToken', 'wsToken']) registerSecret(cfg.snowluma[k]); registerSecret(cfg.imageGen.apiKey); registerSecret(cfg.bridge.token) }
+  const secrets = () => { for (const k of ['webuiPassword', 'httpToken', 'wsToken']) registerSecret(cfg.snowluma[k]); registerSecret(cfg.imageGen.apiKey); registerSecret(cfg.bridge.token); registerSecret(cfg.backup?.remote?.token) } // backup 令牌也按密钥脱敏（云备份）
   const setConfig = (next) => {
     const before = cfg
     cfg = saveConfig(next)
@@ -149,6 +155,7 @@ export function apply(ctx) {
     if (bridge && before.bridge.dshTools !== cfg.bridge.dshTools) bridge.refresh()
     if (mods && (JSON.stringify(before.modules) !== JSON.stringify(cfg.modules) || before.safeMode !== cfg.safeMode)) mods.sync().catch(() => {})
     mods?.emit('config', cfg, before)
+    if (JSON.stringify(before.backup?.remote) !== JSON.stringify(cfg.backup?.remote)) scheduleRemoteBackup()
     return cfg
   }
   secrets()
@@ -258,6 +265,7 @@ export function apply(ctx) {
       hub.onNotice(ev).catch((error) => log.debug('处理通知出错：', error.message))
     }
   }
+  // 网关未就绪时先攒着：只有「确定没发出去」的消息才入队，连接后按 TTL 补发。
   const outbox = createOutbox({ log: logger.child('outbox') })
   const onebot = createOneBotClient({
     endpoint,
@@ -281,6 +289,17 @@ export function apply(ctx) {
       handleEvent(ev)
     },
   })
+  async function flushOutbox () {
+    if (onebotState !== 'connected' || !loginOk) return
+    try {
+      const r = await outbox.flush((action, params, opts) => onebot.call(action, params, { ...opts, retries: 0 }))
+      if (r.sent || r.dropped || r.left) log.info(`补发队列：成功 ${r.sent}，丢弃 ${r.dropped}，剩余 ${r.left}`)
+    } catch (error) {
+      logger.child('onebot').warn('补发队列出错：', error.message)
+    }
+  }
+  // 连接后漏掉的、或补发中途又断网的，定时再试；没连接时直接返回。
+  ctx.effect(() => ctx.interval(() => { flushOutbox().catch(() => {}) }, 10_000), 'aurabot: 补发队列')
   const groupRoles = createGroupRoles({ onebot, getConfig, log: logger.child('chat') })
 
   async function flushOutbox () {
@@ -623,6 +642,29 @@ export function apply(ctx) {
     return () => { try { if (typeof off === 'function') off() } catch (error) {} }
   }, 'aurabot: 危险命令确认')
 
+  // ---------- 自驱引擎审计（P0.5 地基，docs/AUTOTELIC-PLAN.md §4.1）----------
+  // 「她可以骗主人，但不能骗账本」：她（system:autotelic* 会话）的工具调用全量机械落盘（哈希链）。
+  // 三条硬规矩：只记录不放行（永远 return next()）；异步入队绝不同步写盘（pre-execute 是进程级
+  // waterfall，同步写会拖住主人 GUI 里的工具调用）；失败静默（审计挂了不能影响正常聊天）。
+  // 过滤口径：isOwnedSession() 且 chatOfSession 以 system:autotelic 开头，两个条件都要——
+  // 主人 GUI 会话、QQ 私聊、群聊里的调用一律不进她的账本。模块侧经 core.autotelicAuditOn 得知已接线。
+  const autotelicAudit = createAuditor({
+    dir: dataDir('modules-data', 'autotelic', 'audit'), // host 侧拿不到模块 api，要自己带上 modules-data/autotelic 前缀
+    chatOfSession: (sessionId) => { try { return hub.chatOfSession?.(sessionId) || '' } catch (error) { return '' } },
+    isOwnedSession: safeOwnedSession(typeof hub?.isOwnedSession === 'function' ? (sessionId) => hub.isOwnedSession(sessionId) : null),
+    // 写工具只许写她自己的数据目录（2026-11-05 真机审计实证：她确实用 edit/write 改自己的 notes，
+    // 属于预期用法，所以不封工具、只封路径；框架代码 src/ 一律不许动）
+    ownRoot: dataDir('modules-data', 'autotelic'),
+    log: logger.child('自驱审计'),
+  })
+  core.autotelicAuditOn = true
+  ctx.effect(() => {
+    let off = null
+    try { off = ctx.on('tools/pre-execute', (exec, next) => autotelicAudit.preExecute(exec, next)) } catch (error) { log.debug('挂自驱审计失败：', error.message) }
+    return () => { try { if (typeof off === 'function') off() } catch (error) {} }
+  }, 'aurabot: 自驱审计（工具意图）')
+  ctx.effect(() => { try { core.autotelicAudit = autotelicAudit } catch {} return () => { autotelicAudit.dispose().catch(() => {}) } }, 'aurabot: 自驱审计（卸载冲账）')
+
   // ---------- 桌宠端口注入（破「端口自举死锁」） ----------
   // pet 模块写 host.json 的 baseUrl 需要真实 Web 端口，而它自己监听不到（端口未知时只能写 null，
   // 客户端连不上 → 学不到 Host 头 → 死锁）。DSH 的 webServer 服务知道端口（ctx.webServer.port，
@@ -721,6 +763,8 @@ export function apply(ctx) {
       } catch (error) {
         log.warn('会话事件处理出错：', error.message)
       }
+      // 自驱审计补记「结果」（pre-execute 只拿得到意图；tool/* 事件来了就记一条 outcome，失败静默）
+      try { autotelicAudit.onSessionEvent(session, event) } catch (error) { log.debug?.('自驱审计补记失败：', error.message) }
       // 桌宠的「干活状态」动画 / 结束提醒：把同一条事件顺手转给 pet 模块（模块没开就是 null，纯旁路）
       // QQ 聊天会话不转：聊天每句都有 turn/start→turn/end，桌宠会每句话弹一次「完工」气泡/动作（#184）
       try {
@@ -762,6 +806,7 @@ export function apply(ctx) {
   ctx.effect(() => () => {
     unloaded = true
     clearTimeout(firstWatch)
+    if (pushTimer) { clearTimeout(pushTimer); pushTimer = null } // 云备份的每日定时也要收尾，别留悬空回调
     dangerGuard?.dispose()
     approvalRelay?.dispose()
     hub.dispose()
@@ -1296,7 +1341,7 @@ export function apply(ctx) {
   route('/commands', async () => ({ ok: true, list: commandList(mods.commands()) }))
   // 更新：检查 GitHub 上有没有新版本；这次更新了什么
   const checkUpdate = createUpdateChecker({ pkg: PKG, log, unstable: () => getConfig().update.unstable })
-  // 宿主环境（Windows/macOS/Linux + 桌面版/网页版）决定更新命令怎么写、按钮能不能直接跑
+  // 宿主环境（Windows/macOS/Linux + 桌面版/网页版）决定更新命令怎么写、发布页指向哪
   const updateEnv = hostEnv()
   const updatePlanOf = (result) => updatePlan({ repo: result.repo || repoOf(PKG), channel: result.channel || 'main', latest: result.latest || '', env: updateEnv })
   route('/update/check', async (req) => {
@@ -1528,8 +1573,7 @@ export function apply(ctx) {
       child.once('spawn', () => { child.unref(); resolve({ ok: true, message: '打开了' }) })
     })
   }
-  // 备份：文件里有账号凭证，只存在本机文件夹，不提供网页下载
-  let backupJob = null // { running, done, total, error, result }
+  // 备份：文件里有账号凭证，只存在本机文件夹，不提供网页下载（backupJob 声明在文件顶部，云备份的定时器要提前用到）
   const backupAction = (run) => async (req) => {
     if (req.method !== 'POST' || req.headers?.['x-aurabot-backup'] !== '1') return { ok: false, message: '请从面板发起操作' }
     return run(req)
@@ -1555,6 +1599,59 @@ export function apply(ctx) {
     try { return await stageRestore(path) } catch (error) { return { ok: false, message: error.message } }
   }))
   route('/backup/cancel', backupAction(async () => { cancelRestore(); return { ok: true, message: '取消了' } }))
+  // ---------- 云备份：每天到点自动打包，并把最新备份推到 Gitee 私有仓库（走本机 git）----------
+  const alive = () => { try { return !unloaded } catch { return true } }
+  const nextRemoteAt = () => {
+    const r = cfg.backup?.remote
+    if (!r?.enabled) return null
+    const [hh, mm] = String(r.time || '03:30').split(':').map(Number)
+    const next = new Date()
+    next.setHours(hh, mm, 0, 0)
+    if (next.getTime() <= Date.now()) next.setDate(next.getDate() + 1)
+    return next.toISOString()
+  }
+  const remoteView = (r = cfg.backup?.remote || {}) => ({ enabled: !!r.enabled, owner: r.owner, repo: r.repo, branch: r.branch, time: r.time, keep: r.keep, autoCreate: r.autoCreate !== false, forceOverwrite: !!r.forceOverwrite, hasToken: Boolean(r.token) })
+  route('/backup/remote/state', async () => ({ ok: true, remote: remoteView(), job: pushJob, nextAt: nextRemoteAt() }))
+  route('/backup/remote/config', backupAction(async (req) => {
+    const patch = { ...(await readBody(req)) }
+    if (!patch.token) delete patch.token // 令牌留空 = 沿用旧值，别把配好的抹掉
+    setConfig(mergeFromPanel(cfg, { backup: { remote: patch } })) // setConfig 里会重排定时器
+    const r = cfg.backup.remote
+    log.info(`云备份设置已更新｜${r.enabled ? `每天 ${r.time} 推 ${r.owner}/${r.repo}，留 ${r.keep} 份` : '关'}`)
+    return { ok: true, message: '存好了', remote: remoteView() }
+  }))
+  const doPush = async (pack) => {
+    if (pushJob?.running) return { ok: false, message: '上一次推送还没跑完' }
+    if (backupJob?.running) return { ok: false, message: '正在打包，等这轮打包完再推' }
+    pushJob = { running: true, pack: !!pack, at: Date.now() }
+    try {
+      if (pack) {
+        const result = await createBackup({ version: VERSION, workspaceDir: workspaceDirOf(getConfig()) })
+        log.info(`云备份自动打包完成：${result.name}，${result.files} 个文件`)
+      }
+      const r = await pushBackup(getConfig().backup?.remote, { version: VERSION })
+      pushJob = { running: false, ok: true, result: r, at: Date.now() }
+      log.info(`云备份推送完成：${r.message}`)
+    } catch (error) {
+      pushJob = { running: false, ok: false, error: error.message, at: Date.now() }
+      log.error('云备份推送失败：', error.message)
+    } finally {
+      scheduleRemoteBackup() // 打包+推送耗时不定，跑完重排到下一天
+    }
+    return { ok: true, message: '推送流程跑完了，结果看状态' }
+  }
+  route('/backup/push', backupAction(async () => doPush(false)))
+  const scheduleRemoteBackup = () => {
+    if (pushTimer) { clearTimeout(pushTimer); pushTimer = null }
+    const r = cfg.backup?.remote
+    if (!r?.enabled || !alive()) return
+    const [hh, mm] = String(r.time || '03:30').split(':').map(Number)
+    const next = new Date()
+    next.setHours(hh, mm, 0, 0)
+    if (next.getTime() <= Date.now()) next.setDate(next.getDate() + 1)
+    pushTimer = setTimeout(() => { pushTimer = null; if (alive()) doPush(true) }, next.getTime() - Date.now())
+    pushTimer.unref?.()
+  }
   route('/local/status', async () => ({ ok: true, dir: local.dir(), list: local.status() }))
   route('/local/template', async (req) => {
     const slot = String((await readBody(req)).slot || '')
@@ -1639,7 +1736,7 @@ export function apply(ctx) {
       default: REGISTRY_URL,
       sources: [
         { id: 'github', label: 'GitHub 官方源', url: REGISTRY_URL, note: '默认；海外直连，国内偶尔慢' },
-        { id: 'gitee', label: 'Gitee 官方镜像', url: GITEE_MIRROR, note: '国内直连更稳；每天跟 GitHub 同步一次' },
+        { id: 'gitee', label: 'Gitee 官方镜像', url: GITEE_MIRROR, note: '国内直连更稳；每天跟 GitHub 的 registry 分支同步一次' },
         { id: 'custom', label: '自定义', url: '', note: '自建索引 / ghproxy 中转 / 内网部署' },
       ],
     }
@@ -1837,6 +1934,7 @@ export function apply(ctx) {
     }
   })
 
+  scheduleRemoteBackup() // 云备份：到点自动打包推送（配置里关着就是空操作）
   log.info(`Aurabot v${VERSION} 已加载｜总开关 ${cfg.enabled ? '开' : '关'}｜试运行 ${cfg.dryRun ? '开' : '关'}｜工作区 ${workspaceDirOf(cfg)}`)
 
   return {

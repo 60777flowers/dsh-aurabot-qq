@@ -1,4 +1,5 @@
 // 检查更新：读 GitHub 上主分支的 package.json，比版本号。结果缓存 6 小时。
+
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
@@ -32,10 +33,7 @@ export function repoOf(pkg) {
   return m ? `${m[1]}/${m[2]}` : ''
 }
 
-/**
- * 宿主环境：平台、桌面版/网页版、profile、CLI 路径。
- * 桌面版带自带 CLI（resources/runtime/cli/bin），网页版的 DSH 一般装在 PATH 里。
- */
+/** 找 dsh CLI：桌面版优先用安装目录里的 cli，找不到就用 PATH 里的 dsh。 */
 export function findCli({ platform = process.platform, exePath = process.execPath, resourcesPath = process.resourcesPath || '', env = process.env } = {}) {
   const bin = platform === 'win32' ? 'dsh.cmd' : 'dsh'
   const roots = []
@@ -52,6 +50,7 @@ export function findCli({ platform = process.platform, exePath = process.execPat
   return { cli: 'dsh', mode: 'web', resourcesPath: '' }
 }
 
+/** 宿主环境：面板据此决定命令怎么写、显示哪个平台标签。 */
 export function hostEnv(opts = {}) {
   const platform = opts.platform || process.platform
   const profile = opts.profile || process.env.DSH_PROFILE || 'desktop'
@@ -68,9 +67,9 @@ export function hostEnv(opts = {}) {
   }
 }
 
-/** 更新命令：把安装命令再跑一次就会拉到最新版。按平台/形态给对应的写法。 */
+/** 更新命令：按平台/形态给对应写法。 */
 export function updateCommand(repo, channel = 'main', opts = {}) {
-  const env = opts.env || hostEnv({ platform: opts.platform || 'win32', cli: opts.cli, profile: opts.profile })
+  const env = opts.env || hostEnv({ platform: opts.platform, cli: opts.cli, profile: opts.profile })
   const platform = env.platform || process.platform
   const profile = env.profile || 'desktop'
   const cli = env.cli || (platform === 'win32' ? 'dsh.cmd' : 'dsh')
@@ -78,7 +77,7 @@ export function updateCommand(repo, channel = 'main', opts = {}) {
   return platform === 'win32' ? `& "${cli}" ${arg}` : `"${cli}" ${arg}`
 }
 
-/** 给面板用的更新计划：链接、命令、环境标签一次给全。 */
+/** 更新计划：链接、命令、环境标签一次给全。 */
 export function updatePlan({ repo, channel = 'main', latest = '', env = hostEnv() } = {}) {
   return {
     platform: env.platform,

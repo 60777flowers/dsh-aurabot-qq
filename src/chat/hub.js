@@ -35,6 +35,7 @@ import { withPromptCapture, currentPromptSources, memoryPromptRanges } from '../
 import { noticeText } from './notices.js'
 import { createConversationArchive, packEvidence } from './conversation-context.js'
 import { matchesMemoryKeyword, parseMemoryCommand } from '../features/memory.js'
+import { currentTimeLine } from './time-context.js'
 
 // QQ 会话的工作区目录，第一次收到消息时自动创建。面板「连接」页能改（config.workspaceDir，#32）；
 // 没填就用环境变量 AURABOT_WORKSPACE，再没有：老安装沿用 C:\Aurabot\qq-chats，新安装放在用户目录下（不用往 C 盘根目录写）
@@ -463,11 +464,21 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     return chat.userId === getConfig().ownerQQ ? `QQ · ${owner}私聊` : `QQ 私聊 · ${chat.nickname || chat.userId}`
   }
 
+  // 后台会话点名 preset（自驱引擎 P0.2，docs/AUTOTELIC-PLAN.md §3/§4.2）：
+  // 只有主人明确开了 ext.autotelic.presetIdOverride 才接受 chat.presetId 覆盖（默认关，最坏情况也只是「她不会动」）；
+  // noTools 永远压过 presetId——purpose/qzone 的纯文本回合不许借机拿到 preset 工具。
+  // 注意：system 会话的 level 判定与 access.presetFor 都不改（改了 system 会话会拿到主人专属工具）。
+  function presetForChat(chat, level) {
+    const cfg = getConfig()
+    const wanted = chat.noTools ? '' : String(chat.presetId || '').trim()
+    return wanted && cfg.ext?.autotelic?.presetIdOverride ? wanted : presetFor(level, cfg)
+  }
+
   async function createSession(chat, level, turnToken) {
     const ws = await ensureWorkspace()
     checkTurn(chat.chatId, turnToken)
     assertActive()
-    const preset = presetFor(level, getConfig())
+    const preset = presetForChat(chat, level)
     const debug = getConfig().debug
     // 调试会话和正式会话分开，标题也标出来，免得在侧栏里点错
     const title = titleFor(chat) + (debug ? '（调试）' : '')
@@ -511,7 +522,8 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     checkTurn(chat.chatId, turnToken)
     const cfg = getConfig()
     const level = chat.kind === 'system' ? (chat.noTools ? 'chat' : 'social') : levelFor(cfg, chat)
-    const preset = presetFor(level, cfg)
+    // 复用键是 entry.preset（resolved 后的值）：presetId 变了 preset 就变，自然触发一次重建（预期行为）
+    const preset = presetForChat(chat, level)
     const entry = map().chats[chat.chatId]
     // 调试和正式用不同的会话：不然切回正式时，调试期间那些对话还在上下文里，等于被她“记住”了。
     const mode = cfg.debug ? 'debug' : 'live'
@@ -1198,6 +1210,9 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       groupSaid.set(gid, said)
       groupEngaged.set(gid, Date.now() + ENGAGE_MS) // 在群里说了话 = 加入了话题
     }
+    if (sentTexts.length && typeof opts.onDelivered === 'function') {
+      try { opts.onDelivered() } catch (error) { log.warn('发送回执处理出错：', error.message) }
+    }
     const said = items.map((i) => (i.kind === 'text' || i.kind === 'voice' ? i.value : `[${i.kind}]`)).join(' ')
     logChat(chatId, 'bot', said)
     // 不是这个聊天自己那一轮发的（主人在私聊里让她去群里说、扩展模块代发）：记下来，下次这个聊天交给她时告诉她自己说过什么。
@@ -1259,7 +1274,8 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
           // 不在这里记账：deliver 会在真发出去之后自己 logChat，一条都没发成功就不记。
           // 这里再记一次会让每个中间段在聊天流水里出现两遍，发送失败时还会把没发出去的话算成说过。
           log.debug(`${chatId}：分条发出上一段（${prev.length} 字）`)
-          chainSend(chatId, () => deliver(chatId, prev, { own: true, interim: true }), '分条发送出错：')
+          const onDelivered = st.onDelivered
+          chainSend(chatId, () => deliver(chatId, prev, { own: true, interim: true, onDelivered }), '分条发送出错：')
         }
       }
       return
@@ -1294,6 +1310,9 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       const sys = st.system
       const wantVoice = Boolean(st.wantVoice)
       const autoReply = st.autoReply
+      const onDelivered = st.onDelivered
+      st.onDelivered = st.pendingOnDelivered || null
+      st.pendingOnDelivered = null
       st.autoReply = null
       st.text = ''
       // 上一轮还在跑时新消息已经排队给「下一轮」：这一轮 turn/end 不能把下一轮的说话人清掉（#90）
@@ -1319,7 +1338,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       // 发完再放开：发送期间来的消息也攒到下一段。
       // 没有中间段在发的时候就走原来的路径（同步开始、release 跟着这一条走），时序和以前一模一样；
       // 只有前面真有中间段没发完时才排队，保证最后一段一定是最后一条（#214 review）。
-      const sendLast = () => deliver(chatId, text, { wantVoice, autoReply, userText: st.lastText || '', own: true })
+      const sendLast = () => deliver(chatId, text, { wantVoice, autoReply, userText: st.lastText || '', own: true, onDelivered })
         .catch((error) => log.warn('发送出错：', error.message))
         .finally(() => release(chatId, turnToken))
       const pending = sendChain.get(chatId)
@@ -2334,34 +2353,9 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       const lines = earlier.map((x) => `${new Date(x.at).toTimeString().slice(0, 5)} 你：${x.text}`)
       content = [{ type: 'text', text: `【你之前在这个聊天里主动说过（是在别处安排下发的，这里的人都看到了）】\n${lines.join('\n')}\n` }, ...content]
     }
-    content = cleanContent(content)
-    // 这一轮还在跑、这句是排队给下一轮的：额外记到 pendingSenders，等上一轮 turn/end 时接过去（#90）
-    // ⚠ 不能用 busy：flush 一开始就把 busy 置上了，否则会把这一批自己的说话人塞进下一轮，
-    //    主人和群友混在一起会让「仅主人」判断误拒（sticker-owner 回归抓到过）。
-    const queuedNextTurn = !opts.steer && running.has(chat.chatId)
-    if (queuedNextTurn) {
-      st.pendingArchiveNamespace = archiveNamespace; st.pendingArchiveContextAt = archiveContextAt
-    } else if (!opts.steer || !st.archiveNamespace) {
-      st.archiveNamespace = archiveNamespace; st.archiveContextAt = archiveContextAt
-    }
-    const addSender = (u) => {
-      st.senders.add(String(u))
-      if (queuedNextTurn) {
-        if (!st.pendingSenders) st.pendingSenders = new Set()
-        st.pendingSenders.add(String(u))
-      }
-    }
-    if (senderId) addSender(senderId)
-    for (const s of opts.extraSenders || []) addSender(s)
-    // 上一句也留着：这一句太短（「嗯嗯」「然后呢」）时一起拿去想起相关的事
-    if (st.lastText) st.prevText = st.lastText
-    st.lastText = String(opts.queryText ?? content.filter((c) => c.type === 'text').map((c) => c.text).join('\n')).slice(-600)
-    st.speakers = opts.speakers || (senderId ? [String(senderId), ...(opts.extraSenders || []).map(String)] : [])
-    if (opts.wantVoice) st.wantVoice = true
-    if (!opts.steer) st.autoReply = opts.autoReply || null
-    turnState.set(key, st)
+    // 群聊、私聊、图片、主动搭话和插话都从这里经过；时间只进本轮内容。
+    content = cleanContent([...content, { type: 'text', text: currentTimeLine() }])
     content = await seedHistoryOnce(sessionId, chat, content)
-    checkTurn(chat.chatId, turnToken)
     const admitted = await admit(agent, content)
     for (const block of admitted.filter((c) => c.type === 'text')) {
       for (const r of memoryPromptRanges(block.text, { toEndOfText: true })) sources.memory.push(block.text.slice(r.start, r.end))
@@ -2379,9 +2373,39 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     const speakers = [senderId, ...(opts.extraSenders || [])].filter(Boolean).map(String)
     const speakerRole = speakers.length && speakers.every((u) => isOwner(getConfig(), u)) ? 'owner' : 'guest'
     const message = { id: randomUUID(), role: 'user', content: admitted, source: { kind: SOURCE_KIND, speaker: { role: speakerRole, chat: chat.kind } } }
-    // 正在跑的这一轮：steer = 下一步就看到这句（DSH 界面插话走的也是它）；空闲时照旧 followup 开新一轮
+    // 所有异步准备完成后，按实际投递路径登记轮次状态；中间不能再 await，
+    // 否则上一轮可能先结束，把待登记的回执接走或清掉（#90）。
+    // 空闲 agent 的 steer 不会开启新一轮，必须改用 followup。
+    const steer = opts.steer && running.has(chat.chatId) && typeof agent.steer === 'function'
+    // 不能用 busy：flush 在这一批开始前就会置上它。
+    const queuedNextTurn = !steer && running.has(chat.chatId)
+    if (queuedNextTurn) {
+      st.pendingArchiveNamespace = archiveNamespace; st.pendingArchiveContextAt = archiveContextAt
+    } else if (!steer || !st.archiveNamespace) {
+      st.archiveNamespace = archiveNamespace; st.archiveContextAt = archiveContextAt
+    }
+    const addSender = (u) => {
+      st.senders.add(String(u))
+      if (queuedNextTurn) {
+        if (!st.pendingSenders) st.pendingSenders = new Set()
+        st.pendingSenders.add(String(u))
+      }
+    }
+    if (senderId) addSender(senderId)
+    for (const s of opts.extraSenders || []) addSender(s)
+    if (st.lastText) st.prevText = st.lastText
+    st.lastText = userText.slice(-600)
+    st.speakers = opts.speakers || (senderId ? [String(senderId), ...(opts.extraSenders || []).map(String)] : [])
+    if (opts.wantVoice) st.wantVoice = true
+    if (!steer) {
+      st.autoReply = opts.autoReply || null
+      // 回执跟着它所属的轮次走；排队的主动搭话不能算到上一轮。
+      if (queuedNextTurn) st.pendingOnDelivered = opts.onDelivered || null
+      else st.onDelivered = opts.onDelivered || null
+    }
+    turnState.set(key, st)
     outputSources.set(chat.chatId, sources)
-    if (opts.steer && typeof agent.steer === 'function') {
+    if (steer) {
       log.info(`${chat.chatId}：她还在忙，这句直接插进当前这一轮（steer）`)
       await withPromptCapture(sources, () => agent.steer(message))
     } else {
@@ -2438,10 +2462,6 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     log.warn(`${chatId}：卡住的后台轮次已取消并归档，换新会话`)
   }
 
-  /** 后台任务（写日记、主动搭话的草稿）：在专用会话里跑一轮，拿到正文但不自动转发。
-   *  key：同一个模块有**多种**后台用途时用来分会话（如桌宠的「碎碎念」和「行为大脑」）——
-   *  不带 key 走 `<name>` 那条（向后兼容，老会话继续复用），带 key 走 `<name>:<key>`，
-   *  于是工作区里各自一条会话、进度互不阻塞，也不会把两种提示词混进同一段上下文。 */
   /** 调试模式：确保主人私聊有一条调试会话，便于在侧栏直接打开。 */
   async function ensureDebugSession() {
     assertActive()
@@ -2505,9 +2525,17 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     }
   }
 
-  async function runSystemTurn(name, title, prompt, { timeoutMs = 180000, noTools = false, key: scope = '' } = {}) {
+  /** 后台任务（写日记、主动搭话的草稿）：在专用会话里跑一轮，拿到正文但不自动转发。
+   *  key：同一个模块有**多种**后台用途时用来分会话（如桌宠的「碎碎念」和「行为大脑」）——
+   *  不带 key 走 `<name>` 那条（向后兼容，老会话继续复用），带 key 走 `<name>:<key>`，
+   *  于是工作区里各自一条会话、进度互不阻塞，也不会把两种提示词混进同一段上下文。
+   *  presetId：可选，后台会话点名用哪个 preset（如 aurabot-autotelic）。默认空字符串行为完全不变；
+   *  是否真生效由 presetForChat 决定（noTools 压过它 + 主人的 ext.autotelic.presetIdOverride 开关）。 */
+  async function runSystemTurn(name, title, prompt, { timeoutMs = 180000, noTools = false, key: scope = '', presetId = '' } = {}) {
     const suffix = String(scope || '').trim().replace(/[^\w:-]/g, '').slice(0, 32)
-    const chat = { chatId: suffix ? `system:${name}:${suffix}` : `system:${name}`, kind: 'system', title, noTools: !!noTools }
+    // presetId（P0.4）：后台会话点名用哪个 preset（如 aurabot-autotelic）。默认 undefined 行为完全不变；
+    // 是否真生效由 presetForChat 决定（noTools 压过它 + 主人的 ext.autotelic.presetIdOverride 开关）。
+    const chat = { chatId: suffix ? `system:${name}:${suffix}` : `system:${name}`, kind: 'system', title, noTools: !!noTools, presetId: String(presetId || '') }
     assertActive()
     if (systemStarting.has(chat.chatId)) throw new Error('这个后台会话的上一轮还没结束')
     systemStarting.add(chat.chatId)
@@ -2558,7 +2586,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       Promise.resolve().then(() => {
         assertActive()
         const sources = sourcesFor(chat.chatId)
-        return withPromptCapture(sources, () => agent.followup({ id: randomUUID(), role: 'user', content: [{ type: 'text', text: cleanText(prompt) }], source: { kind: SOURCE_KIND, speaker: { role: 'none' } } }))
+        return withPromptCapture(sources, () => agent.followup({ id: randomUUID(), role: 'user', content: [{ type: 'text', text: cleanText(prompt) + '\n' + currentTimeLine() }], source: { kind: SOURCE_KIND, speaker: { role: 'none' } } }))
       }).catch((error) => {
         if (st.system === system && system.timedOutAt == null) { st.system = null; system.reject(error) }
       })

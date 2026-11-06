@@ -16,7 +16,7 @@ import { dataDir } from './store.js'
 import { API_VERSION, builtinDir, userDir } from './modules.js'
 
 export const REGISTRY_URL = 'https://raw.githubusercontent.com/aureth-labs/dsh-aurabot-qq-mods/registry/index.json'
-// 官方 Gitee 镜像（国内直连更稳）；registry 分支由 github-to-gitee-sync 每天同步，内容与 GitHub 一致
+// Gitee 官方镜像（由 github-to-gitee-sync 每天从 registry 分支同步），国内访问更稳
 export const GITEE_MIRROR = 'https://raw.giteeusercontent.com/aureth-labs/dsh-aurabot-qq-mods/raw/registry/index.json'
 export const SOURCE_FILE = '.aurabot-source.json'
 const MAX_ZIP_BYTES = 25 * 1024 * 1024
