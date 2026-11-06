@@ -898,10 +898,12 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     }
     const copy = (text, toast, msg) => { try { navigator.clipboard.writeText(text); if (msg) toast(msg, 'ok') } catch (e) { toast('复制失败，手动选中复制吧', 'err') } }
 
-    /** 更新提示：GitHub 上有新版本时给更新命令；刚更新完显示一次这次更新了什么。 */
+    /** 更新提示：GitHub 上有新版本时给「跟当前系统/形态对应」的命令、链接和更新按钮；刚更新完显示一次这次更新了什么。 */
     function UpdateNotes({ st, toast }) {
       const [upd, setUpd] = useState(null)
       const [notes, setNotes] = useState(null)
+      const [busy, setBusy] = useState(false)
+      const [result, setResult] = useState(null)
       useEffect(() => {
         get('/update/check').then(setUpd).catch(() => {})
         let seen = null
@@ -911,15 +913,31 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         else if (!seen) { try { localStorage.setItem('aurabot.seenVersion', st.version) } catch (e) {} }
       }, [st.version])
       const dismiss = () => { try { localStorage.setItem('aurabot.seenVersion', st.version) } catch (e) {} setNotes(null) }
+      const copy = (text) => { try { navigator.clipboard.writeText(text); toast('复制好了', 'ok') } catch (e) { toast('复制失败，手动选中复制吧', 'err') } }
+      const apply = async () => {
+        if (!upd || busy) return
+        if (!confirm('现在更新到 v' + upd.latest + '？更新完需要重启 DSH 才会生效，设置、人格、记忆都会保留。')) return
+        setBusy(true)
+        setResult(null)
+        const r = await post('/update/apply')
+        setBusy(false)
+        setResult(r)
+        toast(r.message || (r.ok ? '更新好了，重启 DSH 生效' : '更新没成功'), r.ok ? 'ok' : 'err')
+      }
+      const envText = upd && upd.platform ? (upd.platformLabel || upd.platform) + ' · ' + (upd.modeLabel || upd.mode) + '（profile: ' + upd.profile + '）' : ''
       return h(Fragment, null,
         notes ? h('div', { className: 'ab-note' },
           h('div', { className: 'ab-flex' }, h('b', null, '已更新到 v' + st.version), h('div', { className: 'ab-spacer' }), h(Btn, { small: true, kind: 'ghost', onClick: dismiss }, '知道了')),
           h('div', { style: { whiteSpace: 'pre-wrap', marginTop: 6 } }, notes)) : null,
         upd && upd.newer ? h('div', { className: 'ab-note warn' },
-          h('div', null, h('b', null, '有新版本 v' + upd.latest), '（现在是 v' + upd.current + '）。在 PowerShell 里运行下面这行，然后重启 DSH；设置、人格、记忆都会保留。'),
+          h('div', null, h('b', null, '有新版本 v' + upd.latest), '（现在是 v' + upd.current + '）。', envText ? '当前环境：' + envText + '。' : '', '更新后重启 DSH，设置、人格、记忆都会保留。'),
           h('div', { className: 'ab-flex', style: { marginTop: 6 } },
-            h('code', { style: { flex: '1 1 300px', fontSize: 11.5, wordBreak: 'break-all' } }, upd.command),
-            h(Btn, { small: true, onClick: () => { try { navigator.clipboard.writeText(upd.command); toast('复制好了', 'ok') } catch (e) { toast('复制失败，手动选中复制吧', 'err') } } }, '复制'))) : null)
+            h('code', { style: { flex: '1 1 240px', fontSize: 11.5, wordBreak: 'break-all' } }, upd.command),
+            h(Btn, { small: true, onClick: () => copy(upd.command) }, '复制'),
+            h(Btn, { small: true, kind: 'primary', disabled: busy, onClick: apply }, busy ? '更新中…' : '立即更新'),
+            h('a', { key: 'release', className: 'ab-btn sm', href: upd.tagUrl || upd.releaseUrl, target: '_blank', rel: 'noreferrer' }, '打开发布页')),
+          result ? h('div', { className: 'ab-small', style: { marginTop: 6, whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: result.ok ? 'var(--dsw-alias-text-success, #2e7d32)' : 'var(--dsw-alias-text-danger, #c62828)' } },
+            result.message, result.output ? '\n' + String(result.output).slice(-1200) : '') : null) : null)
     }
 
     function Overview({ st, toast, go }) {

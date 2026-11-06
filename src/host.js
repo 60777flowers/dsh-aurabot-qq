@@ -28,7 +28,7 @@ import { mimeOf } from './chat/inbound.js'
 import { buildFaceIndex } from './chat/faces.js'
 import { FACE_TABLE } from './chat/face-table.js'
 import { dataDir, ensureDir } from './core/store.js'
-import { createUpdateChecker, changelogSection } from './core/update.js'
+import { createUpdateChecker, changelogSection, hostEnv, updatePlan, wantsUnstable, repoOf } from './core/update.js'
 import { parseCommand, runCommand, createMutes, commandList } from './chat/commands.js'
 import { listPersonas, readPersona, savePersona, deletePersona, currentPersonaText, rulesText, seedPersonas } from './persona/personas.js'
 import { createModules, API_VERSION } from './core/modules.js'
@@ -51,6 +51,49 @@ const PKG = (() => {
 })()
 const VERSION = PKG.version
 const PREFIX = '/aurabot/api'
+
+/**
+ * 自动更新要在宿主上跑 `dsh plugin add`：
+ * - 桌面版：用 DSH 自带的 Electron 可执行文件 + app.asar 里的 cli.js（等价于 dsh.cmd / dsh 脚本）；
+ * - 网页版：PATH 里的 dsh（Windows 上 .cmd 要过 shell）。
+ */
+function updateExec(env, args) {
+  if (env.mode === 'desktop' && env.resourcesPath) {
+    const cliJs = join(env.resourcesPath, 'app.asar', 'dsh', 'node_modules', '@deepseek-ai', 'dsh-desktop-host', 'lib', 'cli.js')
+    if (existsSync(cliJs)) {
+      return { cmd: process.execPath, cmdArgs: [cliJs, ...args], env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, shell: false }
+    }
+  }
+  return { cmd: env.cli, cmdArgs: args, env: process.env, shell: process.platform === 'win32' }
+}
+
+/** 跑更新命令，收集输出；3 分钟没结束就杀掉。 */
+function runUpdate(cmd, args, env, shell = false) {
+  return new Promise((resolve) => {
+    let out = ''
+    let done = false
+    const finish = (value) => { if (!done) { done = true; resolve(value) } }
+    let child
+    try {
+      child = spawn(cmd, args, { env, shell, windowsHide: true })
+    } catch (error) {
+      return finish({ ok: false, message: '启动更新命令失败：' + error.message })
+    }
+    const timer = setTimeout(() => {
+      try { child.kill() } catch (error) {}
+      finish({ ok: false, message: '更新超时（3 分钟），可能网络不通', output: out.slice(-4000) })
+    }, 180000)
+    child.stdout?.on('data', (b) => { out += String(b) })
+    child.stderr?.on('data', (b) => { out += String(b) })
+    child.on('error', (error) => { clearTimeout(timer); finish({ ok: false, message: '更新失败：' + error.message }) })
+    child.on('exit', (code) => {
+      clearTimeout(timer)
+      finish(code === 0
+        ? { ok: true, message: '更新命令跑完了，重启 DSH 生效', output: out.slice(-4000) }
+        : { ok: false, message: '更新命令退出码 ' + code, output: out.slice(-4000) })
+    })
+  })
+}
 
 /**
  * 这个 DSH 会话是不是 Aurabot 的 QQ 聊天会话（私聊/群聊各对应一个 DSH 会话）。
@@ -1233,7 +1276,41 @@ export function apply(ctx) {
   route('/commands', async () => ({ ok: true, list: commandList(mods.commands()) }))
   // 更新：检查 GitHub 上有没有新版本；这次更新了什么
   const checkUpdate = createUpdateChecker({ pkg: PKG, log, unstable: () => getConfig().update.unstable })
-  route('/update/check', async (req) => checkUpdate({ force: query(req).force === '1' }))
+  // 宿主环境（Windows/macOS/Linux + 桌面版/网页版）决定更新命令怎么写、按钮能不能直接跑
+  const updateEnv = hostEnv()
+  const updatePlanOf = (result) => updatePlan({ repo: result.repo || repoOf(PKG), channel: result.channel || 'main', latest: result.latest || '', env: updateEnv })
+  route('/update/check', async (req) => {
+    const r = await checkUpdate({ force: query(req).force === '1' })
+    if (!r || !r.ok) return { ...r, env: updateEnv }
+    const plan = updatePlanOf(r)
+    return { ...r, ...plan, env: updateEnv, plan }
+  })
+  let applyingUpdate = false
+  route('/update/apply', async () => {
+    if (applyingUpdate) return { ok: false, message: '正在更新，稍等一下' }
+    const repo = repoOf(PKG)
+    if (!repo) return { ok: false, message: '不知道插件从哪安装的，没法自动更新' }
+    const channel = wantsUnstable(getConfig().update.unstable, VERSION) ? 'beta' : 'main'
+    const plan = updatePlan({ repo, channel, env: updateEnv })
+    // 本地 link 安装（开发模式）不能被 CLI 覆盖，否则会把链接换成仓库副本
+    try {
+      const pkgFile = join(process.env.DSH_PROFILE_DIR || '', 'package.json')
+      const dep = JSON.parse(readFileSync(pkgFile, 'utf8'))?.dependencies?.[String(PKG.name)]
+      if (dep && String(dep).startsWith('link:')) {
+        return { ok: false, message: '当前是本地链接安装（开发模式），自动更新会把它换成仓库副本；请用 git 更新，或手动执行下面这条命令。', command: plan.command }
+      }
+    } catch (error) {}
+    applyingUpdate = true
+    try {
+      const arg = `github:${repo}${channel === 'main' ? '' : '#' + channel}`
+      const args = ['plugin', '--profile', updateEnv.profile, 'add', arg]
+      const exec = updateExec(updateEnv, args)
+      const r = await runUpdate(exec.cmd, exec.cmdArgs, exec.env, exec.shell)
+      return { ...r, command: plan.command, env: updateEnv }
+    } finally {
+      applyingUpdate = false
+    }
+  })
   route('/changelog', async () => {
     let text = ''
     try { text = readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8') } catch (error) {}
