@@ -4638,7 +4638,17 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         h(Card, { title: '截图库' + (shots ? '（' + shots.length + (shotsTotal > shots.length ? '/' + shotsTotal : '') + '，上限 ' + ((draft.bili && draft.bili.shotLibrary) || 300) + '）' : ''), right: h('div', { className: 'ab-flex' },
           h(Btn, { small: true, kind: 'ghost', onClick: () => { bustCache(); loadShots(false, true) } }, '刷新')) },
           !shots ? h(Empty, { icon: '⏳', text: '加载中…' }) : shots.length === 0 ? h(Empty, { icon: '🎬', text: '还没有截图。打开上面的「让ta看画面」刷一轮 B 站，就会开始截。' }) :
-            h('div', { className: 'ab-shots' }, shots.map((it) => h(ShotCell, { key: it.file, it, onChanged: () => { loadShots(); load() }, toast }))),
+            h('div', { className: 'ab-shots' }, shots.map((it) => h(ShotCell, {
+              key: it.file, it, toast,
+              // 删掉后只从本地列表移除这一张，不重拉第一页、不改变滚动位置
+              onChanged: (file) => {
+                if (file) {
+                  setShots((prev) => (prev || []).filter((x) => x.file !== file))
+                  setShotsTotal((prev) => Math.max(0, prev - 1))
+                }
+                load()
+              },
+            }))),
           shotsHasMore ? h('div', { className: 'ab-flex', style: { marginTop: 8 } },
             h(Btn, { small: true, kind: 'ghost', disabled: shotsBusy, onClick: loadMoreShots }, shotsBusy ? '加载中…' : `加载更多（已显示 ${shots ? shots.length : 0}/${shotsTotal}）`)) : null,
         ),
@@ -4721,7 +4731,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             if (!confirm('删掉这张截图？\n' + cap)) return
             const r = await post('/bili/shot/delete', { file: it.file })
             toast(r.message || '删掉了', r.ok ? 'ok' : 'err')
-            onChanged()
+            if (r.ok) onChanged(it.file)
           },
         }, '✕'),
       )
