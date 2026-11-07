@@ -177,8 +177,13 @@ export default {
         },
       })
     })
-    // 截图库（面板里看全部、手动删）
-    api.route('/bili/shots', async () => ({ ...bili.libraryShots(), limit: api.config().bili.shotLibrary }))
+    // 截图库（面板分页、手动删）
+    api.route('/bili/shots', async (req) => {
+      const q = req ? api.core.http.query(req) : {}
+      const limit = Math.min(200, Math.max(1, Math.trunc(Number(q.limit) || 25)))
+      const offset = Math.max(0, Math.trunc(Number(q.offset) || 0))
+      return { ...bili.libraryShots({ limit, offset }), limit: api.config().bili.shotLibrary }
+    })
     api.route('/bili/shot/image', async (req, res) => {
       const p = bili.shotFileOf(api.core.http.query(req).file)
       if (!p) return api.core.http.send(res, 404, '')
