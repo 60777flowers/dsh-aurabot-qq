@@ -2048,14 +2048,14 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const [stickerTotal, setStickerTotal] = useState(0)
       const [moreBusy, setMoreBusy] = useState(false)
       const fileRef = useRef(null)
-      const load = () => get('/stickers?limit=60&offset=0').then((r) => {
+      const load = () => get('/stickers?limit=40&offset=0').then((r) => {
         setItems(r.items || []); setHasMore(Boolean(r.hasMore)); setStickerTotal(Number(r.total) || 0)
       })
       const loadMore = async () => {
         if (moreBusy || !hasMore) return
         setMoreBusy(true)
         try {
-          const r = await get('/stickers?limit=60&offset=' + ((items || []).length))
+          const r = await get('/stickers?limit=40&offset=' + ((items || []).length))
           if (r.ok === false) return toast(r.message || '加载失败', 'err')
           setItems((prev) => [...(prev || []), ...(r.items || [])])
           setHasMore(Boolean(r.hasMore)); setStickerTotal(Number(r.total) || 0)

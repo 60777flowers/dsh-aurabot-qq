@@ -185,7 +185,7 @@ export default {
 
     api.route('/stickers', async (req) => {
       const q = http.query(req)
-      const limit = Math.min(200, Math.max(1, Math.trunc(Number(q.limit) || 60)))
+      const limit = Math.min(200, Math.max(1, Math.trunc(Number(q.limit) || 40)))
       const offset = Math.max(0, Math.trunc(Number(q.offset) || 0))
       const all = store.library().items.slice().reverse()
       return { ok: true, items: all.slice(offset, offset + limit), total: all.length, hasMore: offset + limit < all.length }
