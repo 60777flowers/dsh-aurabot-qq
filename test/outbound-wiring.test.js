@@ -460,6 +460,47 @@ test('broker 档：模块发主人纯文本改走宿主代发（scopedHub 路径
   assert.equal(sent.length, 0, 'broker 代发路径不应再直接调 hub')
 })
 
+test('broker 档：决断不发 + 日志口各种坏形态都不炸链路（2026-11-06 生产 TypeError 回归）', async (t) => {
+  const svc = createOutboundPolicy({
+    getConfig: () => ({ ownerQQ: '10001', ext: { outboundPolicy: { tier: 'broker' } } }),
+    dataDir: null, hooks: { fsSync: false },
+  })
+  svc.registerPolicySource({
+    name: 'purpose', state: () => 'ready', ready: () => true,
+    reserve: () => ({ ok: true, reserveId: 'r1' }), commit: () => ({ ok: true }), release: () => ({ ok: true }),
+  })
+  svc.setDeliverer(async () => false, '决断不发：deliverer 返回 false')
+  const { hub } = makeHub(t)
+  // log 的各种坏形态：对象缺 warn / warn 不是函数 / 抛错 / 干脆没有——出站日志是锦上添花，
+  // 哪种都不能把发送链路炸成 TypeError（2026-11-06 生产：代发决断「不发」被记成代发出错）
+  const badLogs = [undefined, {}, { warn: 42 }, { warn: () => { throw new Error('日志器炸了') } }]
+  for (const log of badLogs) {
+    const core = { hub, outbound: svc, logger: log }
+    const scoped = scopeCoreForModule(core, 'probe-badlog')
+    const r = await scoped.hub.sendText('private:10001', '决断不发的一条')
+    assert.equal(r, null, `决断不发返回 null（log 形态：${log === undefined ? 'undefined' : JSON.stringify(Object.keys(log))}）`)
+  }
+})
+
+test('broker 档：代发本身抛异常也收敛成 null（异常路径不让链路炸）', async (t) => {
+  const svc = createOutboundPolicy({
+    getConfig: () => ({ ownerQQ: '10001', ext: { outboundPolicy: { tier: 'broker' } } }),
+    dataDir: null, hooks: { fsSync: false },
+  })
+  svc.registerPolicySource({
+    name: 'purpose', state: () => 'ready', ready: () => true,
+    reserve: () => ({ ok: true, reserveId: 'r1' }), commit: () => ({ ok: true }), release: () => ({ ok: true }),
+  })
+  // 代发入口直接抛：模块层必须收成 null（旧调用口的失败值），不能把异常抛回业务代码
+  svc.submit = async () => { throw new Error('宿主代发器崩了') }
+  const { hub } = makeHub(t)
+  // 日志口同样是坏形态：抛错的 warn 不能再把 catch 里的收敛路径炸掉（双层兜底）
+  const core = { hub, outbound: svc, logger: { child: () => ({ warn: () => { throw new Error('日志器也炸了') } }) } }
+  const scoped = scopeCoreForModule(core, 'probe-delegate-throw')
+  const r = await scoped.hub.sendText('private:10001', '代发异常的一条')
+  assert.equal(r, null, '代发抛异常收敛为 null')
+})
+
 test('broker 档：群聊 / 朋友私聊不走代发（保持原路径）', async (t) => {
   const svc = createOutboundPolicy({
     getConfig: () => ({ ownerQQ: '10001', ext: { outboundPolicy: { tier: 'broker' } } }),
@@ -494,6 +535,94 @@ test('gate 档：模块快捷发送保持原样（只判定放行，不改走代
   assert.deepEqual(r, { message_id: 1 }, 'gate 档照旧直接调 hub')
   assert.equal(sends.length, 1, 'gate 档不代发')
   assert.equal(submitted.length, 0)
+})
+
+// ---------- broker 档：无可审文本（图片/文件等）「识别不了就直发」（2026-11-05 少爷定） ----------
+// 背景：代发的纯文本不占额度、不看安静时段；图片/文件却还在走普通门闸的
+// quiet/budget/busy 判定，出现「文字发得出、图片老被拦」。无可审文本的发送与代发同口径。
+
+test('broker 档：图片（无可审文本）被策略源拒绝也照发（识别不了就直发）', async (t) => {
+  const svc = createOutboundPolicy({
+    getConfig: () => ({ ownerQQ: '10001', ext: { outboundPolicy: { tier: 'broker' } } }),
+    dataDir: null, hooks: { fsSync: false },
+  })
+  let reserves = 0
+  svc.registerPolicySource({
+    name: 'purpose', state: () => 'ready', ready: () => true,
+    reserve: () => { reserves++; return { ok: false, reason: 'quiet' } },
+    commit: () => ({ ok: true }), release: () => ({ ok: true }),
+  })
+  const { api } = await startProbeModule(t, { outbound: svc }, 'probe-img-quiet')
+  const r = await api.sendImage('private:10001', 'base64://abc')
+  assert.deepEqual(r, { message_id: 3 }, '策略源说不发，图片也直发出去（识别不了就直发）')
+  assert.equal(reserves, 0, '直发口径不进门闸、不碰策略源')
+})
+
+test('broker 档：放行的图片发送不占策略源额度（与代发同口径，不 reserve 不结算）', async (t) => {
+  const svc = createOutboundPolicy({
+    getConfig: () => ({ ownerQQ: '10001', ext: { outboundPolicy: { tier: 'broker' } } }),
+    dataDir: null, hooks: { fsSync: false },
+  })
+  const reserves = []
+  const commits = []
+  const releases = []
+  svc.registerPolicySource({
+    name: 'purpose', state: () => 'ready', ready: () => true,
+    reserve: () => { reserves.push(1); return { ok: true, reserveId: 'r1' } },
+    commit: (id, p) => { commits.push([id, p]); return { ok: true } },
+    release: (id, p) => { releases.push([id, p]); return { ok: true } },
+  })
+  const { api } = await startProbeModule(t, { outbound: svc }, 'probe-img-release')
+  const r = await api.sendFile('private:10001', 'C:/a.zip')
+  assert.deepEqual(r, { message_id: 4 }, '图片照常发出')
+  assert.equal(reserves.length, 0, '直发口径不 reserve（不占额度）')
+  assert.equal(commits.length, 0)
+  assert.equal(releases.length, 0)
+})
+
+test('broker 档：纯文本被策略源拒绝仍拦下（文本走门闸 + 代发决断，口径不变）', async (t) => {
+  const svc = createOutboundPolicy({
+    getConfig: () => ({ ownerQQ: '10001', ext: { outboundPolicy: { tier: 'broker' } } }),
+    dataDir: null, hooks: { fsSync: false },
+  })
+  svc.registerPolicySource({
+    name: 'purpose', state: () => 'ready', ready: () => true,
+    reserve: () => ({ ok: false, reason: 'budget' }), commit: () => ({ ok: true }), release: () => ({ ok: true }),
+  })
+  const { api, sends } = await startProbeModule(t, { outbound: svc }, 'probe-text-deny')
+  const r = await api.sendText('private:10001', '主动私聊主人')
+  assert.equal(r, null, '纯文本被拒仍返回 null（旧真值语义）')
+  assert.equal(sends.length, 0, '纯文本不能绕过门闸直发')
+})
+
+test('gate 档：图片被策略源拒绝仍拦下（直发口径只对 broker 生效）', async (t) => {
+  const svc = createOutboundPolicy({
+    getConfig: () => ({ ownerQQ: '10001', ext: { outboundPolicy: { tier: 'gate' } } }),
+    dataDir: null, hooks: { fsSync: false },
+  })
+  svc.registerPolicySource({
+    name: 'purpose', state: () => 'ready', ready: () => true,
+    reserve: () => ({ ok: false, reason: 'quiet' }), commit: () => ({ ok: true }), release: () => ({ ok: true }),
+  })
+  const { api } = await startProbeModule(t, { outbound: svc }, 'probe-img-gate')
+  const r = await api.sendImage('private:10001', 'base64://abc')
+  assert.equal(r, null, 'gate 档的判定语义不变：拒绝就是不发')
+})
+
+test('broker 档：图片发朋友（治理范围外）不触直发口径，照旧过门闸放行', async (t) => {
+  const svc = createOutboundPolicy({
+    getConfig: () => ({ ownerQQ: '10001', ext: { outboundPolicy: { tier: 'broker' } } }),
+    dataDir: null, hooks: { fsSync: false },
+  })
+  let reserves = 0
+  svc.registerPolicySource({
+    name: 'purpose', state: () => 'ready', ready: () => true,
+    reserve: () => { reserves++; return { ok: false, reason: 'quiet' } }, commit: () => ({ ok: true }), release: () => ({ ok: true }),
+  })
+  const { api } = await startProbeModule(t, { outbound: svc }, 'probe-img-friend')
+  const r = await api.sendImage('private:20000', 'base64://abc')
+  assert.deepEqual(r, { message_id: 3 }, '治理范围外（非主人私聊）admit 本就放行，照旧直发')
+  assert.equal(reserves, 0, '范围外不 reserve（admit 的 out-of-scope 短路，行为不变）')
 })
 
 
@@ -536,3 +665,59 @@ async function startProbeModule(t, coreExtra = {}, id = 'probe-mod') {
   assert.ok(captured, '模块必须真的启动过')
   return { api: captured, modules, sends, dir }
 }
+// ---------- 面板路由：GET /panel/outbound-policy 与 POST 同路径（精确匹配） ----------
+test('面板路由：/panel/outbound-policy 能读能写，且只认合法档位', async (t) => {
+  // 用 fake DSH 起真宿主，验证 route 真的注册成精确路径且读写都能用
+  const { createFakeDsh } = await import('./helpers/fake-dsh.js')
+  const { mkdtempSync: mkdtemp, writeFileSync: writeF } = await import('node:fs')
+  const { join: pjoin } = await import('node:path')
+  const dir = mkdtemp(join(tmpdir(), 'aurabot-panel-outbound-'))
+  const oldDir = process.env.AURABOT_DATA_DIR
+  const oldWs = process.env.AURABOT_WORKSPACE
+  process.env.AURABOT_DATA_DIR = dir
+  process.env.AURABOT_WORKSPACE = pjoin(dir, 'ws')
+  writeF(pjoin(dir, 'config.json'), JSON.stringify({
+    enabled: true, dryRun: true, setupDone: true, ownerQQ: '10001',
+    allow: { private: ['10001'], groups: [] },
+    snowluma: { autoStart: false, autoAttach: false, dir: pjoin(dir, 'no-snowluma') },
+    voice: { enabled: false }, stickers: { enabled: false, autoChance: 0 },
+  }))
+  const fake = createFakeDsh({ brain: async () => '嗯' })
+  t.after(() => {
+    fake.dispose()
+    if (oldDir === undefined) delete process.env.AURABOT_DATA_DIR
+    else process.env.AURABOT_DATA_DIR = oldDir
+    if (oldWs === undefined) delete process.env.AURABOT_WORKSPACE
+    else process.env.AURABOT_WORKSPACE = oldWs
+  })
+  const host = await import('../src/host.js')
+  const api = host.apply(fake.ctx)
+  await api.ready.catch(() => {})
+
+  const call = async (path, body) => (await fake.call(path, body)).json()
+
+  // 读：精确路径存在，返回 status 形状
+  const st = await call('/panel/outbound-policy')
+  assert.equal(st.ok, true)
+  assert.ok(st.outbound, 'GET 应返回 status()')
+  assert.equal(st.outbound.tier, 'pass', '默认档位是 pass')
+  assert.equal(st.outbound.managed, false, '默认未纳管')
+  assert.ok(st.outbound.ledger && typeof st.outbound.ledger.pending === 'number')
+  assert.ok(st.outbound.sources && typeof st.outbound.sources === 'object')
+
+  // 写：改档位，回读生效
+  const gate = await call('/panel/outbound-policy', { tier: 'gate' })
+  assert.equal(gate.ok, true)
+  assert.equal(gate.outbound.tier, 'gate')
+  assert.equal((await call('/panel/outbound-policy')).outbound.tier, 'gate', '写入要真的落到配置里')
+
+  // 写：非法档位被拒，档位保持原样
+  const bad = await call('/panel/outbound-policy', { tier: 'wechat' })
+  assert.equal(bad.ok, false)
+  assert.equal((await call('/panel/outbound-policy')).outbound.tier, 'gate', '非法值不能改配置')
+
+  // 写：切回 pass，别污染别的用例
+  const back = await call('/panel/outbound-policy', { tier: 'pass' })
+  assert.equal(back.ok, true)
+  assert.equal(back.outbound.tier, 'pass')
+})

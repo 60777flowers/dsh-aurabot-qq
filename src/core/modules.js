@@ -167,7 +167,15 @@ export function rewriteImports(code, fromKey, keep = new Set()) {
 // 放行才真的调 hub；hub 侧的 setOutboundGuard 是第二道保险（覆盖任何绕过包装层的直调）。
 // 未注入服务（core.outbound 缺失：旧环境 / 纯测试）时全部返回放行 —— 完全惰性、零开销。
 
-const NOOP_LOG = { warn() {} }
+// 日志兜底：出站治理的日志是「锦上添花」，绝不能因为它把发送链路炸了。
+// 全等级 NOOP + safeLog：log 缺失 / 某个等级不是函数 / 日志器自己抛错，都只当没记上。
+const NOOP_LOG = { debug() {}, info() {}, warn() {}, error() {} }
+
+function safeLog(level, log, ...args) {
+  const l = log || NOOP_LOG
+  const fn = typeof l?.[level] === 'function' ? l[level] : NOOP_LOG[level]
+  try { fn(...args) } catch {}
+}
 
 /** 取宿主注入的出站服务；没有或者面不对就当没注入。 */
 function outboundOf(core) {
@@ -207,10 +215,10 @@ function admitModuleCall(core, id, ask, log) {
     const action = verdict && verdict.action
     // defer 只会在 broker 档出现，没有排队执行器时按 deny 处理（宁可不发，也不越过预算）
     const allow = action === 'allow'
-    if (!allow) (log || NOOP_LOG).warn?.(`模块「${id}」这次主动发送被策略拦下（${(verdict && verdict.reason) || action || 'deny'}）`)
+    if (!allow) safeLog('warn', log, `模块「${id}」这次主动发送被策略拦下（${(verdict && verdict.reason) || action || 'deny'}）`)
     return { allow, verdict: verdict || null }
   } catch (error) {
-    (log || NOOP_LOG).warn?.(`出站判定出错，模块「${id}」这条按放行处理：`, error && error.message)
+    safeLog('warn', log, `出站判定出错，模块「${id}」这条按放行处理：`, error && error.message)
     return { allow: true, verdict: null }
   }
 }
@@ -222,7 +230,7 @@ function settleModuleCall(core, verdict, outcome, log) {
   try {
     svc.commit(verdict.reserveId, { deliveryId: verdict.deliveryId, outcome })
   } catch (error) {
-    (log || NOOP_LOG).warn?.(`出站结算失败（${outcome}）：`, error && error.message)
+    safeLog('warn', log, `出站结算失败（${outcome}）：`, error && error.message)
   }
 }
 
@@ -246,12 +254,22 @@ function settleModuleCall(core, verdict, outcome, log) {
  * 这样普通模块（douyin / tophub / bili……）不改一行代码，也会被引擎审查并留下会话记录；
  * 只有 broker 档这样走，gate 档与 pass 档行为不变。
  *
+ * broker 档 + 发往主人私聊的**非文本**（图片 / 文件 / 语音 / 纯消息段，无可审文本）→
+ * 「识别不了就直发」口径（2026-11-05 少爷定）：策略源看不了这类内容，再让它们过
+ * 安静时段 / 额度 / 在途串行，只会出现「文字发得出、图片老被拦」的失衡——
+ * 所以与代发同口径：不占额度、不经决断，直接发（outboundDone 防 hub 二次判定）。
+ *
  * 未注入服务（旧环境 / 纯测试）时**不设** outboundDone：让 hub 的第二道保险（若宿主挂了）
  * 仍然生效；两道都没有时就是原样直发，与改造前逐字节等价。
  */
 function governedSend(core, id, ask, run, log) {
   const svc = outboundOf(core)
   if (!svc) return run({ sourceModule: id })
+  // broker 档无可审文本（图片/文件/语音/消息段）发主人私聊：识别不了就直发，不进门闸
+  if (unreviewableBrokerSend(core, ask)) {
+    safeLog('info', log, `模块「${id}」这条主动发送没有可审文本（图片/文件等），按「识别不了就直发」口径直接发出`)
+    return run({ sourceModule: id, outboundDone: true })
+  }
   const gate = admitModuleCall(core, id, ask, log)
   if (!gate.allow) return null
   // broker 档的纯文本私聊主人：交给宿主代发（引擎决断 + 宿主投递 + 会话记录）
@@ -280,6 +298,35 @@ function governedSend(core, id, ask, run, log) {
     })
   }
   return done(r)
+}
+
+/**
+ * 这次发送里有没有能拿给引擎过目的文本。
+ * 图片 / 文件 / 语音 / 纯消息段的 ask 不带文本（或只有空白），策略源识别不了它们的内容。
+ */
+function reviewableTextOf(ask) {
+  const text = ask && ask.text !== undefined ? String(ask.text) : ''
+  return text.trim()
+}
+
+/**
+ * 该不该按「识别不了就直发」口径跳过门闸直接发？
+ * 条件：broker 档 + 发往治理范围（主人私聊）+ 这次发送没有可审文本。
+ * 纯文本仍走门闸 + 代发决断；gate / pass 档与非 owner 目标行为一律不变。
+ * tier 从服务 status() 读（deny 的 verdict 不带 tier），读不到就按不适用处理。
+ */
+function unreviewableBrokerSend(core, ask) {
+  const svc = outboundOf(core)
+  if (!svc) return false
+  if (reviewableTextOf(ask)) return false
+  const to = String((ask && ask.chatId) || '')
+  if (typeof svc.isGoverned !== 'function' || !svc.isGoverned(to)) return false
+  try {
+    const tier = typeof svc.status === 'function' ? svc.status().tier : null
+    return tier === 'broker'
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -323,11 +370,10 @@ async function delegateToHost(core, id, ask, verdict, svc, log) {
     if (state === 'sent' || state === 'pending' || state === 'queued') {
       return { message_id: 'delegated-' + r.deliveryId }
     }
-    (log || NOOP_LOG).warn?.(`模块「${id}」这条代发没发出去（${state || 'unknown'}）`)
-    (log || NOOP_LOG).warn?.(`模块「${id}」这条代发没发出去（${state || 'unknown'}）`)
+    safeLog('warn', log, `模块「${id}」这条代发没发出去（${state || 'unknown'}）`)
     return null
   } catch (error) {
-    (log || NOOP_LOG).warn?.(`模块「${id}」代发出错：`, error && error.message)
+    safeLog('warn', log, `模块「${id}」代发出错：`, error && error.message)
     return null
   }
 }
