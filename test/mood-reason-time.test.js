@@ -92,6 +92,7 @@ test('普通聊天和主动搭话共用有时效的心情提示，只放本轮�
   const handlers = new Map()
   const mood = moodModule.setup({ config: () => cfg, log: {}, dsh: null,
     on: (event, handler) => handlers.set(event, handler),
+    route: () => {},
     context: () => assert.fail('动态心情不得进入常驻上下文'),
   })
   mood.nudge(30, '被主人夸了')
