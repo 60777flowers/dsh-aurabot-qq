@@ -2074,6 +2074,16 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           setHasMore(Boolean(r.hasMore)); setStickerTotal(Number(r.total) || 0)
         } finally { setMoreBusy(false) }
       }
+      const removeStickers = (md5s) => {
+        const gone = new Set(md5s)
+        const removed = (items || []).filter((i) => gone.has(i.md5)).length
+        if (!removed) return
+        const nextLoaded = Math.max(0, (items || []).length - removed)
+        const nextTotal = Math.max(0, stickerTotal - removed)
+        setItems((prev) => (prev || []).filter((i) => !gone.has(i.md5)))
+        setStickerTotal(nextTotal)
+        setHasMore(nextTotal > nextLoaded)
+      }
       useEffect(() => { load() }, [])
       const [newName, setNewName] = useState('')
       // 起名用哪个模型：列 DSH 里已经接好的模型，能看图的标出来（AI 补全必须看图）
@@ -2136,8 +2146,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         if (!confirm(ask)) return
         const r = await post('/sticker/delete-batch', { md5s: picked, fromQQ: dropQQ })
         toast(r.message || (r.ok ? '删掉了 ' + n + ' 张' : '没删成'), r.ok ? 'ok' : 'err')
-        setPicked([])
-        load()
+        if (r.ok) { removeStickers(picked); setPicked([]) }
       }
       // DSH 是 Electron，不支持 prompt() 弹框：名字在页面上填（不填就自动看图起名）
       const upload = async (files) => {
@@ -2223,7 +2232,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           ) : null,
           items === null ? h(Empty, { icon: '⏳', text: '加载中…' }) : items.length === 0 ? h(Empty, { icon: '🐳', text: '表情库还是空的。别人在群里发表情包，ta会自己收；也可以点右上角上传，或者「从 QQ 收藏导入」机器人号已经收藏的表情。' }) :
             h('div', { className: cx('ab-stickers', picking && 'picking') },
-              items.map((it) => h(StickerCell, { key: it.md5, it, onChanged: load, toast, picking, selected: picked.includes(it.md5), onToggle: toggle }))),
+              items.map((it) => h(StickerCell, { key: it.md5, it, onChanged: load, onDeleted: (md5) => removeStickers([md5]), toast, picking, selected: picked.includes(it.md5), onToggle: toggle }))),
           hasMore ? h('div', { className: 'ab-flex', style: { marginTop: 8 } },
             h(Btn, { small: true, kind: 'ghost', disabled: moreBusy, onClick: loadMore }, moreBusy ? '加载中…' : `加载更多（已显示 ${items ? items.length : 0}/${stickerTotal}）`)) : null,
         ),
@@ -2267,7 +2276,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
      * 一张表情：名字（备注）和标签都能直接改，改完离开输入框就保存（#31：模型起的名字 / 标签不对时手动纠正）。
      * 多选模式下整张卡片就是勾选框，点一下就选中。
      */
-    function StickerCell({ it, onChanged, toast, picking, selected, onToggle }) {
+    function StickerCell({ it, onChanged, onDeleted, toast, picking, selected, onToggle }) {
       const [name, setName] = useState(it.name || '')
       const tagText = (it.tags || []).join(' ')
       const [tags, setTags] = useState(tagText)
@@ -2290,7 +2299,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           onBlur: () => { if (!picking && name !== (it.name || '')) save({ name }, '名字') } }),
         h('input', { className: 'tg', value: tags, placeholder: '加标签，空格隔开', title: '标签，空格或逗号隔开，最多 5 个', readOnly: Boolean(picking), tabIndex: picking ? -1 : undefined, onChange: (e) => setTags(e.target.value),
           onBlur: () => { if (!picking && tags.trim() !== tagText) save({ tags: tags.split(/[\s,，、#]+/).map((x) => x.trim()).filter(Boolean).slice(0, 5) }, '标签') } }),
-        picking ? null : h('button', { type: 'button', className: 'ab-btn sm danger x', title: '删除', onClick: async () => { if (!confirm('删掉这张表情？（QQ 收藏里也会删）')) return; await post('/sticker/delete', { md5: it.md5 }); onChanged() } }, '✕'),
+        picking ? null : h('button', { type: 'button', className: 'ab-btn sm danger x', title: '删除', onClick: async () => { if (!confirm('删掉这张表情？（QQ 收藏里也会删）')) return; const r = await post('/sticker/delete', { md5: it.md5 }); if (r.ok) { if (onDeleted) onDeleted(it.md5); else onChanged() } } }, '✕'),
       )
     }
 
@@ -3402,6 +3411,15 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           setHasMore(Boolean(r.hasMore)); setMemTotal(Number(r.total) || 0)
         } finally { setMoreBusy(false) }
       }
+      const removeMemory = (id) => {
+        const gone = (mem || []).find((m) => m.id === id)
+        const nextLoaded = Math.max(0, (mem || []).length - 1)
+        const nextTotal = Math.max(0, memTotal - 1)
+        setMem((prev) => (prev || []).filter((m) => m.id !== id))
+        setMemTotal(nextTotal)
+        setHasMore(nextTotal > nextLoaded)
+        if (gone && !memoryEnded(gone)) setStats((prev) => prev ? { ...prev, count: Math.max(0, (prev.count || 0) - 1) } : prev)
+      }
       const [styles, setStyles] = useState({})
       const loadIns = () => getCached('/insights').then((r) => setStyles(r.styles || {}))
       const times = draft.memory.consolidateTimes || []
@@ -3553,7 +3571,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h('div', { className: 'ab-section-title' }, '翻一翻'),
           h('input', { className: 'ab-input wide', placeholder: '搜索记忆，例如：白米饭、游戏、约定…', value: q, onChange: (e) => setQ(e.target.value) }),
           mem === null ? h(Empty, { icon: '⏳', text: '加载中…' }) : mem.length === 0 ? h(Empty, { icon: '🫧', text: q ? '没找到相关的记忆' : '还没有记住什么。' }) :
-            h('div', { className: 'ab-list', style: { marginTop: 8 } }, mem.map((m) => h(MemoryRow, { key: m.id, m, onChanged: () => load(), toast }))),
+            h('div', { className: 'ab-list', style: { marginTop: 8 } }, mem.map((m) => h(MemoryRow, { key: m.id, m, onChanged: () => load(), onDeleted: removeMemory, toast }))),
           hasMore ? h('div', { className: 'ab-flex', style: { marginTop: 8 } },
             h(Btn, { small: true, kind: 'ghost', disabled: moreBusy, onClick: loadMore },
               moreBusy ? '加载中…' : `加载更多（已显示 ${mem ? mem.length : 0}/${memTotal}）`)) : null,
@@ -3658,6 +3676,18 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           setData((prev) => prev ? { ...prev, notes: [...(prev.notes || []), ...(r.list || [])] } : prev)
         } finally { setNotesBusy(false) }
       }
+      const removeNote = (id) => {
+        const gone = (data.notes || []).find((m) => m.id === id)
+        const ended = gone ? memoryEnded(gone) : false
+        setData((prev) => prev ? {
+          ...prev,
+          notes: (prev.notes || []).filter((m) => m.id !== id),
+          notesTotal: Math.max(0, (prev.notesTotal || 1) - 1),
+          notesLive: Math.max(0, (prev.notesLive || 0) - (ended ? 0 : 1)),
+          notesOld: Math.max(0, (prev.notesOld || 0) - (ended ? 1 : 0)),
+        } : prev)
+      }
+      const removeGist = (id) => setData((prev) => prev ? { ...prev, gists: (prev.gists || []).filter((g) => g.id !== id) } : prev)
       useEffect(() => { load() }, [qq])
       if (error) return h('div', { className: 'ab-pm-detail' }, h('div', { className: 'ab-note err' }, error))
       if (!data || !form) return h('div', { className: 'ab-pm-detail' }, h(Empty, { icon: '⏳', text: '加载中…' }))
@@ -3720,15 +3750,15 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             if (res.ok) await load(true)
           } }, '删'))))) : null,
         h(Card, { title: `记得的事 ${data.notesLive ?? live.length}`.trim() },
-          live.length ? live.map((m) => h(PersonaFact, { key: m.id, m, toast, onChanged: () => load(true) })) : h(Empty, { text: '还没记住关于这个人的事。' }),
+          live.length ? live.map((m) => h(PersonaFact, { key: m.id, m, toast, onChanged: () => load(true), onDeleted: removeNote })) : h(Empty, { text: '还没记住关于这个人的事。' }),
           notes.length < (data.notesTotal || 0) ? h('div', { className: 'ab-flex', style: { marginTop: 8 } },
             h(Btn, { small: true, kind: 'ghost', disabled: notesBusy, onClick: loadMoreNotes }, notesBusy ? '加载中…' : `加载更多（已显示 ${notes.length}/${data.notesTotal}）`)) : null),
-        data.gists.length ? h(Card, { title: '留下的感觉' }, h(GistLine, { list: data.gists, toast, onChanged: () => load(true) })) : null,
+        data.gists.length ? h(Card, { title: '留下的感觉' }, h(GistLine, { list: data.gists, toast, onChanged: () => load(true), onDeleted: removeGist })) : null,
         old.length ? h('details', { className: 'ab-card' }, h('summary', { className: 'ab-small' }, `已过时的 ${data.notesOld ?? old.length} 条${old.length < (data.notesOld || 0) ? '（已显示 ' + old.length + '）' : ''}`),
-          h('div', { style: { marginTop: 8 } }, old.map((m) => h(PersonaFact, { key: m.id, m, toast, onChanged: () => load(true) })))) : null)
+          h('div', { style: { marginTop: 8 } }, old.map((m) => h(PersonaFact, { key: m.id, m, toast, onChanged: () => load(true), onDeleted: removeNote })))) : null)
     }
 
-    function PersonaFact({ m, toast, onChanged }) {
+    function PersonaFact({ m, toast, onChanged, onDeleted }) {
       const [editing, setEditing] = useState(false)
       const [text, setText] = useState(m.text || '')
       useEffect(() => { setText(m.text || '') }, [m.text])
@@ -3741,7 +3771,10 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         if (!confirm('删除这条？')) return
         const r = await post('/memory/delete', { id: m.id })
         toast(r.ok ? '删掉了' : r.message, r.ok ? 'ok' : 'err')
-        if (r.ok) await onChanged()
+        if (r.ok) {
+          if (onDeleted) onDeleted(m.id)
+          else await onChanged()
+        }
       }
       const restore = async () => { const r = await post('/memory/restore', { id: m.id }); toast(r.ok ? '恢复了' : r.message, r.ok ? 'ok' : 'err'); if (r.ok) await onChanged() }
       const tier = { 0: '永久', 1: '琐碎', 3: '重要', core: '长期印象' }[m.tier]
@@ -3768,12 +3801,15 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     }
 
     /** 聊天梗概和看过内容共用时间线。 */
-    function GistLine({ list, toast, onChanged, showFrom }) {
+    function GistLine({ list, toast, onChanged, onDeleted, showFrom }) {
       const remove = async (g) => {
         if (!confirm('删除这条' + gistLevel(g) + '？')) return
         const r = await post(g.kind === 'seen' ? '/memory/delete' : '/memory/gists/delete', { id: g.id })
         toast(r.message, r.ok ? 'ok' : 'err')
-        if (r.ok) await onChanged()
+        if (r.ok) {
+          if (onDeleted) onDeleted(g.id)
+          else await onChanged()
+        }
       }
       let day = ''
       return h('div', { className: 'ab-pm-tl' }, list.flatMap((g) => {
@@ -3864,6 +3900,13 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         setBusy(true)
         try { await load(true) } finally { setBusy(false) }
       }
+      const removeGist = (id) => {
+        const nextLoaded = Math.max(0, (list || []).length - 1)
+        const nextTotal = Math.max(0, total - 1)
+        setList((prev) => (prev || []).filter((g) => g.id !== id))
+        setTotal(nextTotal)
+        setHasMore(nextTotal > nextLoaded)
+      }
       useEffect(() => { load(false) }, [chat, level, kind, platform])
       if (error) return h('div', { className: 'ab-note err' }, error)
       if (list === null) return h(Empty, { icon: '⏳', text: '加载中…' })
@@ -3878,7 +3921,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h('option', { value: '' }, '全部聊天'), chats.map((id) => h('option', { key: id, value: id }, gistSource(id)))),
         h('select', { className: 'ab-select', 'aria-label': '筛选层级', value: level, disabled: kind === 'seen', onChange: (e) => setLevel(e.target.value) },
           h('option', { value: '' }, '全部'), h('option', { value: '1' }, '梗概'), h('option', { value: '2' }, '印象'))) },
-      list.length ? h(GistLine, { list, toast, onChanged: () => load(false), showFrom: !chat }) : h(Empty, { text: total ? '没有符合条件的记录。' : '还没有压缩过的记忆，流水到期后会慢慢出现。' }),
+      list.length ? h(GistLine, { list, toast, onChanged: () => load(false), onDeleted: removeGist, showFrom: !chat }) : h(Empty, { text: total ? '没有符合条件的记录。' : '还没有压缩过的记忆，流水到期后会慢慢出现。' }),
       hasMore ? h('div', { className: 'ab-flex', style: { marginTop: 8 } },
         h(Btn, { small: true, kind: 'ghost', disabled: busy, onClick: loadMore }, busy ? '加载中…' : `加载更多（已显示 ${list.length}/${total}）`)) : null)
     }
@@ -3960,22 +4003,29 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         h(StyleEditor, { k: p.key, label: '学到的说话习惯', list: style || [], toast, onSaved }))
     }
 
-    function MemoryRow({ m, onChanged, toast }) {
+    function MemoryRow({ m, onChanged, onDeleted, toast }) {
       const [edit, setEdit] = useState(false)
       const [text, setText] = useState(m.text)
+      // 删除后只从当前列表移除，不重拉第一页（保持分页位置）
+      const remove = async () => {
+        const r = await post('/memory/delete', { id: m.id })
+        if (!r.ok) return
+        if (onDeleted) onDeleted(m.id)
+        else onChanged()
+      }
       if (memoryEnded(m)) {
         return h('div', { className: 'ab-li', style: { opacity: 0.6 } },
           h('div', { className: 'meta' }, m.validityText || timeAgo(m.invalidAt || m.validUntil), h('br'), h('span', { className: 'ab-pill', style: { padding: '0 6px', fontSize: 11 } }, '已过时')),
           h('div', { className: 'body' }, h('s', null, (m.aboutName ? '[' + m.aboutName + '] ' : '') + m.text), m.supersededText ? h('div', { className: 'ab-muted ab-small' }, '→ 现在是：' + m.supersededText) : null),
           h(Btn, { small: true, kind: 'ghost', onClick: async () => { await post('/memory/restore', { id: m.id }); toast('恢复了', 'ok'); onChanged() } }, '恢复'),
-          h(Btn, { small: true, kind: 'ghost', onClick: async () => { await post('/memory/delete', { id: m.id }); onChanged() } }, '删掉'))
+          h(Btn, { small: true, kind: 'ghost', onClick: remove }, '删掉'))
       }
       return h('div', { className: 'ab-li' },
         h('div', { className: 'meta' }, timeAgo(m.at), h('br'), h('span', { className: 'ab-pill', style: { padding: '0 6px', fontSize: 11 } }, SOURCE[m.source] || '记忆')),
         edit ? h('input', { className: 'ab-input wide', value: text, onChange: (e) => setText(e.target.value), onKeyDown: async (e) => { if (e.key === 'Enter') { await post('/memory/update', { id: m.id, text }); setEdit(false); toast('改好了', 'ok'); onChanged() } if (e.key === 'Escape') setEdit(false) } })
           : h('div', { className: 'body' }, m.aboutName ? h('b', null, '[' + m.aboutName + '] ') : null, m.displayText || m.text, m.validityText ? h('div', { className: 'ab-muted ab-small' }, m.validityText) : null, m.importance >= 0.8 ? h('span', { title: '很重要' }, ' ★') : null),
         h(Btn, { small: true, kind: 'ghost', onClick: () => setEdit(!edit) }, edit ? '取消' : '改'),
-        h(Btn, { small: true, kind: 'ghost', onClick: async () => { await post('/memory/delete', { id: m.id }); onChanged() } }, '忘掉'))
+        h(Btn, { small: true, kind: 'ghost', onClick: remove }, '忘掉'))
     }
 
     /** 导入音色：把 .zip / .pth / .index 拖进来或点选，自动识别；下面列出已有的音色，可以删。 */
@@ -4643,8 +4693,11 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
               // 删掉后只从本地列表移除这一张，不重拉第一页、不改变滚动位置
               onChanged: (file) => {
                 if (file) {
+                  const nextLoaded = Math.max(0, (shots || []).length - 1)
+                  const nextTotal = Math.max(0, shotsTotal - 1)
                   setShots((prev) => (prev || []).filter((x) => x.file !== file))
-                  setShotsTotal((prev) => Math.max(0, prev - 1))
+                  setShotsTotal(nextTotal)
+                  setShotsHasMore(nextTotal > nextLoaded)
                 }
                 load()
               },
