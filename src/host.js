@@ -267,14 +267,27 @@ export function apply(ctx) {
   }
   // 网关未就绪时先攒着：只有「确定没发出去」的消息才入队，连接后按 TTL 补发。
   const outbox = createOutbox({ log: logger.child('outbox') })
+  // 网关预热：从第一次 connecting 到 connected 之间的时间，用于面板显示「已等 N 秒」而不是干等
+  let gatewayWarmSince = 0
+  let gatewayLastLogAt = 0
   const onebot = createOneBotClient({
     endpoint,
     log: logger.child('onebot'),
     onState: (s, d) => {
       onebotState = s
+      if (s === 'connected') gatewayWarmSince = 0
+      else if (!gatewayWarmSince && cfg.enabled && (s === 'connecting' || s === 'disconnected')) gatewayWarmSince = Date.now()
       if (s !== 'connected') { loginOk = false; pendingEvents = [] }
       else checkLogin().then(() => { if (loginOk) flushOutbox() }).catch((error) => log.warn('核对登录号出错：', error.message))
-      logger.child('onebot').info(`QQ 网关：${s}${d ? '（' + d + '）' : ''}`)
+      // 预热阶段 connecting/disconnected 会每 3 秒来回刷：首次和每 20 秒记一条 info，其余进 debug
+      const line = `QQ 网关：${s}${d ? '（' + d + '）' : ''}`
+      const now = Date.now()
+      if (s === 'connected' || s === 'stopped' || s === 'unconfigured' || now - gatewayLastLogAt > 20_000) {
+        logger.child('onebot').info(line)
+        gatewayLastLogAt = now
+      } else {
+        logger.child('onebot').debug(line)
+      }
       mods?.emit('onebot/state', s)
     },
     onEvent: (ev) => {
@@ -844,7 +857,7 @@ export function apply(ctx) {
       version: VERSION,
       apiVersion: API_VERSION,
       config: publicConfig(cfg),
-      onebot: { state: onebotState, login, endpoint: { httpUrl: endpoint().httpUrl, wsUrl: endpoint().wsUrl }, problem: onebotState === 'connected' && loginOk ? '' : await connectionProblem() },
+      onebot: { state: onebotState, login, endpoint: { httpUrl: endpoint().httpUrl, wsUrl: endpoint().wsUrl }, problem: onebotState === 'connected' && loginOk ? '' : await connectionProblem(), warmup: gatewayWarmSince ? { since: gatewayWarmSince, seconds: Math.max(0, Math.round((Date.now() - gatewayWarmSince) / 1000)) } : null },
       outbox: outbox.status(),
       snowluma: { ...inst, running, consented: await consented(running), owns: snowluma.ownsProcess, lastAttach: snowluma.lastAttach, downloadPage: DOWNLOAD_PAGE, webui: snowluma.webuiUrl() },
       stats: hub.stats(),
@@ -1335,7 +1348,11 @@ export function apply(ctx) {
     wrongAccount = ''
     snowluma.clearRejected()
     const r = await snowluma.attachBot()
-    if (cfg.enabled && onebot.state === 'stopped') onebot.start()
+    // 刚注入完 OneBot 会话可能还没起：立刻再试一次 WS，比等 3 秒轮询更快
+    if (cfg.enabled && r.ok && onebotState !== 'connected') {
+      if (onebot.state === 'stopped') onebot.start()
+      else onebot.restart()
+    }
     return r
   })
   route('/commands', async () => ({ ok: true, list: commandList(mods.commands()) }))
@@ -1470,6 +1487,11 @@ export function apply(ctx) {
     }
     if (wrongAccount) return `连上的是 ${wrongAccount}，不是机器人号 ${cfg.botQQ}，已经断开：只登着机器人号那个 QQ，再点「接入机器人号」`
     if (la && la.at && !la.ok && la.message) return '接入机器人号没成功：' + la.message
+    // 预热期（SnowLuma 已起、OneBot 会话还没就绪）别说成「连不上」，把正在等什么说清楚
+    if (gatewayWarmSince && Date.now() - gatewayWarmSince < 240_000) {
+      const sec = Math.max(1, Math.round((Date.now() - gatewayWarmSince) / 1000))
+      return `正在等 SnowLuma 的 OneBot 会话：机器人号 QQ 登录完成后会自动连上（已等 ${sec} 秒）。如果 QQ 还没开 / 没登录，先把机器人号登好；想看每一步点「一键诊断」`
+    }
     return `连 ${ep.wsUrl || ep.httpUrl} 没连上：确认机器人号的 QQ 开着、已经登录，并且 SnowLuma 控制台里这个号显示已接入`
   }
   route('/onebot/reconnect', async () => {
