@@ -445,7 +445,7 @@ test('推荐面板展开才 GET，关闭丢弃在途结果，内容只读且当�
 })
 
 test('设置面板用后端档位表生成天数输入，门槛和天数写回同一配置草稿', async () => {
-  const props = { st: { modules: [{ id: 'memory', running: true }] }, draft: normalize({}), setDraft: (next) => { props.draft = next }, toast() {} }
+  const props = { st: { modules: [{ id: 'memory', running: true }], config: { memory: { uiCollapsed: { people: false, tiers: false, vector: false, rerank: false } } } }, draft: normalize({}), setDraft: (next) => { props.draft = next }, toast() {} }
   const ui = panelHarness('Mood', props, async () => ({ ok: true, items: [], styles: {}, stats: { factTiers: FACT_TIERS } }))
   ui.render(); await ui.flush()
   let tree = ui.render()

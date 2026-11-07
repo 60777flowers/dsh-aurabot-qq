@@ -3727,8 +3727,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const times = draft.memory.consolidateTimes || []
       const setTime = (i, v) => { const t = times.slice(); t[i] = v; setDraft(setPath(draft, 'memory.consolidateTimes', t)) }
       // 四组进阶设置默认收起；展开/收起立即写回配置文件（memory.uiCollapsed）
-      const [fold, setFold] = useState(() => ({ ...(st.config.memory?.uiCollapsed || {}) }))
-      useEffect(() => { setFold((prev) => ({ ...prev, ...(st.config.memory?.uiCollapsed || {}) })) }, [st.config.memory?.uiCollapsed])
+      const [fold, setFold] = useState(() => ({ ...(st.config?.memory?.uiCollapsed || {}) }))
+      useEffect(() => { setFold((prev) => ({ ...prev, ...(st.config?.memory?.uiCollapsed || {}) })) }, [st.config?.memory?.uiCollapsed])
       const toggleFold = async (key) => {
         const next = !(fold[key] ?? true)
         setFold((prev) => ({ ...prev, [key]: next }))
