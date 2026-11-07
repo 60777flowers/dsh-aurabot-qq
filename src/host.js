@@ -22,6 +22,7 @@ import { createOneBotClient } from './onebot/client.js'
 import { createOutbox } from './onebot/outbox.js'
 import { createSnowLumaManager, DOWNLOAD_PAGE } from './snowluma/manager.js'
 import { createHub, workspaceDirOf } from './chat/hub.js'
+import { normalizeSelection } from './chat/chat-model.js'
 import { grantOwner, moveWorkspace, realWorkspace } from './core/workspace-move.js'
 import { createLocal, fileOf, toImageBuffer } from './local/local.js'
 import { createGroupRoles } from './chat/group-roles.js'
@@ -30,12 +31,14 @@ import { mimeOf } from './chat/inbound.js'
 import { buildFaceIndex } from './chat/faces.js'
 import { FACE_TABLE } from './chat/face-table.js'
 import { dataDir, ensureDir } from './core/store.js'
+import { initUsage, usageReport } from './core/usage.js'
 import { createUpdateChecker, changelogSection, hostEnv, updatePlan, repoOf } from './core/update.js'
 import { parseCommand, runCommand, createMutes, commandList } from './chat/commands.js'
 import { listPersonas, readPersona, savePersona, deletePersona, currentPersonaText, rulesText, seedPersonas } from './persona/personas.js'
 import { createModules, API_VERSION } from './core/modules.js'
 import { createCommunity, REGISTRY_URL, GITEE_MIRROR } from './core/community.js'
 import { createApprovalRelay } from './security/approval.js'
+import { createNoticeRelay, normalizeWorkspace } from './features/notice.js'
 import { captureSystemPrompt } from './security/leak-guard.js'
 import { applyPendingRestore, cancelRestore, createBackup, listBackups, pendingModules, pendingRestore, saveUpload, setPendingModules, stageRestore } from './core/backup.js'
 import { pushBackup, listWebdavBackups, downloadWebdavBackup } from './core/backup-push.js'
@@ -45,6 +48,8 @@ import { createDangerGuard, safeOwnedSession } from './security/danger.js'
 import { createAuditor } from './autotelic/audit.js'
 import { setSsrpMode, assertPublicUrl, fetchGuarded } from './core/net.js'
 import { BUILTINS } from './modules/index.js'
+import { createOutboundPolicy } from './chat/outbound-policy.js'
+import { createPurposePolicy, createSpeakupPolicy, createSharedBudget } from './features/proactive-policy.js'
 
 export const name = 'aurabot'
 export const inject = ['agents', 'sessions', 'webServer', 'timer', 'workspaceRegistry', 'attachments', 'systemPrompt', 'llm']
@@ -141,6 +146,10 @@ export function apply(ctx) {
   let backupJob = null // { running, done, total, error, result }
   let pushJob = null // { running, ok, error, result, at }
   let pushTimer = null // 云备份每日定时
+  // 主动发言出站策略服务（docs/OUTBOUND-POLICY-DESIGN.md），装配在模块之前
+  let outbound = null
+  // 已注册的策略源实例（name → policy），给 deliver 的 enginePolicy 解析用
+  const enginePolicies = new Map()
   const getConfig = () => cfg
   setSsrpMode(() => (getConfig().security && getConfig().security.ssrfMode === 'loose' ? 'loose' : 'strict'))
   const secrets = () => { for (const k of ['webuiPassword', 'httpToken', 'wsToken']) registerSecret(cfg.snowluma[k]); registerSecret(cfg.imageGen.apiKey); registerSecret(cfg.bridge.token); registerSecret(cfg.backup?.remote?.token); registerSecret(cfg.backup?.remote?.webdav?.password) } // backup 令牌/WebDAV 密码也按密钥脱敏（云备份）
@@ -153,7 +162,7 @@ export function apply(ctx) {
       if (onebotState === 'connected') onebot.restart()
     }
     secrets()
-    if (bridge && before.bridge.dshTools !== cfg.bridge.dshTools) bridge.refresh()
+    if (bridge && (before.bridge.dshTools !== cfg.bridge.dshTools || before.persona.current !== cfg.persona.current)) bridge.refresh()
     if (mods && (JSON.stringify(before.modules) !== JSON.stringify(cfg.modules) || before.safeMode !== cfg.safeMode)) mods.sync().catch(() => {})
     mods?.emit('config', cfg, before)
     if (JSON.stringify(before.backup?.remote) !== JSON.stringify(cfg.backup?.remote)) scheduleRemoteBackup()
@@ -161,6 +170,8 @@ export function apply(ctx) {
   }
   secrets()
   seedPersonas()
+  // token 用量与花费（面板「概览」）：价格表可以在 config.usage.pricing 里覆盖
+  initUsage(cfg.usage?.pricing, cfg.cost?.offPeakHolidays)
 
   // ---------- 人格与规则：通过提示词变量注入到 Aurabot 的两个 preset ----------
   const variable = (n, fn) => ctx.effect(() => ctx.systemPrompt.variable(n, (...args) => captureSystemPrompt(n, cleanText(fn(...args)))), `aurabot: 变量 ${n}`)
@@ -206,6 +217,7 @@ export function apply(ctx) {
   let hub = null
   let dangerGuard = null // 危险命令确认（security.dangerConfirm 开着才生效）
   let approvalRelay = null // DSH 要授权时在 QQ 私聊问主人（approvalViaQQ 开着才生效）
+  let noticeRelay = null // DSH 要授权 / 要选选项时通知到主人私聊（config.notice，按工作区开关）
   async function checkLogin() {
     verifying = true
     pendingEvents = []
@@ -551,42 +563,52 @@ export function apply(ctx) {
     send(res, 403, { ok: false, message: '管理接口只允许本机访问。远端管理需在配置里显式开启 security.panelRemoteAccess，并务必在反向代理层再加一道认证' })
     return true
   }
-  /** 面板对外主机名（security.publicHostname，反代部署时填面板对外域名；空 = 只有回环算同源）。 */
-  const panelPublicHost = () => String(getConfig().security?.publicHostname || '').trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '')
-  /** Origin 主机名是否算「同源」：回环 / localhost / 已配置的面板对外域名。 */
+  /** 主机名归一化：去首尾空白、转小写、去 IPv6 方括号、去结尾点（Host 与 Origin 共用同一口径）。 */
+  const normalizeHost = (raw) => String(raw || '').trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '')
+  /** 剥端口：必须在归一化之前剥——IPv6 Host 是 `[::1]:5099`，先去方括号的话结尾是数字、`]` 剥不掉，剩个 `::1]` 就再也匹配不上。 */
+  const stripHostPort = (raw) => String(raw || '').replace(/:\d+$/, '')
+  /**
+   * 面板对外主机名列表（security.publicHostname，反代部署时填面板对外域名；空 = 只有回环算同源）。
+   * 可填多个，用逗号分隔；中文逗号、分号、空白也当分隔符（手写配置时不至于因为多按了个空格就失配）——
+   * 反代部署常见「对外域名 + 内网直连地址」两个入口同时开面板，只认一个值的话另一个入口一保存配置就被 403。
+   * 列表项与请求 Host 走同一口径（先剥端口再归一化）：内网直连地址平时都带端口，照直填进来也不会永不匹配。
+   */
+  const panelPublicHosts = () => String(getConfig().security?.publicHostname || '')
+    .split(/[\s,，;；]+/)
+    .map((item) => normalizeHost(stripHostPort(item)))
+    .filter(Boolean)
+  /** Origin 主机名是否算「同源」：回环 / localhost / 任一已配置的面板对外域名。 */
   const originAllowed = (hostname) => {
-    const h = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '')
+    const h = normalizeHost(hostname)
     if (!h) return false
     if (h === 'localhost' || h.endsWith('.localhost') || isLoopbackAddr(h)) return true
-    const ph = panelPublicHost()
-    return Boolean(ph) && h === ph
+    return panelPublicHosts().includes(h)
   }
   /**
    * 【复审 2·P1-1】管理面 Host 允许名单（防 DNS rebinding）。
    * 攻击：恶意页面把 evil.example 的 DNS rebind 到 127.0.0.1，然后 `fetch('http://evil.example:port/state')`
    * ——socket 是本机回环（本机闸放行）、方法是 GET（不过 CSRF）→ 管理面被「同源可读」：
    * /state、/logs、/bridge/token（返回 bearer）、client-package（含令牌）全部外泄。
-   * 修法：管理面请求的 Host 头必须在白名单内（回环 / localhost / publicHostname）。
+   * 修法：管理面请求的 Host 头必须在白名单内（回环 / localhost / publicHostname 列表任一项）。
    * Host 头虽是请求方可控的，但浏览器同源策略保证「页面 JS 发出的请求 Host = 页面所在的源」——
    * rebinding 页面发出的 Host 就是 evil.example 本身，进不了白名单；同源面板请求 Host 必然是
-   * 127.0.0.1 / localhost / publicHostname 之一。非浏览器客户端（curl/脚本）不受浏览器防护，
+   * 127.0.0.1 / localhost / publicHostname 列表里任一项。非浏览器客户端（curl/脚本）不受浏览器防护，
    * 但它们也不是 rebinding 载体，且有各自的鉴权层。
    */
   const hostAllowedForAdmin = (hostRaw) => {
     // 复审 3·小建议：先剥端口再剥方括号。IPv6 回环 Host 是 `[::1]:5099`——
     // 若先剥 `[` 再剥 `]`，结尾已是数字，`]` 剥不掉，端口剥完剩 `::1]`，会被 403。
-    const h = String(hostRaw || '').toLowerCase().replace(/:\d+$/, '').replace(/^\[|\]$/g, '').replace(/\.$/, '')
+    const h = normalizeHost(stripHostPort(hostRaw))
     if (!h) return false
     if (h === 'localhost' || h.endsWith('.localhost')) return true
     if (isLoopbackAddr(h)) return true
-    const ph = panelPublicHost()
-    return Boolean(ph) && h === ph
+    return panelPublicHosts().includes(h)
   }
   /** Host 校验 + 失败响应。只用于管理面（模块路由的 Host 另有 Host 闸策略）。 */
   const adminHostBlocked = (req, res) => {
     const hostHeader = String(req.headers?.host || '')
     if (hostAllowedForAdmin(hostHeader)) return false
-    log.warn(`管理接口拒绝异常 Host：${hostHeader}（疑似 DNS rebinding；白名单：回环/localhost/security.publicHostname）`)
+    log.warn(`管理接口拒绝异常 Host：${hostHeader}（疑似 DNS rebinding；白名单：回环/localhost/security.publicHostname 任一项）`)
     send(res, 403, { ok: false, message: '管理接口拒绝该 Host（只接受本机回环、localhost 或已配置的面板对外域名）' })
     return true
   }
@@ -649,10 +671,61 @@ export function apply(ctx) {
     }),
   }), 'aurabot: 模块接口')
 
+  // ---------- 主动发言出站策略（docs/OUTBOUND-POLICY-DESIGN.md） ----------
+  // 宿主统一发送服务：模块快捷 API / scoped hub / pet 回落全部经它判定，识别「主动私聊主人」
+  // 后交给当前活跃策略源做原子预算预占。档位默认 pass（旧行为直发），未启用时完全惰性。
+  outbound = createOutboundPolicy({
+    getConfig,
+    // 账本落盘到模块数据目录（源码目录禁写任何数据，见 AGENTS.md §4）
+    dataDir: join(dataDir('modules-data'), 'outbound-policy'),
+    log: (msg) => logger.child('出站策略').info(msg),
+    // 宿主投递器：模块调 api.proactive.submit 后由这里真正发出去，
+    // 模块不必自己管投递、超时、状态回写（设计稿 §7 feed 语义）。
+    // broker 档的核心语义是「提交后由引擎全权决定」（设计稿 §7）：
+    //   1) 先向目的引擎策略源拿「审查预占」（reserveReview）：只看引擎开关/清醒时段/在途串行，
+    //      **不占引擎的说话额度、不看她的排程**（2026-11-04 主人定的口径）；
+    //   2) 预占到了再让引擎过目（brokerReview：原样/改写/沉默）——凭记忆与心情决断内容；
+    //   3) 决断沉默 → 返回 false（账本记 failed，模块据此知道没发）；
+    //   4) 决断通过 → 走 hub.deliver 投递：自动落聊天流水（logChat）+ saidElsewhere 桥接 +
+    //      心情链路，比裸 sendText 多出完整会话记录。
+    // 最后按 review 口径结算预占（只清挂起，不动额度不重排）。
+    // item 是账本条目（含 moduleId/itemId），代发决断会话里要跟着写清是谁提交的。
+    send: async (to, text, meta = {}) => {
+      const item = (meta && meta.item) || {}
+      const moduleId = String(item.moduleId || '')
+      const itemId = String(item.itemId || '')
+      const policy = enginePolicies.get('purpose') || null
+      let reviewId = ''
+      if (policy && typeof policy.reserveReview === 'function') {
+        const r = policy.reserveReview({ to: String(to), itemId, at: Date.now() })
+        if (!r || r.ok !== true) return false // 引擎没开/安静时段/上一条还在途：这条不审查不发
+        reviewId = r.reserveId
+      }
+      let finalText = String(text ?? '')
+      try {
+        const purpose = use('purpose')
+        if (purpose && typeof purpose.brokerReview === 'function') {
+          const verdict = await purpose.brokerReview({ to: String(to), text: finalText, moduleId, itemId })
+          if (verdict && verdict.ok && verdict.send === false) return false // 引擎决断：这条不说
+          if (verdict && verdict.ok && verdict.text) finalText = verdict.text
+        }
+        const r = await hub.deliver(String(to), finalText, { userText: '【系统提醒，不是主人说的话】（代发·经目的引擎决断）' })
+        // deliver 契约：一条都没发出去时返回 {failed>0} 或 undefined——都按「没发出」算
+        return Boolean(r && (r.failed ?? 0) === 0)
+      } finally {
+        if (reviewId && policy && typeof policy.commit === 'function') {
+          try { policy.commit(reviewId, { outcome: 'sent' }, 'review') } catch {}
+        }
+      }
+    },
+  })
+
   // ---------- 模块 ----------
   const core = {
     hub, onebot, snowluma, local, groupRoles, mutes, logger, bridge: null,
     root: ROOT,
+    // 模块经 api.proactive 访问出站治理面（modules.js 里读它）
+    outbound,
     ask: (opts) => askModel(ctx, { cfg: getConfig(), ...opts }),
     listModels,
     defaultModel: () => defaultModel(ctx, { model: {} }),
@@ -664,6 +737,97 @@ export function apply(ctx) {
   bridge = createBridge({ ctx, getConfig, setConfig, hub, mods, log: logger.child('bridge'), version: VERSION, apiVersion: API_VERSION, overview: () => overview() })
   core.bridge = bridge
   core.modules = mods
+
+  // 出站门闸接进 hub（第二道保险：模块直调 api.core.hub.sendText / scopedHub 也都被覆盖）。
+  // 判定的来源因果由调用方带 sourceModule / enginePolicy 时生效；没带标记的内部发送完全不受影响。
+  // settle：admit 放行时会预占一份策略源预算，不结算就永远挂着（下一轮变成 busy），
+  // 所以把结算回调一起交给 hub，由真实出口按结果 commit/release。
+  hub.setOutboundGuard?.((ask) => {
+    const verdict = outbound.admit({
+      to: ask.chatId,
+      moduleId: ask.sourceModule || '',
+      origin: ask.sourceModule ? 'module' : 'engine',
+      cause: ask.cause || null,
+      itemId: ask.itemId || null,
+      at: Date.now(),
+    })
+    if (verdict.action === 'deny') return verdict
+    return {
+      ...verdict,
+      // 真实出口结算：sent 记一笔；uncertain 不退款（可能已经发出去了）；其余按失败释放
+      settle: (outcome) => {
+        const oc = ['sent', 'queued', 'uncertain', 'failed'].includes(outcome) ? outcome : 'failed'
+        if (verdict.reserveId) outbound.commit(verdict.reserveId, { deliveryId: verdict.deliveryId, outcome: oc })
+      },
+    }
+  })
+  // 引擎路径：deliver(chatId, text, { enginePolicy: 'purpose' | 'speakup' }) 由 hub 直接向策略源 reserve。
+  // 只有注册过（引擎启用且模块在跑）的才解析得到；解析不到时 deliver 完全按旧行为直发。
+  hub.setOutboundEngineResolver?.((name) => enginePolicies.get(String(name)) || null)
+
+  /**
+   * 按当前配置装配策略源：purpose / speakup 各自启用时才注册（未启用的不注册，
+   * 服务据此判定 managed 与 deny 语义，设计稿要求故障不得静默 pass）。
+   *
+   * 策略源要拿到 speakup / purpose 模块的实例面（use('speakup').state() 等），
+   * 而模块是异步启动的，所以这里做成可重复调用的懒装配：模块起来之后再调一次即可，
+   * 重复注册同名策略源是幂等的（服务内部按 name 覆盖）。
+   */
+  function wirePolicySources() {
+    if (!outbound) return
+    const cfg = getConfig()
+    const dir = join(dataDir('modules-data'), 'outbound-policy')
+    const say = (msg) => logger.child('出站策略').info(msg)
+    const budget = createSharedBudget({ ownerQQ: cfg.ownerQQ, dataDir: dir, log: say })
+    try {
+      // 目的引擎（默认关）：模块在跑且配置开着才注册。引擎未启用 / 未 ready 时不注册，
+      // 服务自己会处理 managed=false 与 deny 语义（设计稿故障语义：不得静默 pass）。
+      const pu = use('purpose')
+      if (cfg.ext?.purpose?.enabled === true && pu) {
+        const policy = createPurposePolicy({
+          getConfig, engine: pu, state: () => pu.state?.() || null,
+          dataDir: dir, log: say, budget,
+        })
+        outbound.registerPolicySource(policy)
+        enginePolicies.set('purpose', policy) // 给 deliver(…, { enginePolicy: 'purpose' }) 用
+        // §5.3 私有凭据：引擎自发发言经 deliver 的 enginePolicy 路径直接向策略源
+        // reserve/commit（单本账），不再被模块包装层门闸按另一本账二次拦。
+        pu.setEnginePolicySource?.(policy)
+      } else {
+        outbound.unregisterPolicySource('purpose')
+        enginePolicies.delete('purpose')
+        use('purpose')?.setEnginePolicySource?.(null) // 策略源撤了，凭据一并撤
+      }
+      // 主动搭话（现行默认）：speakup 模块在跑就注册
+      const sp = use('speakup')
+      if (cfg.speakUp?.enabled !== false && sp) {
+        const policy = createSpeakupPolicy({
+          getConfig, speakup: sp,
+          // 与 companion.js 同口径：私聊「最近一次来往」= max(主人最后说话, 她最后发给主人)。
+          // 注意不能把 hub.lastPrivateAt 直接传进来：那个函数按 QQ 号查，策略源调用时不带参数。
+          lastPrivateAt: () => Math.max(hub.lastOwnerChatAt || 0, hub.lastBotToOwner?.at || 0),
+          // 策略源传进来的是完整 chatId（'private:QQ'），直接问 mutes 即可
+          isMuted: (chatId) => { try { return Boolean(mutes?.muted?.(chatId)) } catch { return false } },
+          dataDir: dir, log: say, budget,
+        })
+        outbound.registerPolicySource(policy)
+        enginePolicies.set('speakup', policy)
+      } else {
+        outbound.unregisterPolicySource('speakup')
+        enginePolicies.delete('speakup')
+      }
+      // 主人换号：旧 pending 一律作废（设计稿「接收人固定」）
+      outbound.syncOwnerQQ?.(cfg.ownerQQ)
+      // 面板存过的 activePolicy 要在重启后重新生效（否则配置写了却只有服务实例的默认值在跑）
+      const active = (cfg.ext?.outboundPolicy && cfg.ext.outboundPolicy.activePolicy) || 'auto'
+      outbound.setActivePolicy?.(active)
+    } catch (error) {
+      // 装配失败不能拖垮宿主启动：服务会因「无 ready 策略源」拒绝并显示原因
+      logger.child('出站策略').warn('策略源装配失败：', error && error.message)
+    }
+  }
+  // 模块还没起来，先做一次（建立预算域/主人快照）；模块启动后会再调一次
+  wirePolicySources()
   // 危险命令确认（可选保护）：DSH 在真正执行终端工具前会走 tools/pre-execute；
   // 这里只拦 bash / pwsh 的危险命令，其它工具和普通命令原样放行。
   dangerGuard = createDangerGuard({
@@ -747,6 +911,8 @@ export function apply(ctx) {
   const booted = mods.boot()
   booted.then(() => injectPetPort()).catch(() => {})
   booted.then(() => { if (getConfig().debug) hub.ensureDebugSession().catch((error) => log.warn('建调试会话失败：', error.message)) }).catch(() => {})
+  // 模块起来之后再把策略源接上（此时 use('speakup') / use('purpose') 才拿得到实例）
+  booted.then(() => wirePolicySources()).catch((error) => logger.child('出站策略').warn('策略源接线上失败：', error && error.message))
   booted.then(() => (unloaded ? [] : community.migrate())).catch((error) => log.warn('搬到社区库的模块处理失败：', error.message))
     .then(async () => {
       // 恢复备份后把市场模块装回来；没装上的留着，下次启动再试
@@ -760,48 +926,118 @@ export function apply(ctx) {
     }).catch((error) => log.warn('恢复模块失败：', error.message))
   booted.then(() => { if (!unloaded) bridge.refresh() })
 
-  // ---------- 审批请求：DSH 要授权时把请求发到 QQ ----------
-  // 说明：DSH 的批准动作只能由界面回答（host 拿不到应答通道），所以这里只做通知。
-  const approvalSeen = new Map()
-  // 授权通知只看 Aurabot · QQ 工作区：既包括 hub 映射的聊天会话，也包括同一工作区里
-  // 主人手动打开 / 调试 / 新建的会话。别的 DSH 项目的会话一律不转到 QQ。
-  function isAurabotWorkspaceSession(session) {
-    if (!session?.id) return false
-    try { if (hub?.chatOfSession?.(session.id)) return true } catch (error) {}
+  // ---------- 审批 / 提问：DSH 要人处理时把请求说到 QQ ----------
+  // 只上报，不代答：DSH 界面照常弹，谁在电脑前谁点。按工作区分别开关（config.notice）。
+  function workspaceList() {
     try {
       const reg = ctx.workspaceRegistry || ctx.get?.('workspaceRegistry')
-      const norm = (p) => String(p || '').replace(/[\\/]+$/, '').toLowerCase()
-      const ws = (reg?.list?.() || []).find((w) => norm(w.path) === norm(workspaceDirOf(getConfig())))
-      return Boolean(ws?.sessionIds?.some((sid) => String(sid) === String(session.id)))
+      return reg?.list?.() || []
+    } catch (error) { return [] }
+  }
+  function workspaceOfSession(sessionId) {
+    const sid = String(sessionId || '')
+    if (!sid) return ''
+    const hit = workspaceList().find((w) => (w?.sessionIds || []).some((x) => String(x) === sid))
+    return hit ? String(hit.path || '') : ''
+  }
+  // 上一次往私人会话推提醒的时间：10 秒内不再推，避免连着进来几批时刷屏
+  let lastNoticePush = 0
+  /**
+   * 把攒下来的几件事，推进主人的私聊会话让她自己说。
+   * 走的是完整人格 + 私聊上下文，不再拼独立提示词；推不进去（会话坏了、还没恢复）就整批不发。
+   */
+  async function noticeText(items) {
+    const list = Array.isArray(items) ? items : []
+    if (!list.length) return false
+    if (Date.now() - lastNoticePush < 10000) return false
+    const now = getConfig()
+    const owner = String(now.ownerName || '主人').slice(0, 12)
+    // 精确到秒：同一分钟里连着来的两件也能分开，不会被当成同一件
+    const clock = (t) => {
+      const d = new Date(Number(t) || Date.now())
+      const p = (n) => String(n).padStart(2, '0')
+      return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+    }
+    const lines = list.map((it, i) => {
+      const title = String(it.title || '未命名').slice(0, 40)
+      const at = clock(it.at)
+      if (it.kind === 'approval') return `${i + 1}. [${at}] 有个会话卡在 ${it.tool || '某个工具'} 上，等他点批准（会话：${title}）`
+      const q = (it.questions || []).map((x) => x?.question).filter(Boolean)[0] || '有个问题'
+      return `${i + 1}. [${at}] 有个会话在等他选方案：${String(q).slice(0, 60)}（会话：${title}）`
+    })
+    try {
+      const prompt = `（这是一条提示信息，通知你的主人：他电脑上有活卡住了，需要他去 DSH 界面处理。现在是 ${clock(Date.now())}。\n下面每一条都是一次单独的审批或选择请求，编号或时间不重复就是不同的事。\n${lines.join('\n')}\n用你自己的性格和语气随口跟他提一句，就当聊天里顺口提一嘴；别念条目、别像发通知。）`
+      // 把真正推给会话的内容也记下来：排查「模型为什么说没带编号」时，先看它到底收到了什么
+      log.info(`推送提示：${prompt.replace(/\n/g, ' | ').slice(0, 600)}`)
+      await hub.pushToSession(
+        { chatId: `private:${now.ownerQQ}`, kind: 'private', userId: now.ownerQQ, nickname: owner },
+        [{ type: 'text', text: prompt }],
+        ''
+      )
+      lastNoticePush = Date.now()
+      return true
     } catch (error) {
+      log.warn?.('上报推送失败：', error.message)
       return false
     }
   }
+  noticeRelay = createNoticeRelay({
+    getConfig,
+    workspaceOf: workspaceOfSession,
+    compose: noticeText,
+    log,
+  })
   async function notifyApproval(session, event) {
     try {
-      if (!cfg.enabled || cfg.dryRun || cfg.approvalNotify === false) return
-      if (!isAurabotWorkspaceSession(session)) return
+      if (!cfg.enabled || cfg.dryRun) return
       const d = event.data || {}
       const id = String(d.id || '')
-      if (!id || approvalSeen.has(id)) return
-      approvalSeen.set(id, Date.now())
+      if (!id) return
       // 等一下看 QQ 有没有问：问了就不用再通知；没问（比如审批没走到插件）照常通知，主人不会什么都收不到
       if (approvalRelay?.handles(session?.id)) {
         await new Promise((r) => setTimeout(r, 1500))
         if (approvalRelay.askedRecently()) return
       }
-      if (approvalSeen.size > 200) { for (const [k, t] of approvalSeen) if (Date.now() - t > 6 * 3600_000) approvalSeen.delete(k) }
       let title = ''
-      try { title = String(session?.title || session?.id || '') } catch (error) {}
-      const lines = ['【要授权】' + (d.toolName || '未知工具')]
-      if (d.reason) lines.push('原因：' + String(d.reason).slice(0, 300))
-      if (title) lines.push('会话：' + title.slice(0, 60))
-      lines.push('这个会话的授权要在 DSH 界面里点「批准」。')
-      await hub.sendText(`private:${cfg.ownerQQ}`, lines.join('\n'))
+      try { title = String(session?.title || '').trim() } catch (error) {}
+      // 和提问一样：会话事件里的 session 常常没带标题，用 id 后 8 位兜底（完整 id 太长，模型认不出是编号）
+      if (!title) title = String(session?.id || '').slice(-8)
+      const queued = noticeRelay.announce('approval', { id, sessionId: session?.id, title, tool: d.toolName, reason: d.reason })
+      // 留一行痕迹：排查「为什么这个会话的审批没推到 QQ」时，至少能看出是没收到、被开关挡掉，还是已入队
+      log.info(`审批上报：${d.toolName || '?'}（会话 ${String(session?.id || '').slice(-8) || '?'}）→ ${queued ? '已入队' : (noticeRelay.enabled('approval', session?.id) ? '重复/已在队列' : '被开关挡掉')}`)
     } catch (error) {
       log.debug?.('审批通知失败：', error.message)
     }
   }
+
+  // 她要向人提问时从会话事件里认（tool/call）：user-questions/request 是 agent-scoped
+  // waterfall，插件挂在根 scope 上收不到；而工具调用事件是全局的，能拿到完整问题。
+  function noticeQuestion(session, event) {
+    try {
+      const d = event?.data || {}
+      const sid = String(session?.id || '')
+      const callId = String(d.callId || '')
+      if (!sid || !callId) return
+      if (event.type === 'tool/call' && d.name === 'ask_user_question') {
+        let qs = []
+        try { qs = JSON.parse(String(d.arguments || '{}')).questions || [] } catch (error) {}
+        if (!Array.isArray(qs) || !qs.length) return
+        let title = ''
+        try { title = String(session?.title || '').trim() } catch (error) {}
+        // 会话事件里的 session 常常没带标题：用 id 后 8 位兜底，不然模型分不清是哪两个会话
+        if (!title) title = sid.slice(-8)
+        const id = `q:${sid}:${callId}`
+        const queued = noticeRelay?.announce('question', { id, sessionId: sid, title, questions: qs })
+        log.info(`提问上报：${qs.length} 个问题（${title}）→ ${queued ? '已入队' : (noticeRelay?.enabled('question', sid) ? '重复/已在队列' : '被开关挡掉')}`)
+      } else if (event.type === 'tool/result' && d.toolCallId) {
+        // 问题答完 / 超时跳过：把还没推出去的那条撤掉
+        noticeRelay?.cancel(`q:${sid}:${d.toolCallId}`)
+      }
+    } catch (error) {
+      log.debug?.('提问上报失败：', error.message)
+    }
+  }
+
 
   // ---------- 盯会话：一轮结束就发回 QQ ----------
   ctx.effect(() => {
@@ -820,6 +1056,10 @@ export function apply(ctx) {
       } catch (error) { log.debug?.('桌宠状态联动出错：', error.message) }
       // 审批请求顺手通知到主人私聊（只通知，不代答）
       if (event && event.type === 'approval/asked') notifyApproval(session, event)
+      // 主人已经点过了：把还在缓冲里的那条撤掉，别等人点完才提醒
+      if (event && event.type === 'approval/decided') { try { noticeRelay?.cancel(String(event.data?.id || '')) } catch (error) {} }
+      // 她弹选择（ask_user_question）：从工具调用事件里认，答完再撤
+      if (event && (event.type === 'tool/call' || event.type === 'tool/result')) noticeQuestion(session, event)
     })
     return () => { try { if (typeof off === 'function') off() } catch (error) {} }
   }, 'aurabot: 盯会话')
@@ -911,6 +1151,7 @@ export function apply(ctx) {
       voice: { edgeInstalled: use('voice')?.edgeInstalled?.() ?? false },
       song: use('song')?.status?.() ?? null,
       sessions: hub.sessions(),
+      sessionHealth: hub.sessionHealth(),
       workspaceDir: workspaceDirOf(cfg),
       workspaceReal: realWorkspace(workspaceDirOf(cfg)),
       personas: listPersonas(),
@@ -947,6 +1188,9 @@ export function apply(ctx) {
       carrier: ext.carrier === 'pet' ? 'pet' : 'qq',
       petFallbackToQQ: ext.petFallbackToQQ !== false,
       pacing: ['conservative', 'default', 'active'].includes(ext.pacing) ? ext.pacing : 'default',
+      scoringModel: ext.scoringModel && ext.scoringModel.provider && ext.scoringModel.model
+        ? { provider: ext.scoringModel.provider, model: ext.scoringModel.model, reasoningEffort: ext.scoringModel.reasoningEffort || '' }
+        : null,
       quietStart: quiet.quietStart,
       quietEnd: quiet.quietEnd,
       dailyMax: Number.isFinite(sp.maxPerDay) ? sp.maxPerDay : null,
@@ -957,6 +1201,9 @@ export function apply(ctx) {
   const petStatus = () => redactTokens(use('pet')?.status?.() ?? null)
 
   route('/state', async () => overview())
+  // token 用量与花费：今日 / 昨日 / 近 7 天 / 近 30 天，各带模块明细
+  // ?range=today|yesterday|7|30|all —— 面板点哪张指标卡就按哪个区间出明细
+  route('/usage', async (req) => ({ ok: true, ...usageReport({ range: query(req).range || '7' }) }))
 
   route('/save', async (req) => {
     const body = await readBody(req)
@@ -1011,7 +1258,13 @@ export function apply(ctx) {
 
   // ---------- 面板代理：目的引擎 / 桌宠 ----------
   // 统一走 /panel/* 前缀，避免和模块自注册的 /purpose/*、/pet/* 路由撞名；模块缺新接口时降级返回 available:false。
-  route('/panel/purpose/status', async () => ({ ok: true, purpose: purposeOverview(), pet: petStatus() }))
+  route('/panel/purpose/status', async () => ({
+    ok: true,
+    purpose: purposeOverview(),
+    pet: petStatus(),
+    // 「素材打分模型」下拉的选项：DSH 里现有的全部模型（provider/model/name）。
+    models: (modelCache || []).map((m) => ({ provider: m.provider, model: m.model, name: m.name || m.model })),
+  }))
   route('/panel/purpose/preview', async () => {
     const pu = use('purpose')
     if (typeof pu?.preview !== 'function') return { ok: false, available: false, message: '目的引擎模块没在跑，没法预览' }
@@ -1024,6 +1277,43 @@ export function apply(ctx) {
     const msg = r && { sent: '已经去找你了', silent: '她这轮想了想，决定不说（不硬发）', muted: '主人在私聊里让她闭嘴了', disabled: '目的引擎开关是关的' }[r.outcome]
     return { ok: !r || r.outcome !== 'disabled', message: msg || (r ? `这轮结束：${r.outcome}` : '没有结果'), result: redactTokens(r) }
   })
+  // 上报开关：按工作区分别控制「审批」「提问」要不要发到 QQ
+  route('/notice/state', async () => {
+    const c = loadConfig()
+    const n = c.notice || {}
+    const workspaces = workspaceList().map((w) => {
+      const path = String(w?.path || '')
+      const key = normalizeWorkspace(path)
+      const o = n.workspaces?.[key] || {}
+      return {
+        path,
+        name: String(w?.name || path.split(/[\\/]/).filter(Boolean).pop() || path),
+        sessions: Array.isArray(w?.sessionIds) ? w.sessionIds.length : 0,
+        approval: typeof o.approval === 'boolean' ? o.approval : n.approval !== false,
+        question: typeof o.question === 'boolean' ? o.question : n.question !== false,
+      }
+    })
+    return { ok: true, enabled: n.enabled !== false, approval: n.approval !== false, question: n.question !== false, workspaces }
+  })
+  route('/notice/toggle', async (req) => {
+    const b = await readBody(req)
+    const kind = b.kind === 'question' ? 'question' : 'approval'
+    const value = b.value !== false
+    const c = loadConfig()
+    const notice = { ...(c.notice || {}) }
+    notice.workspaces = { ...(notice.workspaces || {}) }
+    const ws = String(b.workspace || '').trim()
+    if (ws) {
+      // 只接受绝对路径：相对路径（../x、foo/bar）写进配置只会变成永远对不上的键
+      if (!/^([a-zA-Z]:[\\/]|\/)/.test(ws)) return { ok: false, message: 'workspace 必须是绝对路径' }
+      const key = normalizeWorkspace(ws)
+      notice.workspaces[key] = { ...(notice.workspaces[key] || {}), [kind]: value }
+    } else {
+      notice[kind] = value
+    }
+    setConfig({ notice })
+    return { ok: true, notice }
+  })
   route('/panel/purpose/config', async (req) => {
     const b = await readBody(req)
     const patch = {}
@@ -1032,6 +1322,8 @@ export function apply(ctx) {
     if (b.carrier === 'qq' || b.carrier === 'pet') extPatch.carrier = b.carrier
     if (typeof b.petFallbackToQQ === 'boolean') extPatch.petFallbackToQQ = b.petFallbackToQQ
     if (['conservative', 'default', 'active'].includes(b.pacing)) extPatch.pacing = b.pacing
+    // 素材打分模型：与「按聊天选模型」同款结构校验（provider+model 都有才算数；传空对象/坏值 = 清除）
+    if (b.scoringModel !== undefined) extPatch.scoringModel = normalizeSelection(b.scoringModel) || {}
     if (Object.keys(extPatch).length) patch.ext = { purpose: extPatch }
     const spPatch = {}
     for (const k of ['awakeFrom', 'awakeTo', 'maxPerDay']) if (Number.isFinite(b[k])) spPatch[k] = Math.max(0, Math.floor(b[k]))
@@ -1042,6 +1334,134 @@ export function apply(ctx) {
     return { ok: true, purpose: purposeOverview() }
   })
   route('/panel/pet/status', async () => ({ ok: true, pet: petStatus() }))
+  // ---------- 面板：主动发言出站策略 ----------
+  // 契约要求的两个精确路径：GET /panel/outbound-policy（读）与 POST /panel/outbound-policy（写）。
+  // route 是精确路径匹配（AGENTS.md §4-4），所以读写各注册一条，不做前缀/通配。
+  //
+  // 读：档位、策略源四态与原因、「尚未纳管」提示、分类统计、账本概览。
+  route('/panel/outbound-policy', async (req) => {
+    // 带 body 的 POST 走下面的写分支；DSH 的 route 只按路径分发，这里按方法区分读写。
+    if (String(req?.method || 'GET').toUpperCase() === 'POST') return saveOutboundPolicy(req)
+    return outboundView()
+  })
+  // 写：档位（pass/gate/broker）与活跃策略源选择（auto/purpose/speakup）。
+  // 注意 ：面板只暴露当前真实能力，档位切换不改写已有账本条目。
+  function saveOutboundPolicy(req) {
+    return readBody(req).then((b) => {
+      const patch = {}
+      if (['pass', 'gate', 'broker'].includes(b.tier)) patch.tier = b.tier
+      if (['auto', 'purpose', 'speakup'].includes(b.activePolicy)) patch.activePolicy = b.activePolicy
+      if (!Object.keys(patch).length) return { ok: false, message: '没有可保存的字段（tier 只认 pass/gate/broker，activePolicy 只认 auto/purpose/speakup）', outbound: outboundView().outbound }
+      const now = getConfig()
+      const cur = (now.ext && now.ext.outboundPolicy) || {}
+      setConfig({ ...now, ext: { ...now.ext, outboundPolicy: { ...cur, ...patch } } })
+      if (patch.activePolicy) outbound?.setActivePolicy?.(patch.activePolicy)
+      log.info(`面板已保存出站策略｜${Object.keys(patch).map((k) => k + '=' + patch[k]).join(' ')}`)
+      return outboundView()
+    })
+  }
+  /** 面板统一返回体：服务没装配时 outbound 为 null（面板显示「尚未纳管」引导）。 */
+  function outboundView() {
+    let status = null
+    try { status = outbound ? outbound.status() : null } catch (error) { log.warn('出站策略读状态失败：', error && error.message) }
+    return { ok: true, outbound: status, view: outboundPanelView(status) }
+  }
+  // ---------- 出站策略面板：中文视图 ----------
+  // 面板只给中文，前端不必自己维护一套翻译表（也免得改了档位忘了改文案）。
+  // 键是机器值（后端判定用），值是给人看的；前端直接渲染 view 即可。
+  const TIER_VIEW = {
+    pass: { label: '不纳管（旧行为直发）', hint: '模块想发就发，只记录不拦截。刷完东西仍会直接私聊你。' },
+    gate: { label: '门闸（该不该说由引擎定）', hint: '主动私聊主人要先过引擎判定；引擎说不发就不发，不会排队改约。' },
+    broker: { label: '门闸 + 代发（能改约）', hint: '引擎可以压后再说；模块可用 api.proactive 提交由宿主统筹投递。' },
+  }
+  const SOURCE_STATE_VIEW = {
+    configured: { label: '已配置未启用', tone: 'warn' },
+    running: { label: '流程中', tone: 'ok' },
+    ready: { label: '就绪', tone: 'ok' },
+    error: { label: '出错', tone: 'bad' },
+  }
+  const ACTIVE_VIEW = { auto: '自动（挑就绪的那个）', purpose: '目的引擎', speakup: '主动搭话' }
+  const POLICY_NAME_VIEW = { purpose: '目的引擎', speakup: '主动搭话' }
+  const LEDGER_STATE_VIEW = {
+    pending: '待投递', sending: '发送中', sent: '已送达', dropped: '已丢弃',
+    failed: '失败', uncertain: '结果未明', expired: '已过期', 'transport-queued': '已交由网关',
+  }
+  function outboundPanelView(status) {
+    if (!status) {
+      return {
+        managed: false,
+        headline: '尚未纳管',
+        summary: '出站策略服务还没装配好，模块的主动私聊会照旧直接发出。',
+        tier: null, tiers: [], sources: [], stats: [], ledger: [],
+      }
+    }
+    const tierInfo = TIER_VIEW[status.tier] || TIER_VIEW.pass
+    // 三种总体状态：未纳管 / 正常纳管 / 纳管出问题
+    const sources = Object.entries(status.sources || {}).map(([name, s]) => {
+      const st = SOURCE_STATE_VIEW[s.state] || { label: String(s.state || '未知'), tone: 'warn' }
+      return {
+        name,
+        title: POLICY_NAME_VIEW[name] || name,
+        state: s.state,
+        stateLabel: st.label,
+        tone: st.tone,
+        reason: s.reason || '',
+      }
+    })
+    const readyCount = sources.filter((s) => s.state === 'ready').length
+    let headline
+    let summary
+    let tone
+    if (status.tier === 'pass') {
+      headline = '尚未纳管'
+      summary = '当前档位是「不纳管」：刷抖音、逛小黑盒这类模块刷完仍会直接私聊你，不经过主动发言决策。想让它们守规矩，把档位改成「门闸」或「门闸 + 代发」。'
+      tone = 'warn'
+    } else if (!sources.length) {
+      headline = '没有可用的策略源'
+      summary = '档位已经开了，但主动搭话和目的引擎都没启用，没有人来决定该不该说。先去把其中一个引擎打开。'
+      tone = 'warn'
+    } else if (status.managed) {
+      headline = '已纳管'
+      summary = `主动私聊主人会先问「${POLICY_NAME_VIEW[status.activePolicy] || status.activePolicy || '引擎'}」的意见，它说此刻不适合开口就不发。`
+      tone = 'ok'
+    } else {
+      const bad = sources.find((s) => s.state === 'error')
+      headline = '纳管异常'
+      summary = bad
+        ? `策略源「${bad.title}」出错了（${bad.reason || '未说明原因'}），这期间主动私聊会被拦下而不是放行。`
+        : '档位已经开了，但策略源还没就绪，这期间主动私聊会被拦下而不是放行。'
+      tone = 'bad'
+    }
+    const stats = [
+      ['经过判定', status.stats?.admitted ?? 0, '有主动发送请求进入判定的次数'],
+      ['放行', status.stats?.allowed ?? 0, '最终允许发出的次数'],
+      ['拦下', status.stats?.denied ?? 0, '被引擎否掉的次数'],
+      ['未纳管放行', status.stats?.passThrough ?? 0, '不归治理范围、直接放行的次数'],
+      ['账本待投递', status.ledger?.pending ?? 0, '已提交但还没发出去的'],
+    ].map(([label, value, hint]) => ({ label, value, hint }))
+    const ledger = Object.entries(status.ledger?.byState || {})
+      .filter(([, n]) => n > 0)
+      .map(([state, n]) => ({ state, label: LEDGER_STATE_VIEW[state] || state, count: n }))
+    return {
+      managed: status.managed,
+      tone,
+      headline,
+      summary,
+      tier: status.tier,
+      tierLabel: tierInfo.label,
+      tierHint: tierInfo.hint,
+      tiers: Object.entries(TIER_VIEW).map(([value, v]) => ({ value, label: v.label, hint: v.hint, selected: value === status.tier })),
+      activePolicy: status.activePolicy || null,
+      activeMode: status.activeMode || 'auto',
+      activeLabel: ACTIVE_VIEW[status.activeMode] || status.activeMode || '自动',
+      activeOptions: Object.entries(ACTIVE_VIEW).map(([value, label]) => ({ value, label, selected: value === (status.activeMode || 'auto') })),
+      readyCount,
+      sourceCount: sources.length,
+      sources,
+      stats,
+      ledger,
+    }
+  }
   // 桌宠页下方的设置项：碎碎念（桌宠自己的气泡流）+ 干活状态动画/结束提醒
   route('/panel/pet/config', async (req) => {
     const b = await readBody(req)
@@ -1058,6 +1478,22 @@ export function apply(ctx) {
     if (Number.isFinite(b.petScale)) patch.petScale = Math.min(2, Math.max(0.5, Math.round(b.petScale * 20) / 20))
     // 松手后落地：布尔透传（模块侧缺省当开，别让老面板把抛掷关没）
     if (typeof b.petReleaseLand === 'boolean') patch.petReleaseLand = b.petReleaseLand
+    // ---------- 物理三参数 + 余额开关 + 抓鼠标两开关（pet 1.0.14 起在模块库） ----------
+    // 【教训 · 三处必须同步】模块 settings 里新增一个键 → 必须同时补
+    //   ① 本白名单（否则保存被「没有可保存的字段」挡回）
+    //   ② client/client.js 里的控件（面板是硬编码 React，不会按 settings 渲染）
+    //   ③ 模块自己的 defaults/settings 声明
+    // 三处缺一即「假控件」：面板上看得见、点了存不进去，而且因为写不进 ext.pet，
+    // 8 秒轮询还会把刚拖好的值弹回原处。桌宠是内置模块，它的 settings 同样不渲染成表单。
+    // 取值口径与模块那边一致：坏值/非有限值一律忽略（不写进 patch，保持原值），
+    // 越界按模块 settings 的 min/max 夹边界；步进与取整的整形在前端做（面板已 round）。
+    if (Number.isFinite(b.petGravity)) patch.petGravity = Math.min(4000, Math.max(200, b.petGravity))
+    if (Number.isFinite(b.petRestitution)) patch.petRestitution = Math.min(0.95, Math.max(0.3, b.petRestitution))
+    if (Number.isFinite(b.petAnimRate)) patch.petAnimRate = Math.min(2, Math.max(0.5, b.petAnimRate))
+    // 三个开关：布尔直接透传（余额默认开 = 模块侧 `!== false`；抓鼠标默认关 = `=== true`）
+    for (const k of ['petShowBalance', 'petClickChase', 'petTeaseChase']) {
+      if (typeof b[k] === 'boolean') patch[k] = b[k]
+    }
     // 对话框（pet 1.0.5 起在模块库，模块自己的 settings 同样不渲染成表单；这里仍是唯一写入通道）
     for (const k of ['petChatEnabled', 'petChatBlurHide']) {
       if (typeof b[k] === 'boolean') patch[k] = b[k]
@@ -1590,6 +2026,7 @@ export function apply(ctx) {
   route('/persona/save', async (req) => {
     const b = await readBody(req)
     const p = savePersona(b.id, b)
+    bridge.refresh()
     return { ok: true, persona: p, message: '人格已保存，下一轮起生效' }
   })
   route('/persona/delete', async (req) => {
@@ -1623,7 +2060,7 @@ export function apply(ctx) {
       text.trim() ? `原文：\n${text}` : '',
     ].filter(Boolean).join('\n')
     try {
-      const out = String(await askModel(ctx, { cfg: getConfig(), system, text: ask, maxTokens: 1500, temperature: 0.6 }) || '')
+      const out = String(await askModel(ctx, { cfg: getConfig(), module: 'persona', system, text: ask, maxTokens: 1500, temperature: 0.6 }) || '')
         .replace(/^```[a-z]*\n?|\n?```$/g, '').replace(new RegExp('^【' + title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '】\\s*'), '').trim()
       return out ? { ok: true, text: out } : { ok: false, message: '模型没给出内容，再试一次' }
     } catch (error) {
@@ -2008,7 +2445,7 @@ export function apply(ctx) {
     const b = await readBody(req)
     const t = Date.now()
     try {
-      const text = await askModel(ctx, { cfg: { model: { provider: b.provider, model: b.model } }, system: '只回复两个字：在呢', text: '在吗', maxTokens: 800 })
+      const text = await askModel(ctx, { cfg: { model: { provider: b.provider, model: b.model } }, module: 'model-ping', system: '只回复两个字：在呢', text: '在吗', maxTokens: 800 })
       return { ok: true, ms: Date.now() - t, text: text.slice(0, 40) }
     } catch (error) {
       return { ok: false, ms: Date.now() - t, message: error.message }
