@@ -2084,6 +2084,9 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         setStickerTotal(nextTotal)
         setHasMore(nextTotal > nextLoaded)
       }
+      const editSticker = (md5, patch) => {
+        setItems((prev) => (prev || []).map((i) => i.md5 === md5 ? { ...i, ...patch } : i))
+      }
       useEffect(() => { load() }, [])
       const [newName, setNewName] = useState('')
       // 起名用哪个模型：列 DSH 里已经接好的模型，能看图的标出来（AI 补全必须看图）
@@ -2232,7 +2235,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           ) : null,
           items === null ? h(Empty, { icon: '⏳', text: '加载中…' }) : items.length === 0 ? h(Empty, { icon: '🐳', text: '表情库还是空的。别人在群里发表情包，ta会自己收；也可以点右上角上传，或者「从 QQ 收藏导入」机器人号已经收藏的表情。' }) :
             h('div', { className: cx('ab-stickers', picking && 'picking') },
-              items.map((it) => h(StickerCell, { key: it.md5, it, onChanged: load, onDeleted: (md5) => removeStickers([md5]), toast, picking, selected: picked.includes(it.md5), onToggle: toggle }))),
+              items.map((it) => h(StickerCell, { key: it.md5, it, onChanged: load, onDeleted: (md5) => removeStickers([md5]), onEdited: editSticker, toast, picking, selected: picked.includes(it.md5), onToggle: toggle }))),
           hasMore ? h('div', { className: 'ab-flex', style: { marginTop: 8 } },
             h(Btn, { small: true, kind: 'ghost', disabled: moreBusy, onClick: loadMore }, moreBusy ? '加载中…' : `加载更多（已显示 ${items ? items.length : 0}/${stickerTotal}）`)) : null,
         ),
@@ -2276,7 +2279,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
      * 一张表情：名字（备注）和标签都能直接改，改完离开输入框就保存（#31：模型起的名字 / 标签不对时手动纠正）。
      * 多选模式下整张卡片就是勾选框，点一下就选中。
      */
-    function StickerCell({ it, onChanged, onDeleted, toast, picking, selected, onToggle }) {
+    function StickerCell({ it, onChanged, onDeleted, onEdited, toast, picking, selected, onToggle }) {
       const [name, setName] = useState(it.name || '')
       const tagText = (it.tags || []).join(' ')
       const [tags, setTags] = useState(tagText)
@@ -2286,7 +2289,10 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const save = async (body, label) => {
         const r = await post('/sticker/rename', { md5: it.md5, ...body })
         toast(r.ok ? label + '改好了' : '没改成：' + (r.message || '找不到这张表情'), r.ok ? 'ok' : 'err')
-        if (r.ok) onChanged()
+        if (r.ok) {
+          if (onEdited) onEdited(it.md5, body)
+          else onChanged()
+        }
       }
       return h('div', {
         className: cx('ab-sticker', picking && 'pick', selected && 'on'),
@@ -3420,6 +3426,20 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         setHasMore(nextTotal > nextLoaded)
         if (gone && !memoryEnded(gone)) setStats((prev) => prev ? { ...prev, count: Math.max(0, (prev.count || 0) - 1) } : prev)
       }
+      const editMemory = (id, text) => {
+        setMem((prev) => (prev || []).map((m) => m.id === id ? { ...m, text, displayText: text } : m))
+      }
+      const restoreMemory = (id) => {
+        const gone = (mem || []).find((m) => m.id === id)
+        if (!gone) return
+        const restored = { ...gone, invalidAt: undefined, validUntil: undefined, validityText: '' }
+        setMem((prev) => [restored, ...(prev || []).filter((m) => m.id !== id)])
+        setStats((prev) => prev ? {
+          ...prev,
+          count: Math.max(0, (prev.count || 0) + 1),
+          outdated: Math.max(0, (prev.outdated || 0) - 1),
+        } : prev)
+      }
       const [styles, setStyles] = useState({})
       const loadIns = () => getCached('/insights').then((r) => setStyles(r.styles || {}))
       const times = draft.memory.consolidateTimes || []
@@ -3571,7 +3591,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h('div', { className: 'ab-section-title' }, '翻一翻'),
           h('input', { className: 'ab-input wide', placeholder: '搜索记忆，例如：白米饭、游戏、约定…', value: q, onChange: (e) => setQ(e.target.value) }),
           mem === null ? h(Empty, { icon: '⏳', text: '加载中…' }) : mem.length === 0 ? h(Empty, { icon: '🫧', text: q ? '没找到相关的记忆' : '还没有记住什么。' }) :
-            h('div', { className: 'ab-list', style: { marginTop: 8 } }, mem.map((m) => h(MemoryRow, { key: m.id, m, onChanged: () => load(), onDeleted: removeMemory, toast }))),
+            h('div', { className: 'ab-list', style: { marginTop: 8 } }, mem.map((m) => h(MemoryRow, { key: m.id, m, onChanged: () => load(), onDeleted: removeMemory, onEdited: editMemory, onRestored: restoreMemory, toast }))),
           hasMore ? h('div', { className: 'ab-flex', style: { marginTop: 8 } },
             h(Btn, { small: true, kind: 'ghost', disabled: moreBusy, onClick: loadMore },
               moreBusy ? '加载中…' : `加载更多（已显示 ${mem ? mem.length : 0}/${memTotal}）`)) : null,
@@ -3659,8 +3679,9 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const [tagInput, setTagInput] = useState('')
       const [error, setError] = useState('')
       const [notesBusy, setNotesBusy] = useState(false)
-      const load = async (keepForm = false) => {
-        const r = await getCached('/persona/person?qq=' + encodeURIComponent(qq))
+      const load = async (keepForm = false, notesLimit = 20) => {
+        const n = Math.min(100, Math.max(20, Math.trunc(Number(notesLimit) || 20)))
+        const r = await getCached('/persona/person?qq=' + encodeURIComponent(qq) + '&notesLimit=' + n)
         if (!r.ok) { setError(r.message || '人物详情没读出来'); return }
         setError(''); setData(r)
         if (!keepForm) setForm({ ...Object.fromEntries(PERSON_FIELDS.map(([key]) => [key, r.person[key] || ''])), tags: r.person.tags || [] })
@@ -3688,6 +3709,16 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         } : prev)
       }
       const removeGist = (id) => setData((prev) => prev ? { ...prev, gists: (prev.gists || []).filter((g) => g.id !== id) } : prev)
+      const editNote = (id, text) => setData((prev) => prev ? {
+        ...prev,
+        notes: (prev.notes || []).map((m) => m.id === id ? { ...m, text, displayText: text } : m),
+      } : prev)
+      const restoreNote = (id) => setData((prev) => prev ? {
+        ...prev,
+        notes: (prev.notes || []).map((m) => m.id === id ? { ...m, invalidAt: undefined, validUntil: undefined, validityText: '' } : m),
+        notesLive: (prev.notesLive || 0) + 1,
+        notesOld: Math.max(0, (prev.notesOld || 0) - 1),
+      } : prev)
       useEffect(() => { load() }, [qq])
       if (error) return h('div', { className: 'ab-pm-detail' }, h('div', { className: 'ab-note err' }, error))
       if (!data || !form) return h('div', { className: 'ab-pm-detail' }, h(Empty, { icon: '⏳', text: '加载中…' }))
@@ -3698,14 +3729,14 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         const { tags, ...fields } = form
         const r = await post('/persona/person/save', { qq, ...fields, ...(tagsChanged ? { tags } : {}) })
         toast(r.message, r.ok ? 'ok' : 'err')
-        if (r.ok) { setEditing(false); await load(); onChanged() }
+        if (r.ok) { setEditing(false); await load(false, Math.max(20, (data.notes || []).length)); onChanged() }
       }
       const rebuild = async () => {
         if (!(data.notesLive > 0)) return toast('还没有能用来重写小档案的事实', 'err')
         if (changed && !confirm('重写会放弃还没保存的修改，继续吗？')) return
         const r = await post('/profiles/rebuild', { qq })
         toast(r.message, r.ok ? 'ok' : 'err')
-        await load(!r.ok)
+        await load(!r.ok, Math.max(20, (data.notes || []).length))
       }
       const traits = [['style', '说话方式'], ['persona', '性格'], ['handle', '怎么相处']]
       const notes = data.notes || []
@@ -3739,7 +3770,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h('div', { className: 'k' }, label), h('div', { className: cx('v', !p[key] && 'empty') }, p[key] || '还不了解')))),
         data.shortTerm ? h(Card, { title: '刚才聊到哪' }, h('div', null, data.shortTerm.text)) : null,
         h(Card, { title: '私聊里的相处经验', desc: '私聊时优先用这里，上面的「说话方式」和「怎么相处」在群里用。' },
-          h(InsightCard, { p: { key: 'qq:' + qq, list: data.insights || [] }, style: data.styles || [], toast, onSaved: () => load(true) })),
+          h(InsightCard, { p: { key: 'qq:' + qq, list: data.insights || [] }, style: data.styles || [], toast, onSaved: () => load(true, Math.max(20, (data.notes || []).length)) })),
         (data.relations || []).length ? h(Card, { title: '人物关系' }, data.relations.map((r) => h('div', { key: r.id, className: 'ab-pm-fact' },
           h('span', { className: 'ab-pm-dot', 'aria-hidden': 'true' }),
           h('div', { className: 'main' }, h('div', { className: 'text' }, r.text), h('div', { className: 'sub' }, h('span', null, memoryDate(r.at)), h('span', null, gistSource(r.chatId)))),
@@ -3747,25 +3778,28 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             if (!confirm('删除这条关系？')) return
             const res = await post('/memory/relations/delete', { id: r.id })
             toast(res.message, res.ok ? 'ok' : 'err')
-            if (res.ok) await load(true)
+            if (res.ok) await load(true, Math.max(20, (data.notes || []).length))
           } }, '删'))))) : null,
         h(Card, { title: `记得的事 ${data.notesLive ?? live.length}`.trim() },
-          live.length ? live.map((m) => h(PersonaFact, { key: m.id, m, toast, onChanged: () => load(true), onDeleted: removeNote })) : h(Empty, { text: '还没记住关于这个人的事。' }),
+          live.length ? live.map((m) => h(PersonaFact, { key: m.id, m, toast, onChanged: () => load(true), onDeleted: removeNote, onEdited: editNote, onRestored: restoreNote })) : h(Empty, { text: '还没记住关于这个人的事。' }),
           notes.length < (data.notesTotal || 0) ? h('div', { className: 'ab-flex', style: { marginTop: 8 } },
             h(Btn, { small: true, kind: 'ghost', disabled: notesBusy, onClick: loadMoreNotes }, notesBusy ? '加载中…' : `加载更多（已显示 ${notes.length}/${data.notesTotal}）`)) : null),
         data.gists.length ? h(Card, { title: '留下的感觉' }, h(GistLine, { list: data.gists, toast, onChanged: () => load(true), onDeleted: removeGist })) : null,
         old.length ? h('details', { className: 'ab-card' }, h('summary', { className: 'ab-small' }, `已过时的 ${data.notesOld ?? old.length} 条${old.length < (data.notesOld || 0) ? '（已显示 ' + old.length + '）' : ''}`),
-          h('div', { style: { marginTop: 8 } }, old.map((m) => h(PersonaFact, { key: m.id, m, toast, onChanged: () => load(true), onDeleted: removeNote })))) : null)
+          h('div', { style: { marginTop: 8 } }, old.map((m) => h(PersonaFact, { key: m.id, m, toast, onChanged: () => load(true), onDeleted: removeNote, onEdited: editNote, onRestored: restoreNote })))) : null)
     }
 
-    function PersonaFact({ m, toast, onChanged, onDeleted }) {
+    function PersonaFact({ m, toast, onChanged, onDeleted, onEdited, onRestored }) {
       const [editing, setEditing] = useState(false)
       const [text, setText] = useState(m.text || '')
       useEffect(() => { setText(m.text || '') }, [m.text])
       const save = async () => {
         const r = await post('/memory/update', { id: m.id, text: text.trim() })
         toast(r.ok ? '改好了' : r.message, r.ok ? 'ok' : 'err')
-        if (r.ok) { setEditing(false); await onChanged() }
+        if (!r.ok) return
+        setEditing(false)
+        if (onEdited) onEdited(m.id, text.trim())
+        else await onChanged()
       }
       const remove = async () => {
         if (!confirm('删除这条？')) return
@@ -3776,7 +3810,13 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           else await onChanged()
         }
       }
-      const restore = async () => { const r = await post('/memory/restore', { id: m.id }); toast(r.ok ? '恢复了' : r.message, r.ok ? 'ok' : 'err'); if (r.ok) await onChanged() }
+      const restore = async () => {
+        const r = await post('/memory/restore', { id: m.id })
+        toast(r.ok ? '恢复了' : r.message, r.ok ? 'ok' : 'err')
+        if (!r.ok) return
+        if (onRestored) onRestored(m.id)
+        else await onChanged()
+      }
       const tier = { 0: '永久', 1: '琐碎', 3: '重要', core: '长期印象' }[m.tier]
       const status = { hearsay: '听说', guess: '可能' }[m.status]
       return h('div', { className: cx('ab-pm-fact', memoryEnded(m) && 'old') },
@@ -4003,7 +4043,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         h(StyleEditor, { k: p.key, label: '学到的说话习惯', list: style || [], toast, onSaved }))
     }
 
-    function MemoryRow({ m, onChanged, onDeleted, toast }) {
+    function MemoryRow({ m, onChanged, onDeleted, onEdited, onRestored, toast }) {
       const [edit, setEdit] = useState(false)
       const [text, setText] = useState(m.text)
       // 删除后只从当前列表移除，不重拉第一页（保持分页位置）
@@ -4013,16 +4053,31 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         if (onDeleted) onDeleted(m.id)
         else onChanged()
       }
+      const save = async () => {
+        const r = await post('/memory/update', { id: m.id, text })
+        if (!r.ok) { toast(r.message || '没改成', 'err'); return }
+        setEdit(false)
+        toast('改好了', 'ok')
+        if (onEdited) onEdited(m.id, text)
+        else onChanged()
+      }
+      const restore = async () => {
+        const r = await post('/memory/restore', { id: m.id })
+        toast(r.ok ? '恢复了' : r.message, r.ok ? 'ok' : 'err')
+        if (!r.ok) return
+        if (onRestored) onRestored(m.id)
+        else onChanged()
+      }
       if (memoryEnded(m)) {
         return h('div', { className: 'ab-li', style: { opacity: 0.6 } },
           h('div', { className: 'meta' }, m.validityText || timeAgo(m.invalidAt || m.validUntil), h('br'), h('span', { className: 'ab-pill', style: { padding: '0 6px', fontSize: 11 } }, '已过时')),
           h('div', { className: 'body' }, h('s', null, (m.aboutName ? '[' + m.aboutName + '] ' : '') + m.text), m.supersededText ? h('div', { className: 'ab-muted ab-small' }, '→ 现在是：' + m.supersededText) : null),
-          h(Btn, { small: true, kind: 'ghost', onClick: async () => { await post('/memory/restore', { id: m.id }); toast('恢复了', 'ok'); onChanged() } }, '恢复'),
+          h(Btn, { small: true, kind: 'ghost', onClick: restore }, '恢复'),
           h(Btn, { small: true, kind: 'ghost', onClick: remove }, '删掉'))
       }
       return h('div', { className: 'ab-li' },
         h('div', { className: 'meta' }, timeAgo(m.at), h('br'), h('span', { className: 'ab-pill', style: { padding: '0 6px', fontSize: 11 } }, SOURCE[m.source] || '记忆')),
-        edit ? h('input', { className: 'ab-input wide', value: text, onChange: (e) => setText(e.target.value), onKeyDown: async (e) => { if (e.key === 'Enter') { await post('/memory/update', { id: m.id, text }); setEdit(false); toast('改好了', 'ok'); onChanged() } if (e.key === 'Escape') setEdit(false) } })
+        edit ? h('input', { className: 'ab-input wide', value: text, onChange: (e) => setText(e.target.value), onKeyDown: async (e) => { if (e.key === 'Enter') save(); if (e.key === 'Escape') setEdit(false) } })
           : h('div', { className: 'body' }, m.aboutName ? h('b', null, '[' + m.aboutName + '] ') : null, m.displayText || m.text, m.validityText ? h('div', { className: 'ab-muted ab-small' }, m.validityText) : null, m.importance >= 0.8 ? h('span', { title: '很重要' }, ' ★') : null),
         h(Btn, { small: true, kind: 'ghost', onClick: () => setEdit(!edit) }, edit ? '取消' : '改'),
         h(Btn, { small: true, kind: 'ghost', onClick: remove }, '忘掉'))
