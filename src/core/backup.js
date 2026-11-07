@@ -23,8 +23,8 @@ const STORE_EXT = /\.(png|jpe?g|gif|webp|mp3|mp4|m4a|ogg|opus|webm|zip|7z|rar|pt
  * 带过去也用不了。市场模块不打包，恢复后按名单重新下载。
  */
 const SKIP = ['backups', '.restore', '.restore-sessions', '.restore-pending.json', '.restore-modules.json', 'logs', 'tmp', 'voice-cache', 'archive-cache', 'douyin/edge-profile']
-// 仅配置备份：媒体、聊天流水和 DSH 会话都不进包，WebDAV 小空间用
-const CONFIG_ONLY_SKIP = ['imagegen', 'stickers', 'bili-shots', 'douyin', 'chatlog']
+// 仅配置备份：媒体不进包，但保留体积很小的聊天流水和当前工作区 DSH 会话
+const CONFIG_ONLY_SKIP = ['imagegen', 'stickers', 'bili-shots', 'douyin']
 const skipped = (rel) => SKIP.some((s) => rel === s || rel.startsWith(s + '/')) || rel.split('/').includes('node_modules') || rel.endsWith('.tmp') || rel === 'memory.sqlite-shm' || rel.startsWith('memory.sqlite.migrating')
 
 async function walk(root, rel = '', out = [], market = [], extraSkip = []) {
@@ -113,7 +113,7 @@ export async function createBackup({ version = '', workspaceDir = '', now = new 
   // 记忆快照失败必须让备份失败，不能把缺一半的记忆库当成功交给用户。
   const memoryFiles = captureMemoryBackup(root)
   const files = [...walked.filter((rel) => !MEMORY_FILES.includes(rel)), ...memoryFiles.keys()]
-  const sessionsRoot = !configOnly && workspaceDir ? join(dshHome(), 'sessions', sessionDirName(workspaceDir)) : ''
+  const sessionsRoot = workspaceDir ? join(dshHome(), 'sessions', sessionDirName(workspaceDir)) : ''
   const sessionFiles = sessionsRoot && existsSync(sessionsRoot) ? await walk(sessionsRoot) : []
   const total = files.length + sessionFiles.length
   const tooBig = []

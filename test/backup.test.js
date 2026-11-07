@@ -149,7 +149,7 @@ test('仅配置备份：只带配置/人格，排除画作、表情、截图、�
     const b = await api.createBackup({ version: 'x', configOnly: true })
     assert.match(b.name, /^aurabot-config-\d{8}-\d{4}\.zip$/)
     assert.equal(b.configOnly, true)
-    assert.equal(b.files, 2, '只打包 config 和人格')
+    assert.equal(b.files, 3, '只打包 config、人格和轻量聊天流水')
   } finally {
     process.env.AURABOT_DATA_DIR = prev
     rmSync(dir, { recursive: true, force: true })
