@@ -899,6 +899,24 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     }
     const copy = (text, toast, msg) => { try { navigator.clipboard.writeText(text); if (msg) toast(msg, 'ok') } catch (e) { toast('复制失败，手动选中复制吧', 'err') } }
 
+    // SnowLuma 版本提醒：只针对「低于最低支持版本」弹一次；升级到 >= 2.3.4 或点过「不再提示」就不再出现
+    const SNOWLUMA_WARN_KEY = 'aurabot.snowlumaCompatDismissed'
+    function SnowLumaCompatBanner({ st, go }) {
+      const compat = st && st.snowluma && st.snowluma.compat
+      const [dismissed, setDismissed] = useState(() => { try { return localStorage.getItem(SNOWLUMA_WARN_KEY) === '1' } catch (e) { return false } })
+      if (!compat || compat.status !== 'outdated' || dismissed) return null
+      const dismiss = () => { try { localStorage.setItem(SNOWLUMA_WARN_KEY, '1') } catch (e) {} setDismissed(true) }
+      return h('div', { className: 'ab-note warn', style: { marginTop: 12 } },
+        h('div', { className: 'ab-flex', style: { alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+          h('b', null, '建议升级 SnowLuma'),
+          h('div', { className: 'ab-spacer' }),
+          h(Btn, { small: true, kind: 'ghost', onClick: dismiss }, '不再提示')),
+        h('div', { style: { marginTop: 6 } }, compat.message),
+        h('div', { className: 'ab-flex', style: { marginTop: 8, gap: 8, flexWrap: 'wrap' } },
+          h(Btn, { small: true, kind: 'primary', onClick: () => window.open(st.snowluma.downloadPage, '_blank') }, '打开下载页 ↗'),
+          h(Btn, { small: true, onClick: () => go('connect') }, '去连接页看看')))
+    }
+
     /** 更新提示：GitHub 上有新版本时给「跟当前系统/形态对应」的命令、链接和更新按钮；刚更新完显示一次这次更新了什么。 */
     function UpdateNotes({ st, toast }) {
       const [upd, setUpd] = useState(null)
@@ -5891,6 +5909,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
               return h('i', { className: cx('ab-dot', flag && 'ok'), title: flag ? '开着' : '关着' })
             },
           }),
+          showWizard ? null : h(SnowLumaCompatBanner, { st, go }),
           showWizard ? null : h(TabBoundary, { key: curTab.id, onHome: () => go('overview') }, h(body, { ...props, mod: curTab.ext })),
           showWizard || curTab.ext ? null : mods.filter((m) => hasUi(m) && tabOf(m) === curTab.id).map((m) => h('div', { key: 'embed-' + m.id, style: { marginTop: 14 } }, h(ExtPage, { ...props, mod: m.id, embedded: true }))),
           dirty && !showWizard ? h('div', { className: 'ab-savebar' }, h('span', { className: 'msg' }, '有改动还没保存'),
