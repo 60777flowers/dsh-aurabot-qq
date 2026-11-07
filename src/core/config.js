@@ -310,7 +310,7 @@ export const DEFAULTS = {
       enabled: false, // 到点自动「打包 + 推送」；关了就只剩面板手动推
       provider: 'gitee', // gitee | webdav
       // WebDAV：填服务器地址（自动建 aurabot-backups），密码按密钥处理
-      webdav: { url: '', username: '', password: '', configOnly: false },
+      webdav: { url: '', username: '', password: '', configOnly: true },
       owner: '', // Gitee 用户名
       repo: '', // 仓库名（没有的话推送时按 autoCreate 自动建私有的）
       token: '', // 私人令牌（要 projects + repo 权限），存配置时按密钥处理

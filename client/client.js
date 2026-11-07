@@ -5660,9 +5660,12 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     }
 
     /** 云备份（Gitee 私有仓库 / WebDAV）：每天到点自动打包，把最新备份推上去，远端只留最近 N 份。 */
-    function RemoteBackup({ toast, st }) {
+    function RemoteBackup({ toast, st, onRestored }) {
       const [s, setS] = useState(null)
       const [form, setForm] = useState(null)
+      const [remoteFiles, setRemoteFiles] = useState(null)
+      const [remoteBusy, setRemoteBusy] = useState(false)
+      const [restoring, setRestoring] = useState(false)
       const set = (k) => (e) => setForm({ ...form, [k]: k === 'keep' ? Math.max(1, Math.round(Number(e.target.value) || 1)) : (k === 'enabled' || k === 'autoCreate' || k === 'forceOverwrite' || k === 'webdavConfigOnly' ? e.target.checked : e.target.value) })
       const load = () => get('/backup/remote/state').then((state) => {
         setS(state)
@@ -5673,7 +5676,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           enabled: !!v.enabled, owner: v.owner || '', repo: v.repo || '', token: '', branch: v.branch || 'master',
           time: v.time || '03:30', keep: v.keep || 7, autoCreate: v.autoCreate !== false, forceOverwrite: !!v.forceOverwrite,
           webdavUrl: v.webdav?.url || '', webdavUsername: v.webdav?.username || '', webdavPassword: '',
-          webdavConfigOnly: v.webdav?.configOnly === true || v.configOnly === true || saved.webdav?.configOnly === true,
+          webdavConfigOnly: (v.webdav?.configOnly ?? v.configOnly ?? saved.webdav?.configOnly) !== false,
         })
       })
       useEffect(() => { load() }, [])
@@ -5697,6 +5700,26 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           if (form.token) b.token = form.token
         }
         return b
+      }
+      const loadRemote = async () => {
+        setRemoteBusy(true)
+        try {
+          const r = await call('/backup/remote/list')
+          if (!r.ok) toast(r.message, 'err')
+          else setRemoteFiles(r.files || [])
+        } finally { setRemoteBusy(false) }
+      }
+      const restoreRemote = async (name) => {
+        if (!confirm('从 WebDAV 拉回并导入「' + name + '」？\n\n重启 DSH 后，这台电脑上的配置、记忆、人设等会被备份里的内容替换。')) return
+        setRestoring(true)
+        try {
+          const r = await call('/backup/remote/restore', { name })
+          toast(r.ok ? (r.message || '已拉回，重启 DSH 后换上') : r.message, r.ok ? 'ok' : 'err')
+          if (r.ok) {
+            setRemoteFiles(null)
+            if (onRestored) onRestored()
+          }
+        } finally { setRestoring(false) }
       }
       return h(Card, { title: '云备份（Gitee / WebDAV）', desc: '每天到点自动打包一份备份，推到你的私有仓库或 WebDAV，换电脑或坏盘时也能找回来。' },
         h(Seg, {
@@ -5741,6 +5764,17 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             h(Btn, { small: true, disabled: running, onClick: async () => { if (!confirm('现在就把最新备份推到 ' + (webdav ? 'WebDAV' : 'Gitee') + '？（不会重新打包，推 backups 里最新的一份）')) return; after(await call('/backup/push')) } }, running ? '推送中…' : '立即推送'))),
         job && job.error ? h('div', { className: 'ab-note err', style: { marginTop: 10 } }, '推送失败：' + job.error) : null,
         job && job.result ? h('div', { className: 'ab-small ab-muted', style: { marginTop: 10 } }, '上次推送：' + job.result.message) : null,
+        webdav ? h('div', { style: { marginTop: 14 } },
+          h('div', { className: 'ab-section-title' }, '从 WebDAV 恢复'),
+          h('div', { className: 'ab-flex' },
+            h(Btn, { small: true, disabled: remoteBusy || restoring, onClick: loadRemote }, remoteBusy ? '读取中…' : '拉取备份列表')),
+          remoteFiles === null
+            ? h('div', { className: 'ab-muted ab-small', style: { marginTop: 6 } }, '点「拉取备份列表」读取远端 aurabot-backups 里的备份。')
+            : remoteFiles.length === 0
+              ? h('div', { className: 'ab-muted ab-small', style: { marginTop: 6 } }, '远端 aurabot-backups 里还没有备份。')
+              : h('div', { style: { marginTop: 8 } }, remoteFiles.map((name) => h('div', { key: name, className: 'ab-flex', style: { alignItems: 'center', padding: '5px 0', borderTop: '1px solid var(--ab-line)' } },
+                h('span', { className: 'ab-small', style: { flex: 1, minWidth: 0, wordBreak: 'break-all' } }, (name.startsWith('aurabot-config-') ? '仅配置 · ' : '') + name),
+                h(Btn, { small: true, disabled: restoring, onClick: () => restoreRemote(name) }, restoring ? '拉取中…' : '拉回并恢复'))))) : null,
         h('details', { open: webdav ? !(s && s.remote && s.remote.webdav && s.remote.webdav.hasPassword) : !(s && s.remote && s.remote.hasToken), style: { marginTop: 10 } },
           h('summary', { className: 'ab-small', style: { cursor: 'pointer' } }, webdav ? '📖 WebDAV 怎么填（点这里收起）' : '📖 第一次用？跟着下面 4 步做（点这里收起）'),
           webdav
@@ -5764,8 +5798,6 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const [path, setPath] = useState('')
       const [busy, setBusy] = useState(false)
       const [over, setOver] = useState(false)
-      const [remoteFiles, setRemoteFiles] = useState(null)
-      const [remoteBusy, setRemoteBusy] = useState(false)
       const fileRef = useRef(null)
       const load = () => get('/backup/state').then(setS)
       useEffect(() => { load() }, [])
@@ -5783,19 +5815,6 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         setBusy(true)
         try { after(await fetch(API + '/backup/upload', { method: 'POST', headers: { 'x-aurabot-backup': '1' }, body: file }).then((r) => r.json())) } catch (e) { toast(e.message) } finally { setBusy(false) }
       }
-      const loadRemote = async () => {
-        setRemoteBusy(true)
-        try {
-          const r = await call('/backup/remote/list')
-          if (!r.ok) toast(r.message, 'err')
-          else setRemoteFiles(r.files || [])
-        } finally { setRemoteBusy(false) }
-      }
-      const restoreRemote = async (name) => {
-        if (!confirm('从 WebDAV 拉回并导入「' + name + '」？\n\n重启 DSH 后，这台电脑上的配置、记忆、人设等会被备份里的内容替换。')) return
-        setBusy(true)
-        try { after(await call('/backup/remote/restore', { name })) } finally { setBusy(false) }
-      }
       const size = (n) => (n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.ceil(n / 1024) + ' KB')
       const job = s && s.job
       return h('div', { className: 'ab-grid' },
@@ -5807,7 +5826,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           job && job.error ? h('div', { className: 'ab-note err', style: { marginTop: 10 } }, '备份失败：' + job.error) : null,
           job && job.result ? h('div', { className: 'ab-small ab-muted', style: { marginTop: 10 } }, '刚生成：' + job.result.name + '，' + job.result.files + ' 个文件' + (job.result.skipped.length ? '；有 ' + job.result.skipped.length + ' 个文件没能带上：' + job.result.skipped.slice(0, 5).join('、') : '')) : null,
           s && s.list.length ? h('div', { style: { marginTop: 10 } }, s.list.slice(0, 8).map((b) => h('div', { key: b.name, className: 'ab-small' }, b.name + ' · ' + size(b.bytes)))) : null),
-        h(RemoteBackup, { toast, st }),
+        h(RemoteBackup, { toast, st, onRestored: load }),
         h(Card, { title: '恢复', desc: '在新电脑上先装好 DSH 和 Aurabot，再把备份拖进来。重启 DSH 后自动换上设置和数据、重新下载市场模块、放回 QQ 会话，原来的文件留在 backups 文件夹。' },
           s && s.modules && s.modules.length ? h('div', { className: 'ab-small ab-muted', style: { marginBottom: 8 } }, '还没装回来的模块：' + s.modules.join('、') + '（下次启动再试）') : null,
           s && s.pending ? h('div', { className: 'ab-note warn' }, '已导入 ' + s.pending.files + ' 个文件（备份于 ' + String(s.pending.createdAt || '').slice(0, 16).replace('T', ' ') + '），重启 DSH 后换上。',
@@ -5819,17 +5838,6 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             h('div', { key: 'p', className: 'ab-flex', style: { marginTop: 10 } },
               h('input', { className: 'ab-input', placeholder: '文件很大时填完整路径，如 D:\\aurabot-backup.zip', value: path, onChange: (e) => setPath(e.target.value) }),
               h(Btn, { small: true, disabled: busy || !path.trim(), onClick: async () => { if (!confirm('导入这个备份？重启 DSH 后会替换这台电脑上的数据。')) return; setBusy(true); try { after(await call('/backup/restore-path', { path })) } finally { setBusy(false) } } }, '导入')),
-            h('div', { key: 'r', style: { marginTop: 14 } },
-              h('div', { className: 'ab-section-title' }, '从 WebDAV 恢复'),
-              h('div', { className: 'ab-flex' },
-                h(Btn, { small: true, disabled: remoteBusy, onClick: loadRemote }, remoteBusy ? '读取中…' : '拉取备份列表')),
-              remoteFiles === null
-                ? h('div', { className: 'ab-muted ab-small', style: { marginTop: 6 } }, '先在「云备份」里切到 WebDAV 并保存设置。')
-                : remoteFiles.length === 0
-                  ? h('div', { className: 'ab-muted ab-small', style: { marginTop: 6 } }, '远端 aurabot-backups 里还没有备份。')
-                  : h('div', { style: { marginTop: 8 } }, remoteFiles.map((name) => h('div', { key: name, className: 'ab-flex', style: { alignItems: 'center', padding: '5px 0', borderTop: '1px solid var(--ab-line)' } },
-                    h('span', { className: 'ab-small', style: { flex: 1, minWidth: 0, wordBreak: 'break-all' } }, (name.startsWith('aurabot-config-') ? '仅配置 · ' : '') + name),
-                    h(Btn, { small: true, disabled: busy, onClick: () => restoreRemote(name) }, '拉回并恢复'))))),
           ]),
         h(Card, { title: '不会带过去的', desc: '这些要在新电脑上重新弄一下。' },
           h('div', { className: 'ab-small ab-muted' }, 'DSH 自己的设置和模型密钥、QQ 网关 SnowLuma 的登录、QQ 工作区以外的 DSH 会话；抖音和小黑盒的浏览器登录要重新扫码；日志和缓存不备份；翻唱环境和桌宠的 Electron 要重新安装；数据目录以外的路径（比如 ffmpeg、本地图片文件夹）在新电脑上要重新填。')))
