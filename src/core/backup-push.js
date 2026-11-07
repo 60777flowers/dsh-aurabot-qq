@@ -170,7 +170,7 @@ async function resetHistory(wd, r, name, version, token, onLog) {
 function webdavSettings(r) {
   const w = r.webdav || {}
   const raw = String(w.url || '').trim()
-  if (!raw) throw new Error('先在面板填 WebDAV 服务器地址（例如 https://dav.jianguoyun.com/）')
+  if (!raw) throw new Error('先在面板填 WebDAV 服务器地址（例如 https://dav.jianguoyun.com/dav/）')
   let u
   try { u = new URL(raw) } catch { throw new Error('WebDAV 地址格式不对，要填完整的 http(s) 地址') }
   if (!/^https?:$/.test(u.protocol)) throw new Error('WebDAV 地址必须以 http:// 或 https:// 开头')
@@ -179,7 +179,9 @@ function webdavSettings(r) {
   const username = String(w.username || '').trim()
   const password = String(w.password || '')
   if (!username || !password) throw new Error('先在面板填 WebDAV 用户名和密码/应用授权码')
-  const base = raw.replace(/\/+$/, '')
+  let base = raw.replace(/\/+$/, '')
+  // 坚果云 WebDAV 的根是 /dav/；填成 https://dav.jianguoyun.com/ 时自动补上，避免 MKCOL 410
+  if (u.hostname.toLowerCase() === 'dav.jianguoyun.com' && (u.pathname === '/' || u.pathname === '')) base += '/dav'
   // 兼容以前填到 aurabot-backups 的写法；否则在服务器根下自动建这个固定文件夹
   const folder = /\/aurabot-backups$/i.test(new URL(base).pathname) ? base + '/' : base + '/aurabot-backups/'
   return { base, folder, username, password, auth: 'Basic ' + Buffer.from(username + ':' + password).toString('base64') }
@@ -192,6 +194,7 @@ async function ensureWebdavFolder(r) {
   if (res.ok || res.status === 405) return s
   if (res.status === 401 || res.status === 403) throw new Error('WebDAV 用户名或密码/应用授权码不对（HTTP ' + res.status + '）')
   if (res.status === 409) throw new Error('WebDAV 服务器地址不对：父目录不存在，检查地址是否填到了正确的云盘根目录')
+  if (res.status === 410) throw new Error('WebDAV 服务器地址不对（HTTP 410）：坚果云要填 https://dav.jianguoyun.com/dav/，不是只填域名根目录')
   throw new Error('WebDAV 自动创建 aurabot-backups 文件夹失败（HTTP ' + res.status + '）：检查账号有没有写权限')
 }
 

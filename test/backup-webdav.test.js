@@ -84,6 +84,16 @@ test('WebDAV：可以只上传指定的仅配置备份', async () => {
   assert.equal(put.body.toString(), 'zip-aurabot-config-20261104-0330.zip')
 })
 
+test('WebDAV：坚果云根地址自动补 /dav/，不会往根目录 MKCOL', async () => {
+  push.pushHooks.fetch = okFetch
+  calls.length = 0
+  await push.listWebdavBackups({ provider: 'webdav', webdav: { url: 'https://dav.jianguoyun.com/', username: 'u', password: 'p' } })
+  assert.equal(calls.find((c) => c.method === 'MKCOL').url, 'https://dav.jianguoyun.com/dav/aurabot-backups/')
+  calls.length = 0
+  await push.listWebdavBackups({ provider: 'webdav', webdav: { url: 'https://dav.jianguoyun.com/dav/', username: 'u', password: 'p' } })
+  assert.equal(calls.find((c) => c.method === 'MKCOL').url, 'https://dav.jianguoyun.com/dav/aurabot-backups/')
+})
+
 test('WebDAV：缺地址/账号/密码时明确报错', async () => {
   await assert.rejects(push.pushBackup({ provider: 'webdav', webdav: {} }), /WebDAV 服务器地址/)
   await assert.rejects(push.pushBackup({ provider: 'webdav', webdav: { url: base } }), /用户名/)
