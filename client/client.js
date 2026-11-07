@@ -6570,6 +6570,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const toastTimer = useRef(null)
       const dirtyRef = useRef(false)
       const saveRef = useRef(null)
+      const pluginStartRef = useRef(0)
       // kind：ok / err / 不填 = 普通
       const toast = (m, kind) => {
         const text = String(m || '')
@@ -6580,19 +6581,40 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       }
       const reload = useCallback(async () => {
         const r = await get('/state')
-        if (!r || r.ok === false) { setErr(r && r.message ? r.message : '读不到插件状态'); return }
+        if (!r || r.ok === false) { setErr(r && r.message ? r.message : '读不到插件状态'); return r }
+        if (Number(r.startedAt)) pluginStartRef.current = Number(r.startedAt)
         setErr('')
         setSt(r)
         if (!dirtyRef.current) setDraft(clone(r.config))
+        return r
       }, [])
       useEffect(() => {
-        reload()
-        // 全量 /state 较重：15 秒一次，页面在后台时跳过；切回前台立刻补一次
-        const tick = () => { if (document.visibilityState !== 'hidden') reload() }
-        const t = setInterval(tick, 15000)
-        const onVis = () => { if (document.visibilityState === 'visible') reload() }
+        // 刚打开面板时快速确认连接（前 10 秒每 2 秒一次）；连上或超过 10 秒后回到 15 秒。
+        // 页面隐藏时停掉轮询，切回前台立即补一次。
+        const mountedAt = Date.now()
+        let stopped = false
+        let timer = null
+        const clear = () => { if (timer) { clearTimeout(timer); timer = null } }
+        const schedule = (ms) => { if (!stopped) { clear(); timer = setTimeout(tick, ms) } }
+        const tick = async () => {
+          if (stopped) return
+          if (document.visibilityState === 'hidden') return
+          let r = null
+          try { r = await reload() } catch { /* 断网也按节奏重试，别把轮询停掉 */ }
+          if (stopped) return
+          const connected = Boolean(r && r.ok !== false && r.onebot && r.onebot.state === 'connected')
+          const uptime = Date.now() - (pluginStartRef.current || mountedAt)
+          const fast = !connected && uptime < 10000
+          schedule(fast ? 2000 : 15000)
+        }
+        const onVis = () => {
+          if (document.visibilityState === 'hidden') { clear(); return }
+          clear()
+          tick()
+        }
         document.addEventListener('visibilitychange', onVis)
-        return () => { clearInterval(t); document.removeEventListener('visibilitychange', onVis) }
+        tick()
+        return () => { stopped = true; clear(); document.removeEventListener('visibilitychange', onVis) }
       }, [reload])
       const go = (id) => { setTab(id); try { localStorage.setItem('aurabot.tab', id) } catch (e) {} }
       // 标签多、一屏放不下：滚轮横着滚，选中的标签自动滚进视野
