@@ -35,16 +35,17 @@ async function brain({ preset, text, images, callTool }) {
   // 记忆等上下文可能整段挂在用户消息前面：从聊天正文那行截断
   const chatLine = text.match(/【(?:私聊|群聊)[\s\S]*$/)
   if (chatLine) text = chatLine[0]
+  if (text.includes('这是一条提示信息')) return '老大，pwsh 那个会话卡住了，等你点批准'
   if (text.includes('at+表情测试')) return '<at:10000001> 看这个<sticker:开心>'
   if (text.includes('热重载探针')) { const r = await callTool('probe73', {}); return r ? '探针:' + r.message : '没有探针工具' }
   if (text.includes('慢工具测试')) { const r = await callTool('slow74', {}); return r ? '慢工具好了' : '没有慢工具' }
   if (text.includes('排队权限测试0') || text.includes('排队权限测试2')) { const r = await callTool('permprobe90', {}); return r ? String(r.message || '') : '没有探针' }
   if (text.includes('排队权限测试1')) { await sleep(1200); return '第一轮好了' }
   if (text.includes('【空间互动')) { qzonePrompts.push(text); return '哈哈好看' }
-  if (/^【(私聊|群聊)/.test(text) && text.includes('戳了戳你')) return '干嘛戳我<poke>'
-  if (/^【私聊/.test(text) && text.includes('表情改名测试')) { const m = text.match(/把「(.+?)」/); const r = await callTool('qq_edit_sticker', { sticker: m[1], new_name: '改过的名字', tags: ['开心'] }); return r.message }
-  if (/^【私聊/.test(text) && text.includes('表情删除测试')) { const r = await callTool('qq_edit_sticker', { sticker: '改过的名字', delete: true }); return r.message }
-  if (/^【私聊/.test(text) && text.includes('翻聊天记录')) { const r = await callTool('qq_chat_history', { count: 5 }); return r.message.split('\n')[0] }
+  if (/【(私聊|群聊)/.test(text) && text.includes('戳了戳你')) return '干嘛戳我<poke>'
+  if (/【私聊/.test(text) && text.includes('表情改名测试')) { const m = text.match(/把「(.+?)」/); const r = await callTool('qq_edit_sticker', { sticker: m[1], new_name: '改过的名字', tags: ['开心'] }); return r.message }
+  if (/【私聊/.test(text) && text.includes('表情删除测试')) { const r = await callTool('qq_edit_sticker', { sticker: '改过的名字', delete: true }); return r.message }
+  if (/【私聊/.test(text) && text.includes('翻聊天记录')) { const r = await callTool('qq_chat_history', { count: 5 }); return r.message.split('\n')[0] }
   if (text.includes('查看QQ资料测试')) { const r = await callTool('qq_get_profile', {}); return r?.ok ? '资料查到了' : r ? r.message : '没这个工具' }
   if (text.includes('改昵称测试')) { const r = await callTool('qq_set_nickname', { name: '小鲸鱼' }); return r ? r.message : '没这个工具' }
   if (text.includes('改签名测试')) { const r = await callTool('qq_set_signature', { text: '今天也要开心' }); return r ? r.message : '没这个工具' }
@@ -774,6 +775,88 @@ test('面板接口：概览、人格切换', async () => {
   await fake.call('/persona/use', { id: 'dafeiyu' })
 })
 
+test('面板接口：token 用量（今日 / 昨日 / 近 7 天 / 近 30 天 + 模块 / 聊天 / 模型明细）', async () => {
+  const u = (await fake.call('/usage')).json()
+  assert.equal(u.ok, true)
+  assert.ok(u.currency, '要带币种')
+  for (const key of ['today', 'yesterday', 'last7', 'last30']) {
+    const r = u.ranges[key]
+    assert.equal(typeof r.runs, 'number', key + ' 要有调用次数')
+    assert.equal(typeof r.totalTokens, 'number', key + ' 要有合计 token')
+    assert.equal(typeof r.promptTokens, 'number', key + ' 要有输入 token')
+    assert.equal(typeof r.cachedTokens, 'number', key + ' 要有缓存命中 token')
+    assert.equal(typeof r.cost, 'number', key + ' 要有花费')
+  }
+  assert.equal(u.ranges.last30.runs >= u.ranges.last7.runs, true, '近 30 天不会比近 7 天少')
+  assert.ok(u.current, '要带所选区间的明细')
+  for (const dim of ['byModule', 'byChat', 'byModel']) assert.ok(Array.isArray(u.current[dim]), dim + ' 要是个列表')
+  assert.equal(typeof u.current.cacheHitRate, 'number')
+  assert.equal(typeof u.current.peakRatio, 'number')
+  // ?range= 决定 current 是哪个区间（面板点指标卡就是切这个）
+  const today = (await fake.call('/usage?range=today')).json()
+  assert.equal(today.range, 'today')
+  assert.equal(today.current.runs, today.ranges.today.runs, 'range=today 时 current 就是今日')
+  const d30 = (await fake.call('/usage?range=30')).json()
+  assert.equal(d30.range, '30')
+  assert.equal(d30.current.runs, d30.ranges.last30.runs, 'range=30 时 current 就是近 30 天')
+})
+
+test('用量归属：聊天里让她刷 B 站，处理工具结果那次调用算「刷 B 站」而不是「聊天」', async () => {
+  let sid = api.hub.sessions()['private:10000001']?.sessionId
+  if (!sid) {
+    const n = fake.turns.length
+    mock.push(priv(OWNER, text('建个会话测用量归属')))
+    await until(() => fake.turns.length > n, 8000)
+    sid = api.hub.sessions()['private:10000001']?.sessionId
+  }
+  assert.ok(sid, '主人私聊会话已建好')
+  const sess = { id: sid, title: '测试会话' }
+  const read = async () => (await fake.call('/usage?range=today')).json()
+  const runsOf = (u, key) => (u.current.byModule.find((m) => m.key === key) || { runs: 0 }).runs
+
+  const before = await read()
+  const chatBefore = runsOf(before, '聊天')
+  const biliBefore = runsOf(before, '刷 B 站')
+
+  // 这一轮：她调 bili_watch（step 1），然后处理看回来的内容（step 2，带 usage）
+  fake.emit('session/event', sess, { type: 'tool/call', data: { turn: 9001, step: 1, callId: 'c1', name: 'bili_watch', arguments: '{"link":"BV1xx"}' } })
+  fake.emit('session/event', sess, {
+    type: 'assistant/message',
+    time: Date.now(),
+    data: {
+      turn: 9001,
+      step: 2,
+      usage: { inputTokens: 3000, outputTokens: 20, cacheReadTokens: 0 },
+      message: { role: 'assistant', content: [{ type: 'text', text: '这视频挺好笑' }] },
+    },
+  })
+  await sleep(200)
+
+  const after = await read()
+  assert.equal(runsOf(after, '刷 B 站') - biliBefore, 1, '刷 B 站那次调用要算到「刷 B 站」名下')
+  assert.equal(runsOf(after, '聊天') - chatBefore, 0, '这一步不该再算一笔「聊天」')
+
+  // 普通工具（发消息这类）不改变归属，仍记「聊天」
+  const mid = await read()
+  const chat2 = runsOf(mid, '聊天')
+  const bili2 = runsOf(mid, '刷 B 站')
+  fake.emit('session/event', sess, { type: 'tool/call', data: { turn: 9002, step: 1, callId: 'c2', name: 'qq_send_message', arguments: '{}' } })
+  fake.emit('session/event', sess, {
+    type: 'assistant/message',
+    time: Date.now(),
+    data: {
+      turn: 9002,
+      step: 2,
+      usage: { inputTokens: 500, outputTokens: 10, cacheReadTokens: 0 },
+      message: { role: 'assistant', content: [{ type: 'text', text: '嗯' }] },
+    },
+  })
+  await sleep(200)
+  const after2 = await read()
+  assert.equal(runsOf(after2, '聊天') - chat2, 1, '聊天自己的工具仍算「聊天」')
+  assert.equal(runsOf(after2, '刷 B 站') - bili2, 0)
+})
+
 test('头像：上传自定义头像、同步成 QQ 头像、恢复默认', async () => {
   const before = (await fake.call('/avatar')).raw()
   assert.ok(before.length > 1000, '默认头像是插件自带的那张')
@@ -1353,7 +1436,7 @@ test('来源章标明说话人：主人 owner，别人 guest，后台任务 none
   assert.deepEqual((await last(() => api.hub.runSystemTurn('source-test', '来源章', '后台任务', { timeoutMs: 5000 }).catch(() => {}))).speaker, { role: 'none' })
 })
 
-test('DSH 要授权时只通知 Aurabot · QQ 会话，别的项目不转到 QQ（#136）', async () => {
+test('DSH 要授权时合并成一条通知到主人 QQ（整个 DSH，不只 Aurabot 工作区）（#136）', async () => {
   let sid = api.hub.sessions()['private:10000001']?.sessionId
   if (!sid) {
     const n = fake.turns.length
@@ -1367,16 +1450,13 @@ test('DSH 要授权时只通知 Aurabot · QQ 会话，别的项目不转到 QQ�
   const ask = { type: 'approval/asked', data: { id: 'approval-1', toolName: 'pwsh', reason: '要跑命令' } }
   fake.emit('session/event', { id: sid, title: '测试会话' }, ask)
   fake.emit('session/event', { id: sid, title: '测试会话' }, ask)
-  await until(() => mock.calls.slice(before).some((c) => c.action === 'send_private_msg'))
-  await sleep(100)
-  const sent = mock.calls.slice(before).filter((c) => c.action === 'send_private_msg' && String(c.params.user_id) === OWNER)
-  assert.equal(sent.length, 1)
-  assert.match(JSON.stringify(sent[0].params.message), /要授权.*pwsh.*DSH 界面/)
-
-  const afterFirst = mock.calls.length
   fake.emit('session/event', { id: 'external-workspace-session', title: '另一个项目' }, { type: 'approval/asked', data: { id: 'approval-external', toolName: 'pwsh', reason: '别的项目' } })
-  await sleep(150)
-  assert.equal(mock.calls.slice(afterFirst).filter((c) => c.action === 'send_private_msg').length, 0, '非 Aurabot 工作区不能发 QQ 通知')
+  // 合并窗口是 8 秒，等它吐出来
+  await until(() => mock.calls.slice(before).some((c) => c.action === 'send_private_msg'), 15000)
+  await sleep(200)
+  const sent = mock.calls.slice(before).filter((c) => c.action === 'send_private_msg' && String(c.params.user_id) === OWNER)
+  assert.equal(sent.length, 1, '窗口内的几条合并成一条，重复的按 id 去重')
+  assert.match(JSON.stringify(sent[0].params.message), /pwsh/, '消息里要能看到是哪个工具')
 })
 
 test('主人私聊里这一轮的说话人记录丢了，也按主人算（#90 兜底）', async () => {
