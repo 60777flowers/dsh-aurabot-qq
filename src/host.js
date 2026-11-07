@@ -1697,6 +1697,7 @@ export function apply(ctx) {
     autoCreate: r.autoCreate !== false,
     forceOverwrite: !!r.forceOverwrite,
     hasToken: Boolean(r.token),
+    configOnly: r.webdav?.configOnly === true,
     webdav: { url: r.webdav?.url || '', username: r.webdav?.username || '', hasPassword: Boolean(r.webdav?.password), configOnly: r.webdav?.configOnly === true },
   })
   route('/backup/remote/state', async () => ({ ok: true, remote: remoteView(), job: pushJob, nextAt: nextRemoteAt() }))
