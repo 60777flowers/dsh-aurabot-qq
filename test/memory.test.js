@@ -53,7 +53,7 @@ before(async () => {
   process.env.AURABOT_DATA_DIR = mkdtempSync(join(tmpdir(), 'aurabot-mem-'))
   ;({ createMemoryStore } = await import('../src/features/memory.js'))
   ;({ normalize } = await import('../src/core/config.js'))
-  cfg = normalize({ model: { provider: 'p', model: 'm' }, ownerQQ: '10000001', ownerName: '主人', memory: { keepChatlogDays: 0, keepChatlogSet: true } })
+  cfg = normalize({ model: { provider: 'p', model: 'm' }, ownerQQ: '10000001', ownerName: '主人', allow: { private: ['30000003'] }, memory: { keepChatlogDays: 0, keepChatlogSet: true } })
   mem = createMemoryStore({ dsh, getConfig: () => cfg, hub, log: { info() {}, warn() {}, debug() {} } })
 })
 
@@ -161,7 +161,8 @@ test('想起来的记忆带时间；最近想起了什么有记录（含想不�
   mem.add({ text: '阿花最近爱晒太阳', about: '30000003', aboutName: '阿花', importance: 0.6, source: 'tool', chatId: 'private:30000003' })
   hubState.text = '阿花最近怎么样'
   const hint = mem.recallHint({ kind: 'private', userId: '30000003', chatId: 'private:30000003' }, '阿花最近怎么样')
-  assert.ok(hint.includes('[今天 私聊] [阿花(30000003)] 阿花'), hint)
+  // 来源现在带私聊 QQ，继续检查日期、来源和人物，避免混淆不同聊天。
+  assert.ok(hint.includes('[今天 私聊30000003] [阿花(30000003)] 阿花'), hint)
   const log = mem.recalls()[0]
   assert.equal(log.where, 'private:30000003')
   assert.ok(log.hits.length && log.hits[0].why.length)

@@ -2,6 +2,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { cleanText } from './text.js'
+import { recordUsage, moduleLabel } from './usage.js'
 
 export function defaultModel(dsh, cfg) {
   if (cfg?.model?.provider && cfg?.model?.model) return { provider: cfg.model.provider, model: cfg.model.model }
@@ -150,21 +151,29 @@ const isUnsupportedTemperature = (error) => {
 let lastEmpty = ''
 export const lastEmptyInfo = () => lastEmpty
 
-async function runStream (llm, params) {
+async function runStream (llm, params, onUsage) {
   let out = ''
   const types = {}
   let finish = ''
-  for await (const chunk of llm.stream(params)) {
-    if (!chunk) continue
-    types[chunk.type] = (types[chunk.type] || 0) + 1
-    if (chunk.type === 'finish') finish = JSON.stringify(chunk.reason || {}).slice(0, 120)
-    if (chunk.type === 'text-delta') out += chunk.text
-    if (chunk.type === 'finish' && chunk.reason && chunk.reason.kind === 'error') {
-      const f = chunk.reason.failure || {}
-      const error = new Error('模型报错：' + (f.message || f.code || '未知'))
-      if (f.code) error.code = f.code
-      throw error
+  let usage = null
+  try {
+    for await (const chunk of llm.stream(params)) {
+      if (!chunk) continue
+      types[chunk.type] = (types[chunk.type] || 0) + 1
+      // 有的适配器会分片上报用量：只留最后一次，保证「一次调用只记一行」，不会重复计费
+      if (chunk.type === 'usage') usage = chunk.usage
+      if (chunk.type === 'finish') finish = JSON.stringify(chunk.reason || {}).slice(0, 120)
+      if (chunk.type === 'text-delta') out += chunk.text
+      if (chunk.type === 'finish' && chunk.reason && chunk.reason.kind === 'error') {
+        const f = chunk.reason.failure || {}
+        const error = new Error('模型报错：' + (f.message || f.code || '未知'))
+        if (f.code) error.code = f.code
+        throw error
+      }
     }
+  } finally {
+    // 报错也已经计费了，所以在 finally 里记，且一次调用最多一行；记的是数字，不含聊天内容
+    if (usage && onUsage) { try { onUsage(usage) } catch (error) {} }
   }
   if (!out.trim()) lastEmpty = `结束原因 ${finish || '无'}，数据块 ${JSON.stringify(types)}`
   return out.trim()
@@ -196,17 +205,25 @@ export async function askModel (dsh, o) {
     system: cleanText(o.system || ''),
     messages,
     maxTokens: o.maxTokens || 600,
+    // 后台调用没有聊天会话，得自己带一个会话标识：opencode 那条路由要求请求头
+    // x-opencode-session（DSH 的 opencode-headers.js 从 options.sessionId 取），
+    // 不带就整轮 400 MissingSessionID —— 表现是「更新短期状态 / 补写人物小档案 /
+    // 空闲提炼」每分钟失败一次，聊天不受影响（聊天走的是真会话）。
+    // 固定值即可：它只用来让上游把同一来源的请求归到一条路由上。
+    sessionId: o.sessionId || 'aurabot-background',
   }
   let temperature = o.temperature ?? 0.3
   let effort = await pickReasoningEffort(dsh, t.provider, t.model, o.reasoningEffort === undefined ? 'low' : o.reasoningEffort)
   let widened = false
   let temperatureTried = false
+  // 记用量：模块名由调用方给（模块 API 会自动带上自己的 id），没给就算后台任务
+  const onUsage = (usage) => recordUsage({ module: moduleLabel(o.module || 'background'), model: t.model, usage })
   for (let attempt = 0; ; attempt++) {
     const params = { ...base }
     if (temperature !== undefined && !temperatureUnsupported(t.provider, t.model)) params.temperature = temperature
     if (effort) params.reasoningEffort = effort
     try {
-      const out = await runStream(llm, params)
+      const out = await runStream(llm, params, onUsage)
       // 推理模型可能把输出预算全花在思考上，一个字没写：放宽预算再试一次
       if (out || widened) return out
       widened = true
