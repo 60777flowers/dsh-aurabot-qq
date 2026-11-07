@@ -5,6 +5,7 @@ import { DEFAULT_GROUP_POLICY } from '../chat/group-policy.js'
 import { LEVELS, PROFILE_PERM_KEYS, PROFILE_PERM_LEVELS, profilePermDefault } from '../chat/access.js'
 import { normalizeChatModels } from '../chat/chat-model.js'
 import { DIARY_AUDIENCES } from '../features/qzone-audience.js'
+import { DEFAULT_TIER_DAYS } from '../features/memory-rules.js'
 
 export const DEFAULTS = {
   enabled: false, // 总开关：关着一句都不发
@@ -17,6 +18,9 @@ export const DEFAULTS = {
   ownerName: '主人',
   ownerLevel: 'full', // full | social | chat
   approvalNotify: true, // DSH 要授权时把请求发到主人私聊
+  // 什么情况往主人 QQ 上报：enabled 是总开关，approval = 工具要授权，question = 她要向人提问选选项。
+  // workspaces 按工作区单独覆盖：{ "<工作区路径>": { approval?: bool, question?: bool } }，没写的项跟随总开关。
+  notice: { enabled: true, approval: true, question: true, workspaces: {} },
   qqApi: { enabled: true }, // 她能用 qq_api_call 调 QQ 接口：别人只能查当前群，写操作只听主人
   approvalViaQQ: true, // 主人私聊会话要授权时，在 QQ 回复「确认」直接批准这一次
   profilePerms: { qqNickname: 'owner', qqSignature: 'owner', qqAvatar: 'owner', biliSign: 'owner', biliAvatar: 'owner', biliComment: 'owner', qqFriendRequest: 'owner', whitelist: 'owner', douyinBrowse: 'owner', douyinLike: 'owner', douyinComment: 'owner', douyinShareOwner: 'owner', douyinDm: 'owner' }, // 改资料类操作（含抖音浏览 / 点赞 / 评论 / 分享）的权限：off 关 / owner 仅主人私聊 / all 所有人。抖音项默认仅主人，总开关默认关
@@ -38,7 +42,7 @@ export const DEFAULTS = {
   // panelRemoteAccess：允许远端（非回环）访问管理接口；默认 false = 只有本机能管。
   // trustedProxy：可信反向代理地址（逗号分隔）；只有请求确实从这些地址进来，才采信
   //   X-Forwarded-For 的最后一跳作为真实来源。留空 = 从不相信任何转发头（最安全）。
-  // publicHostname：面板经反代对外时的域名（如 panel.example.com）；CSRF 同源校验把
+  // publicHostname：面板经反代对外时的域名（如 panel.example.com），可填多个、逗号分隔；CSRF 同源校验把
   //   这个域名的 Origin 也算同源。留空 = 只有回环 Origin 算同源。
   security: { dangerConfirm: true, ssrfMode: 'strict', panelRemoteAccess: false, trustedProxy: '', publicHostname: '' },
   // DeepSeek 峰谷省钱模式（默认关，现有行为不变）：打开后只把「不着急的后台模型调用」尽量挪到谷时，
@@ -61,6 +65,7 @@ export const DEFAULTS = {
   // 按聊天选模型（主人在面板「模型」页设）：私聊 QQ 号 > 群号 > 所有私聊 / 所有群默认 > 上面的全局模型；没写的一级退到下一级
   chatModels: { privateDefault: { provider: '', model: '', reasoningEffort: '' }, groupDefault: { provider: '', model: '', reasoningEffort: '' }, privates: {}, groups: {} },
   merge: { enabled: true, waitSec: 2.5, maxSec: 8, groupWaitSec: 5, groupMaxSec: 15 }, // 连发合并：对方停顿 waitSec 秒再一起回，最多等 maxSec 秒；群里等得久一点，把一段话攒齐
+  forward: { expandEarly: false, expandHistory: false }, // 合并转发：expandEarly=消息一进来就展开成文字存进上下文（哪怕这条不交给她，代价是每条转发多调一次 get_forward_msg）；expandHistory=交给她之前把缓冲里还没展开过的转发补展开（每条只拉一次）
   imageGen: {
     enabled: false,
     provider: 'openai', // openai / custom；codex = 实验性订阅接法（需单独登录）
@@ -258,12 +263,12 @@ export const DEFAULTS = {
   // 原话档案独立于摘要记忆；默认关闭，由使用者明确开启并管理保留期限。
   conversationContext: { enabled: false },
   memory: {
-    enabled: true, recallCount: 6, recallMode: 'always', recallTriggers: ['上次', '上回', '之前', '以前', '那天', '那次', '还记得', '记不记得', '说过', '提过', '答应', '约好', '那时候'],
+    enabled: true, recallCount: 6, recallMinRelevance: 0, recallMode: 'always', recallTriggers: ['上次', '上回', '之前', '以前', '那天', '那次', '还记得', '记不记得', '说过', '提过', '答应', '约好', '那时候'],
     dailyConsolidate: true, consolidateTimes: ['04:00', '16:00'], keepChatlogDays: 7, keepChatlogSet: false, mergeGroups: false, compress: true, compressAfterDays: 14, instantCommands: true, groupMemory: true, searchRrf: true,
-    profileFieldChars: 40, profilePeople: 2, profileChars: 240, chatImpression: true, chatImpressionChars: 120, dislikeSilence: 0.85,
+    profileOnlyAcquainted: true, profileFieldChars: 40, profilePeople: 2, profileChars: 240, chatImpression: true, chatImpressionChars: 120, dislikeSilence: 0.85,
     followUp: true, // 惦记尚无结果的重要事，主动聊天时顺口问问
     shortTerm: true, shortTermHours: 2, shortTermIdleMinutes: 3, shortTermChars: 150,
-    gistEnabled: true, gistDays: 180, impressionDays: 365, gistDailyBatches: 6, tierDays: { 1: 7, 2: 30, 3: 90 },
+    gistEnabled: true, gistDays: 180, impressionDays: 365, gistDailyBatches: 6, tierDays: { ...DEFAULT_TIER_DAYS },
     extractIdleMinutes: 30, extractMinLines: 20, extractDailyBatches: 24, capacity: { auto: 2000, event: 600, diary: 400 }, eventExpireDays: 90, vector: {
       enabled: false,
       // provider 只影响面板预置的地址/模型；请求统一走 OpenAI 兼容的 {baseUrl}/embeddings
@@ -322,6 +327,9 @@ export const DEFAULTS = {
   modules: {},
   safeMode: false, // 安全模式：自己写的模块一个都不加载（排查问题用）
   ext: {}, // 自己写的模块的设置：{ 模块id: {...} }
+  // token 用量与花费：面板「概览」里看。pricing 留空就用内置价目表（DeepSeek 官方价 + 其它厂商按 LiteLLM 价 ×7.2）；
+  // 要覆盖就写 { models: { "我的模型": { match: "^my-llm-", in: 2, out: 8, cached: 0.5 } } }（元/百万 tokens）
+  usage: { pricing: {} },
   // 联动：让别的程序、DSH 里别的会话和插件也能用她
   bridge: {
     dshTools: false, // DSH 里别的会话（比如你平时写代码的会话）能用工具让她发 QQ、查记忆
@@ -375,6 +383,25 @@ const bodyText = (v) => {
   return v == null ? '' : String(v)
 }
 
+// 上报开关：总开关 + 按工作区的覆盖。工作区路径原样当键（调用方会先规范化），
+// 覆盖项只认布尔值，别的（0、''、null）一律当「没写」，跟随总开关。
+function normalizeNotice(v, legacyNotify) {
+  const o = isObj(v) ? v : {}
+  const approvalDefault = legacyNotify === false ? false : true
+  const out = { enabled: bool(o.enabled, true), approval: typeof o.approval === 'boolean' ? o.approval : approvalDefault, question: bool(o.question, true), workspaces: {} }
+  const ws = isObj(o.workspaces) ? o.workspaces : {}
+  for (const [key, val] of Object.entries(ws)) {
+    const path = String(key || '').trim()
+    if (!path) continue
+    const w = isObj(val) ? val : {}
+    const item = {}
+    if (typeof w.approval === 'boolean') item.approval = w.approval
+    if (typeof w.question === 'boolean') item.question = w.question
+    out.workspaces[path] = item
+  }
+  return out
+}
+
 export function normalize(raw) {
   const c = deepMerge(DEFAULTS, raw)
   c.enabled = bool(c.enabled, false)
@@ -385,6 +412,8 @@ export function normalize(raw) {
   c.botQQ = qq(c.botQQ)
   c.ownerQQ = qq(c.ownerQQ)
   c.approvalNotify = bool(c.approvalNotify, true)
+  // 老配置只有 approvalNotify：没写过 notice 时用它当审批上报的默认值，免得更一次版本被重新打开
+  c.notice = normalizeNotice(isObj(raw?.notice) ? raw.notice : null, raw?.approvalNotify)
   c.approvalViaQQ = bool(c.approvalViaQQ, true)
   c.qqApi.enabled = bool(c.qqApi.enabled, true)
   c.gateway = c.gateway === 'onebot' ? 'onebot' : 'snowluma'
@@ -426,9 +455,10 @@ export function normalize(raw) {
   g.wakeWords = (Array.isArray(g.wakeWords) ? g.wakeWords : String(g.wakeWords || '').split(/[\s,，]+/)).map((s) => String(s).trim()).filter(Boolean)
   g.interjectChance = num(g.interjectChance, 0.15, 0, 1)
   g.cooldownSec = num(g.cooldownSec, 90, 0, BIG)
-  g.maxPerHour = num(g.maxPerHour, 6, 0, 120)
-  g.minRecentMessages = num(g.minRecentMessages, 3, 0, 100)
-  g.activeWindowSec = num(g.activeWindowSec, 300, 30, 86400)
+  g.maxPerHour = num(g.maxPerHour, 6, 0, BIG)
+  g.mustMaxPerHour = num(g.mustMaxPerHour, 100, 0, BIG)
+  g.minRecentMessages = num(g.minRecentMessages, 3, 0, BIG)
+  g.activeWindowSec = num(g.activeWindowSec, 300, 1, BIG)
   if (!Array.isArray(g.quietHours) || g.quietHours.length !== 2) g.quietHours = DEFAULT_GROUP_POLICY.quietHours
   g.quietHours = g.quietHours.map((h) => num(h, 0, 0, 23))
   if (!isObj(g.overrides)) g.overrides = {}
@@ -609,16 +639,17 @@ export function normalize(raw) {
   c.chat.everyStep = bool(c.chat.everyStep, false)
   c.chat.rescueFromThinking = bool(c.chat.rescueFromThinking, false)
   c.memory.recallCount = num(c.memory.recallCount, 6, 0, BIG)
+  c.memory.recallMinRelevance = num(c.memory.recallMinRelevance, DEFAULTS.memory.recallMinRelevance, 0, 1)
   c.memory.recallMode = c.memory.recallMode === 'trigger' ? 'trigger' : 'always'
   c.memory.recallTriggers = [...new Set((Array.isArray(c.memory.recallTriggers) ? c.memory.recallTriggers : String(c.memory.recallTriggers || '').split(/[\n,，;；]+/)).filter((x) => typeof x === 'string').map((x) => x.trim().slice(0, 40)).filter(Boolean))].slice(0, 100)
-  for (const k of ['chatImpression', 'gistEnabled', 'shortTerm', 'followUp']) c.memory[k] = bool(c.memory[k], true)
+  for (const k of ['chatImpression', 'gistEnabled', 'shortTerm', 'followUp', 'profileOnlyAcquainted']) c.memory[k] = bool(c.memory[k], true)
   c.memory.dislikeSilence = num(c.memory.dislikeSilence, 0.85, 0, 1)
   c.memory.shortTermHours = num(c.memory.shortTermHours, 2, 0.1, BIG)
   c.memory.shortTermIdleMinutes = num(c.memory.shortTermIdleMinutes, 3, 0, BIG)
   c.memory.shortTermChars = Math.round(num(c.memory.shortTermChars, 150, 1, BIG))
   for (const k of ['profileFieldChars', 'profilePeople', 'profileChars', 'chatImpressionChars', 'gistDays', 'impressionDays', 'gistDailyBatches']) c.memory[k] = Math.round(num(c.memory[k], DEFAULTS.memory[k], 0, BIG))
   if (!isObj(c.memory.tierDays)) c.memory.tierDays = {}
-  for (const k of ['1', '2', '3']) c.memory.tierDays[k] = Math.round(num(c.memory.tierDays[k], DEFAULTS.memory.tierDays[k], 0, BIG))
+  for (const k of Object.keys(DEFAULT_TIER_DAYS)) c.memory.tierDays[k] = Math.round(num(c.memory.tierDays[k], DEFAULT_TIER_DAYS[k], 0, BIG))
   // 老版本的 0 是当时的默认值，不是谁选的：升级后改成留 7 天，以后面板里再选 0 才算数
   const keepUnset = raw?.memory?.keepChatlogDays === 0 && !raw.memory.keepChatlogSet
   c.memory.keepChatlogDays = keepUnset ? 7 : num(c.memory.keepChatlogDays, 7, -1, 3650)
@@ -666,6 +697,9 @@ export function normalize(raw) {
   c.merge.maxSec = Math.max(c.merge.waitSec, num(c.merge.maxSec, 8, 0, BIG))
   c.merge.groupWaitSec = num(c.merge.groupWaitSec, 5, 0, BIG)
   c.merge.groupMaxSec = Math.max(c.merge.groupWaitSec, num(c.merge.groupMaxSec, 15, 0, BIG))
+  c.forward = c.forward && typeof c.forward === 'object' ? c.forward : {}
+  c.forward.expandEarly = bool(c.forward.expandEarly, false)
+  c.forward.expandHistory = bool(c.forward.expandHistory, false)
   c.titleFilter.enabled = bool(c.titleFilter.enabled, true)
   c.titleFilter.groups = qqList(c.titleFilter.groups) // 和群白名单同一套规则
   c.titleFilter.title = String(c.titleFilter.title ?? '').replace(/[​-‍﻿]/g, '').trim().slice(0, 30) || '大肥鱼'
@@ -746,6 +780,9 @@ export function normalize(raw) {
   if (!isObj(c.ext)) c.ext = {}
   for (const k of Object.keys(c.ext)) if (!isObj(c.ext[k])) delete c.ext[k] // 传 null = 删掉这个模块的设置
   c.safeMode = bool(c.safeMode, false)
+  // 花费估算的价格表：手动填了就用手填的（手填的部分覆盖内置价），没填就用内置 DeepSeek 价
+  if (!isObj(c.usage)) c.usage = { pricing: {} }
+  if (!isObj(c.usage.pricing)) c.usage.pricing = {}
   c.bridge.dshTools = bool(c.bridge.dshTools, false)
   c.bridge.http = bool(c.bridge.http, false)
   c.bridge.token = String(c.bridge.token || '')

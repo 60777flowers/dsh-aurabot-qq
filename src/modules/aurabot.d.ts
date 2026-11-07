@@ -148,6 +148,12 @@ export interface Events {
 /** 平台是工具；确认平台账号对应的 QQ 后，才能写入和读取同一份私聊记忆。 */
 export interface MemoryModule {
   [key: string]: any
+  /** 不再记住由 profiles[qq].noMemory 控制；主人始终返回 true。 */
+  remembers(qq: string | number): boolean
+  /** 从直接互动流水、QQ 好友和个人白名单识别是否有交集。 */
+  isAcquainted(qq: string | number): boolean
+  deletePerson(qq: string | number, options?: { keepNoMemory?: boolean }): { ok: boolean; message: string; marked?: number }
+  setNoMemory(qq: string | number, enabled: boolean, options?: { deleteExisting?: boolean }): { ok: boolean; message: string }
   /** 外部视频、帖子、网页用 seen；省略 kind 仍是原有做过的事。source 固定 event，仍存 items。
    * seen 不作为事实、画像或相处经验来源，也不挂到 about 人物名下。 */
   addEvent(args: {
