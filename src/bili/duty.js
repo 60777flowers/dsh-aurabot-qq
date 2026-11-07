@@ -169,9 +169,9 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
       : { ok: false, list: [], message: query ? `没有和「${query}」对得上的截图` : '还没有截图' }
   }
 
-  /** 面板用：截图库全量列表（按当前上限先裁一遍）。 */
-  function libraryShots() {
-    return { ok: true, items: shots.panel() }
+  /** 面板用：截图库分页（默认首屏 25 张）。 */
+  function libraryShots({ limit = 25, offset = 0 } = {}) {
+    return { ok: true, ...shots.panelPage({ limit, offset }) }
   }
 
   /** 面板用：某张截图在本机的绝对路径；文件不在就返回 ''。 */

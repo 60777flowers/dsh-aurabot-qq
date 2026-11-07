@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import { copyFileSync, mkdtempSync, writeFileSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { gunzipSync } from 'node:zlib'
 import { startMockOneBot } from './helpers/mock-onebot.js'
 import { createFakeDsh } from './helpers/fake-dsh.js'
 
@@ -1143,7 +1144,7 @@ test('每日整理：往日的临时流水整理后清空，今天的保留；�
   const today = new Date()
   const key = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
   assert.equal(existsSync(join(dir, key + '.jsonl')), true, '今天的流水保留')
-  const mem = (await fake.call('/memories')).json()
+  const mem = (await fake.call('/memories?limit=200')).json()
   assert.ok(mem.items.some((m) => m.source === 'diary' && m.text.includes('白米饭')), '空间日记进了记忆库')
 })
 
@@ -1595,4 +1596,13 @@ test('群聊：同一段里群友发的图也能看到（限 5 分钟、最多 2
   } finally {
     await fake.call('/save', { model: { vision: 'auto' } })
   }
+})
+
+test('大 JSON 接口按 Accept-Encoding 压缩', async () => {
+  const r = await fake.call('/state', null, { 'accept-encoding': 'gzip' })
+  assert.equal(r.status, 200)
+  const j = JSON.parse(gunzipSync(r.raw()).toString('utf8'))
+  assert.equal(j.ok, true)
+  assert.ok(j.config, '解压后还是完整的 state')
+  assert.equal('history' in j.mood, false, '心情历史已移出 /state')
 })

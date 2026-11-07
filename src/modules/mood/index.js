@@ -28,6 +28,8 @@ export default {
         mood.judge({ userText: a.userText, reply: a.reply, who: String(a.chatId).startsWith('group:') ? '群里的人' : String(a.chatId) === `private:${cfg.ownerQQ}` ? cfg.ownerName || '主人' : '对方', origin: speakUp ? 'speak-up' : 'user' }).catch(() => {})
       }
     })
+    // 心情历史单独取：/state 只带摘要，避免面板轮询把最多 200 条历史一起传
+    api.route('/mood/history', async () => ({ ok: true, history: mood.state().history || [] }))
     return mood
   },
 }

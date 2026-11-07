@@ -16,6 +16,7 @@ import { spawn } from 'node:child_process'
 import net from 'node:net'
 import { loadConfig, saveConfig, publicConfig, mergeFromPanel } from './core/config.js'
 import { createLogger } from './core/logger.js'
+import { encodeResponse } from './core/http-compress.js'
 import { registerSecret, redact } from './core/redact.js'
 import { createOneBotClient } from './onebot/client.js'
 import { createOutbox } from './onebot/outbox.js'
@@ -458,12 +459,17 @@ export function apply(ctx) {
   })
 
   // ---------- 面板接口的小工具 ----------
-  const send = (res, code, body, type = 'application/json; charset=utf-8') => {
+  const send = (res, code, body, type = 'application/json; charset=utf-8', req = null) => {
     try {
+      const { payload, encoding } = encodeResponse(body, type, req?.headers?.['accept-encoding'] || '')
       res.statusCode = code
       res.setHeader?.('content-type', type)
       res.setHeader?.('cache-control', 'no-store')
-      res.end?.(typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body))
+      if (encoding) {
+        res.setHeader?.('content-encoding', encoding)
+        res.setHeader?.('vary', 'accept-encoding')
+      }
+      res.end?.(payload)
     } catch (error) {}
   }
   const readBody = async (req) => {
@@ -488,12 +494,12 @@ export function apply(ctx) {
   }
   // 核心自己的接口登记成精确路径；模块的接口都走一个前缀路由，请求进来再查表
   // （模块随时开关、重新加载；关着的模块的接口回「模块没开」，面板不会白屏）
-  const answer = async (res, fn) => {
+  const answer = async (req, res, fn) => {
     try {
       const r = await fn()
-      if (r !== undefined) send(res, 200, r)
+      if (r !== undefined) send(res, 200, r, 'application/json; charset=utf-8', req)
     } catch (error) {
-      send(res, 200, { ok: false, message: redact(String(error && error.message ? error.message : error)) })
+      send(res, 200, { ok: false, message: redact(String(error && error.message ? error.message : error)) }, 'application/json; charset=utf-8', req)
     }
   }
   // ---------- 面板级访问闸（安全基线，2026-11-02） ----------
@@ -643,7 +649,7 @@ export function apply(ctx) {
   const route = (path, handler, opts = {}) => ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
     path: PREFIX + path,
-    handler: (req, res) => answer(res, () => {
+    handler: (req, res) => answer(req, res, () => {
       if (panelBlocked(req, res)) return undefined
       if (!opts.skipHostCheck && adminHostBlocked(req, res)) return undefined // DNS rebinding 防护（含 GET）
       if (csrfBlocked(req, res)) return undefined
@@ -653,7 +659,7 @@ export function apply(ctx) {
   ctx.effect(() => ctx.webServer.register({
     kind: 'prefix',
     path: PREFIX, // DSH 按「路径 = 前缀 或 以 前缀/ 开头」匹配，前缀本身不带结尾的 /
-    handler: (req, res) => answer(res, () => {
+    handler: (req, res) => answer(req, res, () => {
       let path = ''
       try { path = new URL(req.url, 'http://x').pathname } catch (error) {}
       // 【复审 2·P1-2】模块 prefix 路由也过 CSRF：实测本机 socket + 恶意 Origin 能跨站打
@@ -1121,6 +1127,8 @@ export function apply(ctx) {
     }
     const diary = use('diary')
     const memory = use('memory')
+    const moodState = use('mood')?.state?.() ?? { value: 0, label: '心情模块关着', reason: '', history: [] }
+    const { history: _moodHistory, ...moodSummary } = moodState
     return {
       ok: true,
       version: VERSION,
@@ -1131,7 +1139,7 @@ export function apply(ctx) {
       snowluma: { ...inst, compat: snowluma.compat(), running, consented: await consented(running), owns: snowluma.ownsProcess, lastAttach: snowluma.lastAttach, downloadPage: DOWNLOAD_PAGE, webui: snowluma.webuiUrl() },
       stats: hub.stats(),
       // 模块关着时给个空壳，面板照常显示
-      mood: use('mood')?.state?.() ?? { value: 0, label: '心情模块关着', reason: '', history: [] },
+      mood: moodSummary,
       stickers: { count: stickers.library().items.length },
       diary: diary ? { next: diary.nextTime(), last: diary.history()[0] || null } : { next: 0, last: null },
       qzoneSocial: use('qzone-social')?.state?.() ?? null,
@@ -1702,7 +1710,7 @@ export function apply(ctx) {
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
     path: PREFIX + '/panel/pet/client-package',
-    handler: (req, res) => answer(res, async () => {
+    handler: (req, res) => answer(req, res, async () => {
       // 【安全】这一条不走 route()，必须自己过面板闸：包内嵌 host.json（含 bearer 令牌），
       // 公网上谁都能无鉴权下到就等于把桌宠令牌送出去。CSRF 闸也要过（一致性；GET 本身不受影响）。
       // 复审 3·P1-1：还必须过 Host 校验——此前手动注册路由漏了 adminHostBlocked，
