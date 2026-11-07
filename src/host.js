@@ -888,7 +888,7 @@ export function apply(ctx) {
       config: publicConfig(cfg),
       onebot: { state: onebotState, login, endpoint: { httpUrl: endpoint().httpUrl, wsUrl: endpoint().wsUrl }, problem: onebotState === 'connected' && loginOk ? '' : await connectionProblem(), warmup: gatewayWarmSince ? { since: gatewayWarmSince, seconds: Math.max(0, Math.round((Date.now() - gatewayWarmSince) / 1000)), phase: warmupPhase.phase || '', label: warmupPhase.label || '' } : null },
       outbox: outbox.status(),
-      snowluma: { ...inst, running, consented: await consented(running), owns: snowluma.ownsProcess, lastAttach: snowluma.lastAttach, downloadPage: DOWNLOAD_PAGE, webui: snowluma.webuiUrl() },
+      snowluma: { ...inst, compat: snowluma.compat(), running, consented: await consented(running), owns: snowluma.ownsProcess, lastAttach: snowluma.lastAttach, downloadPage: DOWNLOAD_PAGE, webui: snowluma.webuiUrl() },
       stats: hub.stats(),
       // 模块关着时给个空壳，面板照常显示
       mood: use('mood')?.state?.() ?? { value: 0, label: '心情模块关着', reason: '', history: [] },
@@ -1466,6 +1466,10 @@ export function apply(ctx) {
     const add = (id, label, ok, detail, hint = '') => items.push({ id, label, ok: Boolean(ok), detail: String(detail || ''), hint })
     const inst = snowluma.detect()
     add('installed', 'SnowLuma 目录', inst.installed, inst.installed ? `${inst.dir}${inst.version ? '（v' + inst.version + '）' : ''}` : inst.reason, '在向导第 2 步填解压目录：纯英文路径，目录里能直接看到 index.mjs')
+    if (inst.installed) {
+      const compat = snowluma.compat()
+      add('version', 'SnowLuma 版本', compat.status === 'ok', `v${inst.version || '?'}（${compat.label}）`, compat.status === 'ok' ? '' : `${compat.message} 下载页：${DOWNLOAD_PAGE}`)
+    }
     const running = await snowluma.running()
     add('running', 'SnowLuma 运行状态', running, running ? '控制台有响应：' + snowluma.webuiUrl() : '控制台没有响应', '点「启动 SnowLuma」；仍然起不来就看「日志」页的 snowluma 段')
     let consoleState = { ok: false, message: '控制台没在跑，跳过' }

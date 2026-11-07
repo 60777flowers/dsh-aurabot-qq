@@ -1,4 +1,4 @@
-﻿// Aurabot · 网页半边：侧栏「自动化任务」下面的「Aurabot」入口 + 整页面板（顶部标签切换功能）。
+// Aurabot · 网页半边：侧栏「自动化任务」下面的「Aurabot」入口 + 整页面板（顶部标签切换功能）。
 // 只读写宿主半边的 /aurabot/api/* 接口，不直接碰会话和 QQ。
 // 视觉：沿用 DSH 的主题变量（--dsw-alias-*），浅色 / 深色自动跟随；点缀用大肥鱼的深蓝、海蓝、白。
 
@@ -1186,7 +1186,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             h('div', { className: cx('ab-step', sl.installed && 'done') }, h('div', null,
               h('b', null, '解压到一个纯英文的目录'), h('div', { className: 'ab-muted ab-small' }, '推荐 C:\\Aurabot\\snowluma。解压后这个目录里应该直接能看到 index.mjs 和 node.exe。'),
               h('div', { className: 'ab-flex', style: { marginTop: 6 } }, f.text('snowluma.dir', { size: 'wide', placeholder: 'C:\\Aurabot\\snowluma' })),
-              !sl.installed && sl.reason ? h('div', { className: 'ab-small', style: { color: 'var(--ab-warn)', marginTop: 4 } }, sl.reason) : sl.installed ? h('div', { className: 'ab-small', style: { color: 'var(--ab-ok)', marginTop: 4 } }, '找到了 SnowLuma v' + sl.version) : null)),
+              !sl.installed && sl.reason ? h('div', { className: 'ab-small', style: { color: 'var(--ab-warn)', marginTop: 4 } }, sl.reason) : sl.installed ? h('div', { className: 'ab-small', style: { color: sl.compat && sl.compat.status !== 'ok' ? 'var(--ab-warn)' : 'var(--ab-ok)', marginTop: 4 } }, '找到了 SnowLuma v' + sl.version + (sl.compat ? '（' + sl.compat.label + '）' : '')) : null)),
             h('div', { className: cx('ab-step', sl.running && 'done') }, h('div', null,
               h('b', null, '启动'), h('div', { className: 'ab-muted ab-small' }, '后台运行，不弹窗口；以后会跟着 DSH 自动启动。'),
               h('div', { className: 'ab-flex', style: { marginTop: 6 } },
@@ -1204,6 +1204,9 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
                 h(Btn, { small: true, onClick: async () => { const r = await get('/onebot/test'); toast(r.message) } }, '测试连接')),
               sl.lastAttach && sl.lastAttach.at ? h('div', { className: 'ab-small', style: { marginTop: 4, color: sl.lastAttach.ok ? 'var(--ab-ok)' : 'var(--ab-warn)' } }, timeAgo(sl.lastAttach.at) + '：' + sl.lastAttach.message) : null)),
           ),
+          sl.installed && sl.compat && sl.compat.status !== 'ok' ? h('div', { className: 'ab-note warn', style: { marginTop: 10 } },
+            h('b', null, 'SnowLuma 版本提示：'), sl.compat.message, ' ',
+            h('a', { href: sl.downloadPage, target: '_blank', rel: 'noreferrer' }, '打开下载页 ↗')) : null,
           procs ? h('div', { style: { marginTop: 14 } }, procs.length === 0 ? h('div', { className: 'ab-muted' }, '没找到 QQ 进程。') :
             h('table', { className: 'ab-table' }, h('thead', null, h('tr', null, ['进程', '登录的号', '昵称', '状态', ''].map((x) => h('th', { key: x }, x)))),
               h('tbody', null, procs.map((p) => h('tr', { key: p.pid },
@@ -5676,7 +5679,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
               h('div', { style: { marginTop: 6 } }, h(Btn, { small: true, onClick: () => window.open(sl.downloadPage, '_blank') }, '打开下载页 ↗')))),
             h('div', { className: cx('ab-step', sl.installed && 'done') }, h('div', null, h('b', null, '解压到纯英文目录'), h('div', { className: 'ab-muted ab-small' }, '推荐 C:\\Aurabot\\snowluma，解压后目录里能直接看到 index.mjs。'),
               h('div', { className: 'ab-flex', style: { marginTop: 6 } }, f.text('snowluma.dir', { size: 'wide', placeholder: 'C:\\Aurabot\\snowluma' }), h(Btn, { small: true, onClick: async () => { await save(draft); reload() } }, '检查')),
-              h('div', { className: 'ab-small', style: { marginTop: 4, color: sl.installed ? 'var(--ab-ok)' : 'var(--ab-warn)' } }, sl.installed ? '✓ 找到了 SnowLuma v' + sl.version : sl.reason))))),
+              h('div', { className: 'ab-small', style: { marginTop: 4, color: sl.installed && (!sl.compat || sl.compat.status === 'ok') ? 'var(--ab-ok)' : 'var(--ab-warn)' } }, sl.installed ? '✓ 找到了 SnowLuma v' + sl.version + (sl.compat ? '（' + sl.compat.label + '）' : '') : sl.reason))))),
         // 2. 启动 + 协议（接自己的 OneBot 时不用）
         external ? h('div', null, h('p', { className: 'ab-desc' }, '用的是你自己的 OneBot 服务，这一步不用做，直接下一步。')) :
         h('div', null,

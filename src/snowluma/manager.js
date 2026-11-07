@@ -10,6 +10,7 @@ import { existsSync, readFileSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import net from 'node:net'
 import { registerSecret } from '../core/redact.js'
+import { snowlumaCompat } from './compat.js'
 
 export const DOWNLOAD_PAGE = 'https://github.com/SnowLuma/SnowLuma/releases/latest'
 
@@ -502,6 +503,8 @@ export function createSnowLumaManager({ getConfig, log, savePassword }) {
 
   return {
     detect: () => detectInstall(cfg().dir),
+    /** 版本兼容性：面板据此提示升级（见 ./compat.js） */
+    compat: () => snowlumaCompat(detectInstall(cfg().dir).version),
     endpoint: () => readOneBotEndpoint(cfg().dir, getConfig().botQQ),
     running,
     start,
