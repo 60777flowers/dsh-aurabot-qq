@@ -5,6 +5,7 @@ import { DEFAULT_GROUP_POLICY } from '../chat/group-policy.js'
 import { LEVELS, PROFILE_PERM_KEYS, PROFILE_PERM_LEVELS, profilePermDefault } from '../chat/access.js'
 import { normalizeChatModels } from '../chat/chat-model.js'
 import { DIARY_AUDIENCES } from '../features/qzone-audience.js'
+import { DEFAULT_TIER_DAYS } from '../features/memory-rules.js'
 
 export const DEFAULTS = {
   enabled: false, // 总开关：关着一句都不发
@@ -261,12 +262,12 @@ export const DEFAULTS = {
   // 原话档案独立于摘要记忆；默认关闭，由使用者明确开启并管理保留期限。
   conversationContext: { enabled: false },
   memory: {
-    enabled: true, recallCount: 6, recallMode: 'always', recallTriggers: ['上次', '上回', '之前', '以前', '那天', '那次', '还记得', '记不记得', '说过', '提过', '答应', '约好', '那时候'],
+    enabled: true, recallCount: 6, recallMinRelevance: 0, recallMode: 'always', recallTriggers: ['上次', '上回', '之前', '以前', '那天', '那次', '还记得', '记不记得', '说过', '提过', '答应', '约好', '那时候'],
     dailyConsolidate: true, consolidateTimes: ['04:00', '16:00'], keepChatlogDays: 7, keepChatlogSet: false, mergeGroups: false, compress: true, compressAfterDays: 14, instantCommands: true, groupMemory: true, searchRrf: true,
-    profileFieldChars: 40, profilePeople: 2, profileChars: 240, chatImpression: true, chatImpressionChars: 120, dislikeSilence: 0.85,
+    profileOnlyAcquainted: true, profileFieldChars: 40, profilePeople: 2, profileChars: 240, chatImpression: true, chatImpressionChars: 120, dislikeSilence: 0.85,
     followUp: true, // 惦记尚无结果的重要事，主动聊天时顺口问问
     shortTerm: true, shortTermHours: 2, shortTermIdleMinutes: 3, shortTermChars: 150,
-    gistEnabled: true, gistDays: 180, impressionDays: 365, gistDailyBatches: 6, tierDays: { 1: 7, 2: 30, 3: 90 },
+    gistEnabled: true, gistDays: 180, impressionDays: 365, gistDailyBatches: 6, tierDays: { ...DEFAULT_TIER_DAYS },
     extractIdleMinutes: 30, extractMinLines: 20, extractDailyBatches: 24, capacity: { auto: 2000, event: 600, diary: 400 }, eventExpireDays: 90, vector: {
       enabled: false,
       // provider 只影响面板预置的地址/模型；请求统一走 OpenAI 兼容的 {baseUrl}/embeddings
@@ -632,16 +633,17 @@ export function normalize(raw) {
   c.chat.everyStep = bool(c.chat.everyStep, false)
   c.chat.rescueFromThinking = bool(c.chat.rescueFromThinking, false)
   c.memory.recallCount = num(c.memory.recallCount, 6, 0, BIG)
+  c.memory.recallMinRelevance = num(c.memory.recallMinRelevance, DEFAULTS.memory.recallMinRelevance, 0, 1)
   c.memory.recallMode = c.memory.recallMode === 'trigger' ? 'trigger' : 'always'
   c.memory.recallTriggers = [...new Set((Array.isArray(c.memory.recallTriggers) ? c.memory.recallTriggers : String(c.memory.recallTriggers || '').split(/[\n,，;；]+/)).filter((x) => typeof x === 'string').map((x) => x.trim().slice(0, 40)).filter(Boolean))].slice(0, 100)
-  for (const k of ['chatImpression', 'gistEnabled', 'shortTerm', 'followUp']) c.memory[k] = bool(c.memory[k], true)
+  for (const k of ['chatImpression', 'gistEnabled', 'shortTerm', 'followUp', 'profileOnlyAcquainted']) c.memory[k] = bool(c.memory[k], true)
   c.memory.dislikeSilence = num(c.memory.dislikeSilence, 0.85, 0, 1)
   c.memory.shortTermHours = num(c.memory.shortTermHours, 2, 0.1, BIG)
   c.memory.shortTermIdleMinutes = num(c.memory.shortTermIdleMinutes, 3, 0, BIG)
   c.memory.shortTermChars = Math.round(num(c.memory.shortTermChars, 150, 1, BIG))
   for (const k of ['profileFieldChars', 'profilePeople', 'profileChars', 'chatImpressionChars', 'gistDays', 'impressionDays', 'gistDailyBatches']) c.memory[k] = Math.round(num(c.memory[k], DEFAULTS.memory[k], 0, BIG))
   if (!isObj(c.memory.tierDays)) c.memory.tierDays = {}
-  for (const k of ['1', '2', '3']) c.memory.tierDays[k] = Math.round(num(c.memory.tierDays[k], DEFAULTS.memory.tierDays[k], 0, BIG))
+  for (const k of Object.keys(DEFAULT_TIER_DAYS)) c.memory.tierDays[k] = Math.round(num(c.memory.tierDays[k], DEFAULT_TIER_DAYS[k], 0, BIG))
   // 老版本的 0 是当时的默认值，不是谁选的：升级后改成留 7 天，以后面板里再选 0 才算数
   const keepUnset = raw?.memory?.keepChatlogDays === 0 && !raw.memory.keepChatlogSet
   c.memory.keepChatlogDays = keepUnset ? 7 : num(c.memory.keepChatlogDays, 7, -1, 3650)

@@ -124,6 +124,8 @@ test('自身识别兼容当前名、旧名、自称，按字面匹配特殊字�
 test('Claude 的整理、回顾、说话习惯、人物档案、梗概、印象压缩、合并与心情提示都使用当前名', async (t) => {
   const s = setup(t)
   s.select('claude', 'Claude')
+  // 本用例检查提示词中的名字；风格素材来自已允许私聊的熟人，满足直接交集前提。
+  s.cfg.allow.private = ['30000001']
   const old = Date.now() - 20 * DAY
   writeMemoryState(s.dir, { items: ['主人常分享工作近况', '主人喜欢喝茶', '主人周末会散步', '主人每天早睡'].map((text, i) => ({
     id: `old${i}`, text, about: OWNER, aboutName: '主人', source: 'auto', chatId: `private:${OWNER}`,

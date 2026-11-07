@@ -301,6 +301,17 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-deep:#9cc4f5;--ab-sea:#6
 .ab-pm-face img{width:100%;height:100%;object-fit:cover;display:block}
 .ab-pm-face.big{width:64px;height:64px;font-size:24px}
 .ab-pm-split{display:grid;grid-template-columns:272px minmax(0,1fr);gap:12px;align-items:start}
+.ab-pm-graph{grid-template-columns:minmax(0,1fr)}
+.ab-pm-graph.open{grid-template-columns:minmax(320px,1fr) minmax(0,1fr)}
+.ab-pm-graph .ab-pm-list{position:static;max-height:none;min-width:0}
+.ab-pm-stars{max-height:650px;overflow:auto;overscroll-behavior:contain}
+.ab-pm-stars svg{display:block;width:100%;max-width:560px;margin:auto;touch-action:pan-y}
+.ab-pm-stars g[role=button]{cursor:pointer;outline:none}
+.ab-pm-stars g[role=button]:focus-visible circle{stroke:var(--ab-text);stroke-width:3}
+.ab-pm-related{margin-top:6px;font-size:12px;line-height:1.6}
+.ab-pm-related article{padding:7px 9px;margin-top:5px;background:var(--ab-foam);border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere}
+.ab-pm-related .text{text-decoration:none!important}
+.ab-pm-platforms{overflow-x:auto}
 .ab-pm-list{display:flex;flex-direction:column;border:1px solid var(--ab-line);border-radius:14px;background:var(--ab-card);overflow:visible;position:sticky;top:64px;z-index:1;max-height:calc(100vh - 96px)}
 .ab-pm-search{position:relative;z-index:2;padding:10px;border-bottom:1px solid var(--ab-line)}
 .ab-pm-search input{width:100%;box-sizing:border-box}
@@ -373,7 +384,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-deep:#9cc4f5;--ab-sea:#6
 .ab-pm-tl-item.feel:before{left:-20px;top:14px;width:11px;height:11px;background:var(--ab-deep);box-shadow:0 0 0 3px var(--ab-foam-2)}
 .ab-pm-tl-item.feel .text{font-size:16px;font-weight:600;color:var(--ab-deep)}
 @media (max-width:760px){
-.ab-pm-split{grid-template-columns:minmax(0,1fr)}
+.ab-pm-split,.ab-pm-graph.open{grid-template-columns:minmax(0,1fr)}
 .ab-pm-list{position:static;max-height:none}
 .ab-pm-split.open .ab-pm-list{display:none}
 .ab-pm-acts{opacity:1}
@@ -3636,6 +3647,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
               },
             }), h('span', { className: 'ab-muted' }, '条')),
           h(Row, { label: '每轮最多想起几条' }, f.range('memory.recallCount', 0, 12, 1, (v) => v + ' 条')),
+          h(Row, { label: '召回最低相关度', hint: '默认 0，沿用原有检索门槛；调高会更挑剔，可能减少想起的线索。人物加分不会把无关内容抬过线，上一句和关联补充也要过线。' }, f.range('memory.recallMinRelevance', 0, 1, 0.05, (v) => Number(v).toFixed(2))),
           h(Row, { label: '什么时候自动翻旧账' }, f.select('memory.recallMode', [{ value: 'always', label: '每轮都查' }, { value: 'trigger', label: '提到过去时才查' }])),
           h(Row, { label: '翻旧账的触发词', hint: '一行一个，也可用逗号分隔；主动查记忆的工具不受影响' }, f.list('memory.recallTriggers')),
           h(Row, { label: '记得刚才聊到哪', hint: '同一个人在不同平台接着聊时，也能记得刚才聊到哪。每段聊天多一次很短的模型调用。' }, f.sw('memory.shortTerm')),
@@ -3643,7 +3655,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h(Row, { label: '聊天停多久后整理' }, f.num('memory.shortTermIdleMinutes', { min: 0 }), h('span', { className: 'ab-muted' }, '分钟')),
           h(Row, { label: '刚才的印象最多多少字' }, f.num('memory.shortTermChars', { min: 1 }), h('span', { className: 'ab-muted' }, '字')),
           h('div', { className: 'ab-section-title' }, '人物与群印象'),
-          h(Row, { label: '讨厌的人说话时不接的几率', hint: '消息仍会看到和记住；0% 表示照常回复，主人和一起说话的其他人不受影响' }, f.range('memory.dislikeSilence', 0, 1, 0.05, (v) => Math.round(v * 100) + '%')),
+          h(Row, { label: '只记住有交集的人', hint: '只给私聊过、在群里 @ 她、回复她或被她回复过的人，以及 QQ 好友和白名单朋友建立人物记忆。路过群友不占位置，群里的公共事情照常记；已有画像保留。' }, f.sw('memory.profileOnlyAcquainted')),
+          h(Row, { label: '讨厌的人说话时不接的几率', hint: '讨厌只影响爱不爱搭理；是否留记忆由人物详情的「不再记住」单独控制。0% 表示照常回复，主人和一起说话的其他人不受影响' }, f.range('memory.dislikeSilence', 0, 1, 0.05, (v) => Math.round(v * 100) + '%')),
           h(Row, { label: '每项人物印象最多多少字' }, f.num('memory.profileFieldChars', { min: 0 })),
           h(Row, { label: '群里最多带几个人的画像' }, f.num('memory.profilePeople', { min: 0 })),
           h(Row, { label: '人物画像总字数上限' }, f.num('memory.profileChars', { min: 0 })),
@@ -3655,9 +3668,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h(Row, { label: '印象保留多少天' }, f.num('memory.impressionDays', { min: 0 })),
           h(Row, { label: '每天最多压缩多少批', hint: '压缩同时占用下面的每日整理批次' }, f.num('memory.gistDailyBatches', { min: 0 })),
           h(Row, { label: '每天整理和压缩共用批次' }, f.num('memory.extractDailyBatches', { min: 0 })),
-          h(Row, { label: '琐碎事实保留多少天' }, f.num('memory.tierDays.1', { min: 0 })),
-          h(Row, { label: '一般事实保留多少天' }, f.num('memory.tierDays.2', { min: 0 })),
-          h(Row, { label: '重要事实保留多少天', hint: '永久档不会自动过期；没有档位的老记忆沿用原来的遗忘方式' }, f.num('memory.tierDays.3', { min: 0 })),
+          ...(stats?.factTiers || []).filter((t) => t.days !== null).map((t) => h(Row, { key: t.id, label: t.label + '事实保留多少天', hint: '到期先压缩，失败保留原文；0 表示下次整理就尝试压缩。旧档位和自定义天数保留，永久档不过期；无档位的老记忆仍沿用遗忘曲线。' }, f.num('memory.tierDays.' + t.id, { min: 0 }))),
           h(Row, { label: '把细节浓缩成长期印象', hint: '具体的事慢慢淡忘，留下更概括的关系和感受（比如「主人很疼她，总惦记她爱吃的东西」）。这些印象不会被自动整理改掉，也不会过期；手动加的和你自己总结的不会被压缩。每次整理最多多两次模型调用，默认开。' }, f.sw('memory.compress')),
           h(Row, { label: '多久以前的事开始浓缩', hint: '这些天以前的琐碎记忆才会被概括；最近的事先留着具体细节。默认 14 天' }, f.num('memory.compressAfterDays', { min: 1, max: 365 }), h('span', { className: 'ab-muted' }, '天')),
           h(Row, { label: '私聊时想起别处的话', hint: '和你私聊时，带上她最近 24 小时在别的聊天里说过的话，每轮多占约 300 字。只进你的私聊，别处一律不带。默认关。' }, f.sw('memory.crossContext')),
@@ -3759,8 +3770,124 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const [page, setPage] = useState('wall')
       return h('div', { className: 'ab-pm' },
         h('div', { className: 'ab-pm-head' },
-          h(Seg, { value: page, onChange: setPage, options: [{ value: 'wall', label: '人物墙' }, { value: 'chats', label: '群印象' }, { value: 'timeline', label: '时间轴' }] })),
-        page === 'wall' ? h(PersonaWall, { toast }) : page === 'chats' ? h(PersonaChats, { toast }) : h(PersonaTimeline, { toast }))
+          h(Seg, { value: page, onChange: setPage, options: [{ value: 'wall', label: '人物墙' }, { value: 'graph', label: '关系星图' }, { value: 'chats', label: '群印象' }, { value: 'timeline', label: '时间轴' }] })),
+        h(MemoryPlatforms),
+        page === 'wall' ? h(PersonaWall, { toast }) : page === 'graph' ? h(PersonaGraph, { toast }) : page === 'chats' ? h(PersonaChats, { toast }) : h(PersonaTimeline, { toast }))
+    }
+
+    function MemoryPlatforms() {
+      const [list, setList] = useState(null)
+      const [error, setError] = useState('')
+      const load = async () => {
+        try {
+          const r = await get('/memory/platforms')
+          if (!r.ok) throw new Error(r.message || '来源统计没读出来')
+          setList(r.list || []); setError('')
+        } catch (e) { setError(e.message) }
+      }
+      useEffect(() => { load() }, [])
+      const names = { qq: 'QQ', douyin: '抖音', bili: 'B站', heybox: '小黑盒', unknown: '来源未知' }
+      return h(Card, { title: '来源平台', desc: '统计目前可用的记录，已忘和停记内容不计；多来源梗概在每个来源各计一次。', right: h(Btn, { small: true, kind: 'ghost', onClick: load }, '刷新') },
+        error ? h('div', { className: 'ab-note err' }, error) : list === null ? h('div', { className: 'ab-muted' }, '读取中…') : !list.length ? h('div', { className: 'ab-muted' }, '还没有记录') :
+        h('div', { className: 'ab-pm-platforms' }, h('table', { className: 'ab-table num' },
+          h('thead', null, h('tr', null, ['平台', '原话', '梗概 / 印象', '看过的内容'].map((x) => h('th', { key: x, scope: 'col' }, x)))),
+          h('tbody', null, list.map((p) => h('tr', { key: p.platform }, h('td', null, names[p.platform] || p.platform), h('td', null, p.episodes), h('td', null, p.gists), h('td', null, p.seen)))))))
+    }
+
+    // 有界的确定性布局：斥力让节点散开，关系边把相关的人拉近，不保存坐标。
+    function starPositions(nodes, links) {
+      const height = Math.max(340, Math.ceil(nodes.length / 3) * 90 + 40)
+      const points = nodes.map((p, i) => ({ ...p, x: 60 + (i % 3) * 120, y: 45 + Math.floor(i / 3) * 90, r: 12 + Math.min(10, Math.sqrt(Math.max(0, p.closeness || 0)) * 2) }))
+      const byId = new Map(points.map((p) => [p.qq, p]))
+      for (let step = 0; step < 70; step++) {
+        const shifts = points.map(() => ({ x: 0, y: 0 }))
+        for (let i = 0; i < points.length; i++) for (let j = i + 1; j < points.length; j++) {
+          const dx = points[i].x - points[j].x, dy = points[i].y - points[j].y
+          const distance = Math.max(1, Math.hypot(dx, dy))
+          const force = Math.min(8, 1200 / (distance * distance))
+          shifts[i].x += dx / distance * force; shifts[i].y += dy / distance * force
+          shifts[j].x -= dx / distance * force; shifts[j].y -= dy / distance * force
+        }
+        const indices = new Map(points.map((p, i) => [p.qq, i]))
+        for (const edge of links) {
+          const a = byId.get(edge.source), b = byId.get(edge.target)
+          if (!a || !b) continue
+          const dx = b.x - a.x, dy = b.y - a.y, distance = Math.max(1, Math.hypot(dx, dy))
+          const force = (distance - 100) * 0.018
+          shifts[indices.get(a.qq)].x += dx / distance * force; shifts[indices.get(a.qq)].y += dy / distance * force
+          shifts[indices.get(b.qq)].x -= dx / distance * force; shifts[indices.get(b.qq)].y -= dy / distance * force
+        }
+        points.forEach((p, i) => {
+          p.x = Math.max(30, Math.min(330, p.x + Math.max(-8, Math.min(8, shifts[i].x))))
+          p.y = Math.max(30, Math.min(height - 40, p.y + Math.max(-8, Math.min(8, shifts[i].y))))
+        })
+      }
+      return { points, height }
+    }
+
+    function PersonaGraph({ toast }) {
+      const [data, setData] = useState(null)
+      const [error, setError] = useState('')
+      const [query, setQuery] = useState('')
+      const [page, setPage] = useState(0)
+      const [selected, setSelected] = useState('')
+      const load = async () => {
+        try {
+          const r = await get('/persona/graph')
+          if (!r.ok) throw new Error(r.message || '关系星图没读出来')
+          setData(r); setError('')
+          setSelected((qq) => r.nodes.some((p) => p.qq === qq) ? qq : '')
+        } catch (e) { setError(e.message) }
+      }
+      useEffect(() => { load() }, [])
+      const filtered = (data?.nodes || []).filter((p) => [p.qq, p.name].some((s) => String(s).toLowerCase().includes(query.trim().toLowerCase())))
+      const last = Math.max(0, Math.ceil(filtered.length / 48) - 1), current = Math.min(page, last)
+      const nodes = filtered.slice(current * 48, (current + 1) * 48)
+      const layout = useMemo(() => starPositions(nodes, data?.links || []), [data, query, current])
+      if (error) return h('div', { className: 'ab-note err' }, error, h(Btn, { small: true, onClick: load }, '重试'))
+      if (!data) return h(Empty, { text: '读取中…' })
+      const positions = new Map(layout.points.map((p) => [p.qq, p]))
+      const links = data.links.filter((e) => positions.has(e.source) && positions.has(e.target))
+      return h('div', { className: cx('ab-pm-split ab-pm-graph', selected && 'open') },
+        h('div', { className: 'ab-pm-list' }, h(Card, { title: '关系星图', desc: '圆越大，最近互动越亲近；线表示记下的人物关系。点一个人查看详情。', right: h(Btn, { small: true, kind: 'ghost', onClick: load }, '刷新') },
+          h('input', { className: 'ab-input', style: { width: '100%', boxSizing: 'border-box' }, 'aria-label': '在星图里找人', placeholder: '名字或 QQ 号', value: query, onChange: (e) => { setQuery(e.target.value); setPage(0) } }),
+          !nodes.length ? h(Empty, { text: '还没有符合条件的人物记忆' }) : h('div', { className: 'ab-pm-stars' }, h('svg', { viewBox: `0 0 360 ${layout.height}`, 'aria-label': '人物关系星图' },
+            links.map((edge) => { const a = positions.get(edge.source), b = positions.get(edge.target); return h('line', { key: edge.id, x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: 'var(--ab-sub)', strokeOpacity: 0.35, strokeWidth: 1.5 }, h('title', null, edge.text)) }),
+            layout.points.map((p) => h('g', { key: p.qq, role: 'button', tabIndex: 0, 'aria-label': `${p.name}，${p.interactions} 次互动，查看详情`, onClick: () => setSelected(p.qq), onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSelected(p.qq) } } },
+              h('title', null, `${p.name} (${p.qq}) · ${p.interactions} 次互动`),
+              h('circle', { cx: p.x, cy: p.y, r: 28, fill: 'transparent' }),
+              h('circle', { cx: p.x, cy: p.y, r: p.r, fill: faceColor(p.qq), stroke: p.isOwner ? 'var(--ab-sea)' : 'var(--ab-card)', strokeWidth: p.isOwner ? 3 : 1 }),
+              h('text', { x: p.x, y: p.y + 4, textAnchor: 'middle', fill: '#fff', fontSize: 12, pointerEvents: 'none' }, [...p.name][0] || '?'),
+              h('text', { x: p.x, y: p.y + p.r + 15, textAnchor: 'middle', fill: 'var(--ab-text)', fontSize: 11, pointerEvents: 'none' }, [...p.name].slice(0, 8).join('')))))),
+          h('div', { className: 'ab-flex ab-small ab-muted', style: { marginTop: 8 } },
+            `${filtered.length} 人 · 本页 ${links.length} 条关系`,
+            last ? h('span', null, h(Btn, { small: true, disabled: !current, onClick: () => setPage(current - 1) }, '上一页'), ` ${current + 1}/${last + 1} `, h(Btn, { small: true, disabled: current === last, onClick: () => setPage(current + 1) }, '下一页')) : null),
+          links.length ? h('details', { className: 'ab-small', style: { marginTop: 8 } }, h('summary', null, '本页的关系'), links.map((e) => h('div', { key: e.id }, e.text))) : null)),
+        selected ? h(PersonaDetail, { key: selected, qq: selected, toast, back: () => setSelected(''), onChanged: load }) : null)
+    }
+
+    /** 展开时才查；推荐没有编辑、删除和命中记账。 */
+    function RelatedMemories({ m }) {
+      const [open, setOpen] = useState(false)
+      const [list, setList] = useState(null)
+      const [error, setError] = useState('')
+      useEffect(() => {
+        let alive = true
+        if (!open) return () => { alive = false }
+        setList(null); setError('')
+        get('/memory/related?id=' + encodeURIComponent(m.id) + '&kind=' + encodeURIComponent(m.kind || '')).then((r) => {
+          if (!alive) return
+          if (!r.ok) setError(r.message || '相关记忆没读出来')
+          else setList(r.list || [])
+        }).catch((e) => { if (alive) setError(e.message) })
+        return () => { alive = false }
+      }, [open, m.id, m.text, m.related, m.at])
+      return h('div', { className: 'ab-pm-related' },
+        !open && (m.relatedItems || []).length ? h('div', { className: 'ab-muted' }, m.relatedItems.map((r) => h('div', { key: r.id }, '相关：' + r.text + (r.validityText ? '（' + r.validityText + '）' : '')))) : null,
+        h('button', { type: 'button', className: 'ab-pm-link', 'aria-expanded': open, onClick: () => setOpen(!open) }, open ? '收起相关记忆' : '看看相关记忆'),
+        open ? h('div', { 'aria-live': 'polite' }, error ? h('div', { className: 'ab-note err' }, error) : list === null ? '查找中…' : !list.length ? h('div', { className: 'ab-muted' }, '暂时没有相关的记忆') :
+          list.map((it) => h('article', { key: it.id }, h('div', { className: 'text' }, it.displayText || it.text),
+            h('div', { className: 'ab-muted' }, [it.reason, memoryDate(it.saidAt || it.at), it.chatId ? gistSource(it.chatId) : ''].filter(Boolean).join(' · '))))) : null)
     }
 
     function PersonaWall({ toast }) {
@@ -3775,7 +3902,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         const r = await get('/persona/overview')
         if (!r.ok) { setError(r.message || '人物列表没读出来'); return }
         setError(''); setList(r.list || [])
-        setSelected((cur) => cur || (window.innerWidth > 760 && r.list?.[0]?.qq) || '')
+        setSelected((cur) => (r.list || []).some((p) => p.qq === cur) ? cur : (window.innerWidth > 760 && r.list?.[0]?.qq) || '')
       }
       useEffect(() => { load() }, [])
       if (error) return h('div', { className: 'ab-note err' }, error)
@@ -3832,6 +3959,19 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         toast(r.message, r.ok ? 'ok' : 'err')
         await load(!r.ok)
       }
+      const forgetPerson = async () => {
+        if (!confirm(`删除关于「${personName(p)}」的全部人物记忆？画像、事实、关系、相处经验和标签都会清掉。`)) return
+        if (!confirm('再次确认：删除后无法恢复，过去的原话也会标为已忘，不会重新提炼。继续删除吗？')) return
+        const r = await post('/persona/person/delete', { qq })
+        toast(r.message, r.ok ? 'ok' : 'err')
+        if (r.ok) { back(); onChanged() }
+      }
+      const toggleNoMemory = async (enabled) => {
+        const deleteExisting = enabled && confirm('以后不再留下这个人的记忆。要同时删除已有记忆吗？点「确定」删除；点「取消」保留已有记忆，但不再使用。')
+        const r = await post('/persona/person/no-memory', { qq, enabled, deleteExisting })
+        toast(r.message, r.ok ? 'ok' : 'err')
+        if (r.ok) { setEditing(false); await load(); onChanged() }
+      }
       const traits = [['style', '说话方式'], ['persona', '性格'], ['handle', '怎么相处']]
       const live = data.notes.filter((m) => !memoryEnded(m))
       const old = data.notes.filter(memoryEnded)
@@ -3848,6 +3988,10 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             h('div', { className: 'meta' }, 'QQ ' + qq + ' · ' + (p.lastActive ? memoryDate(p.lastActive) + ' 来过' : '最近没来过')),
             h('p', { className: cx('quote', !p.text && 'empty') }, p.text || 'ta对这个人还没有整体印象。'),
             (p.tags || []).length ? h('div', { className: 'ab-pm-trait' }, '标签：' + p.tags.join(' · ')) : null)),
+        h(Card, { title: '是否留下记忆', desc: '讨厌 = 不爱搭理；不再记住 = 不留记忆。两者分别设置。消息仍照常进入聊天，她能看懂当下的对话。撤销后，以后的互动会恢复记忆。' },
+          h(Row, { label: '不再记住', hint: p.isOwner ? '主人始终会被记住。' : p.noMemory ? '已停止形成人物记忆，已有记忆也不会带进聊天。' : '可以随时开启或撤销。' },
+            h('input', { type: 'checkbox', role: 'switch', 'aria-label': '不再记住', checked: Boolean(p.noMemory && !p.isOwner), disabled: p.isOwner, onChange: (e) => toggleNoMemory(e.target.checked) })),
+          !p.isOwner ? h(Btn, { small: true, kind: 'ghost', onClick: forgetPerson }, '删除这个人') : null),
         editing ? h(Card, { title: '编辑印象' },
           h('div', { className: 'ab-pm-form' }, PERSON_FIELDS.map(([key, label]) => h('label', { key, className: key === 'text' ? 'full' : '' }, label,
             h('textarea', { className: 'ab-textarea', rows: key === 'text' ? 3 : 2, value: form[key], onChange: (e) => setForm({ ...form, [key]: e.target.value }) })))),
@@ -3874,18 +4018,19 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             if (res.ok) await load(true)
           } }, '删'))))) : null,
         h(Card, { title: `记得的事 ${live.length ? live.length : ''}`.trim() },
-          live.length ? live.map((m) => h(PersonaFact, { key: m.id, m, toast, onChanged: () => load(true) })) : h(Empty, { text: '还没记住关于这个人的事。' })),
+          live.length ? live.map((m) => h(PersonaFact, { key: m.id, m, tiers: data.factTiers, toast, onChanged: () => load(true) })) : h(Empty, { text: '还没记住关于这个人的事。' })),
         data.gists.length ? h(Card, { title: '留下的感觉' }, h(GistLine, { list: data.gists, toast, onChanged: () => load(true) })) : null,
         old.length ? h('details', { className: 'ab-card' }, h('summary', { className: 'ab-small' }, `已过时的 ${old.length} 条`),
-          h('div', { style: { marginTop: 8 } }, old.map((m) => h(PersonaFact, { key: m.id, m, toast, onChanged: () => load(true) })))) : null)
+          h('div', { style: { marginTop: 8 } }, old.map((m) => h(PersonaFact, { key: m.id, m, tiers: data.factTiers, toast, onChanged: () => load(true) })))) : null)
     }
 
-    function PersonaFact({ m, toast, onChanged }) {
+    function PersonaFact({ m, tiers = [], toast, onChanged }) {
       const [editing, setEditing] = useState(false)
       const [text, setText] = useState(m.text || '')
-      useEffect(() => { setText(m.text || '') }, [m.text])
+      const [tierValue, setTierValue] = useState(m.tier)
+      useEffect(() => { setText(m.text || ''); setTierValue(m.tier) }, [m.text, m.tier])
       const save = async () => {
-        const r = await post('/memory/update', { id: m.id, text: text.trim() })
+        const r = await post('/memory/update', { id: m.id, text: text.trim(), ...(tierValue !== m.tier && tierValue !== undefined ? { tier: tierValue } : {}) })
         toast(r.ok ? '改好了' : r.message, r.ok ? 'ok' : 'err')
         if (r.ok) { setEditing(false); await onChanged() }
       }
@@ -3896,7 +4041,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         if (r.ok) await onChanged()
       }
       const restore = async () => { const r = await post('/memory/restore', { id: m.id }); toast(r.ok ? '恢复了' : r.message, r.ok ? 'ok' : 'err'); if (r.ok) await onChanged() }
-      const tier = { 0: '永久', 1: '琐碎', 3: '重要', core: '长期印象' }[m.tier]
+      const tierLabel = m.tierLabel || ({ 4: '短暂', 1: '琐碎', 5: '小事', 2: '一般', 3: '重要', 0: '永久', core: '永久' })[m.tier] || ''
+      const tier = tierLabel + (m.tierDays !== null && m.tierDays !== undefined ? ` · ${m.tierDays}天` : '')
       const status = { hearsay: '听说', guess: '可能' }[m.status]
       return h('div', { className: cx('ab-pm-fact', memoryEnded(m) && 'old') },
         h('span', { className: cx('ab-pm-dot', m.tier !== undefined && m.tier !== 'core' && 't' + m.tier), 'aria-hidden': 'true' }),
@@ -3904,16 +4050,18 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           editing ? h('div', null,
             h('textarea', { className: 'ab-textarea', style: { width: '100%', boxSizing: 'border-box', minHeight: 60, fontFamily: 'inherit' }, value: text, onChange: (e) => setText(e.target.value) }),
             h('div', { className: 'ab-flex', style: { marginTop: 6 } },
+              m.tier !== 'core' ? h('select', { className: 'ab-select', 'aria-label': '事实档位', value: tierValue ?? '', onChange: (e) => setTierValue(e.target.value === '' ? undefined : Number(e.target.value)) },
+                m.tier === undefined ? h('option', { value: '' }, '沿用原有遗忘方式') : null,
+                tiers.map((t) => h('option', { key: t.id, value: t.id }, t.label + (t.days === null ? '' : ` · ${t.days}天`)))) : null,
               h(Btn, { small: true, kind: 'primary', disabled: !text.trim(), onClick: save }, '保存'),
-              h(Btn, { small: true, kind: 'ghost', onClick: () => { setText(m.text || ''); setEditing(false) } }, '取消')))
+              h(Btn, { small: true, kind: 'ghost', onClick: () => { setText(m.text || ''); setTierValue(m.tier); setEditing(false) } }, '取消')))
             : h('div', { className: 'text' }, m.displayText || m.text),
-          !editing && (m.relatedItems || []).length ? h('div', { className: 'ab-small ab-muted', style: { marginTop: 5 } },
-            m.relatedItems.map((r) => h('div', { key: r.id }, '相关：' + r.text + (r.validityText ? '（' + r.validityText + '）' : '')))) : null,
           !editing ? h('div', { className: 'sub' },
             h('span', null, m.validityText || memoryDate(m.saidAt || m.at)),
             tier ? h('span', { className: 'ab-pm-tag' }, tier) : null,
             status ? h('span', { className: 'ab-pm-tag warn' }, status) : null,
-            memoryEnded(m) && m.supersededText ? h('span', null, '现在是：' + m.supersededText) : null) : null),
+            memoryEnded(m) && m.supersededText ? h('span', null, '现在是：' + m.supersededText) : null) : null,
+          !editing ? h(RelatedMemories, { m }) : null),
         !editing ? h('div', { className: 'ab-pm-acts' },
           memoryEnded(m) ? h('button', { type: 'button', className: 'ab-pm-link', onClick: restore }, '恢复') : h('button', { type: 'button', className: 'ab-pm-link', onClick: () => setEditing(true) }, '改'),
           h('button', { type: 'button', className: 'ab-pm-link danger', onClick: remove }, '删')) : null)
@@ -3934,7 +4082,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         day = when
         return [head, h('div', { key: g.id, className: cx('ab-pm-tl-item', Number(g.level) >= 2 && 'feel') },
           h('div', { className: 'main' }, h('div', { className: 'text' }, g.displayText || g.text),
-            h('div', { className: 'from' }, [g.kind === 'seen' ? '看过的内容' : '', ...(g.platforms || []), showFrom && g.chatId ? gistSource(g.chatId) : ''].filter(Boolean).join(' · '))),
+            h('div', { className: 'from' }, [g.kind === 'seen' ? '看过的内容' : '', ...(g.platforms || []), showFrom && g.chatId ? gistSource(g.chatId) : ''].filter(Boolean).join(' · ')),
+            h(RelatedMemories, { m: g })),
           h('div', { className: 'ab-pm-acts' }, h('button', { type: 'button', className: 'ab-pm-link danger', onClick: () => remove(g) }, '删')))]
       }))
     }

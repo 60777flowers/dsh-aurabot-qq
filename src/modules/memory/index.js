@@ -27,7 +27,7 @@ export default {
   version: '1.0.0',
   description: '长期记忆：记事、想起、每日整理、小档案和相处经验',
   tab: 'mood',
-  files: ['features/memory.js', 'features/memory-store.js', 'features/memory-vector.js'],
+  files: ['features/memory.js', 'features/memory-rules.js', 'features/memory-store.js', 'features/memory-vector.js'],
   setup(api, { fetchImpl } = {}) {
     const { hub, http } = api.core
     const memory = createMemoryStore({ dsh: api.dsh, getConfig: api.config, hub, log: api.log, fetchImpl })
@@ -80,7 +80,7 @@ export default {
             // 非主人不能用 about 参数冒充「主人」：标签固定为「群名片(QQ)」，避免只显示 [主人]
             const senderLabel = chat.userId ? `${chat.nickname || '群友'}(${chat.userId})` : (chat.nickname || '')
             const aboutName = owner ? (about || chat.nickname || '') : senderLabel
-            return memory.add({ text: raw, aboutName, about: chat.userId || '', importance: importance ?? 0.5, source: 'tool', chatId: current })
+            return memory.add({ text: raw, aboutName, about: chat.userId || '', importance: importance ?? 0.5, source: 'tool', chatId: current, acquaintedOnly: true })
           },
         }),
         defineTool({
@@ -114,7 +114,7 @@ export default {
     api.route('/memories', async (req) => ({ ok: true, items: memory.list(http.query(req).q || '').slice(0, 300), stats: memory.stats() }))
     api.route('/memory/add', async (req) => {
       const b = await http.body(req)
-      return memory.add({ text: b.text, aboutName: b.aboutName || '', about: b.about || '', importance: b.importance ?? 0.6, tags: b.tags || [], source: 'panel', validFrom: b.validFrom, validUntil: b.validUntil })
+      return memory.add({ text: b.text, aboutName: b.aboutName || '', about: b.about || '', importance: b.importance ?? 0.6, tags: b.tags || [], source: 'panel', validFrom: b.validFrom, validUntil: b.validUntil, tier: b.tier })
     })
     api.route('/memory/update', async (req) => {
       const b = await http.body(req)
@@ -128,6 +128,12 @@ export default {
     api.route('/memory/recalls', async () => ({ ok: true, list: memory.recalls() }))
     api.route('/memory/restore', async (req) => memory.restore((await http.body(req)).id))
     api.route('/persona/overview', async () => ({ ok: true, list: memory.personaOverview() }))
+    api.route('/persona/graph', async () => ({ ok: true, ...memory.personaGraph() }))
+    api.route('/memory/platforms', async () => ({ ok: true, list: memory.platformStats() }))
+    api.route('/memory/related', async (req) => {
+      const { id, kind } = http.query(req)
+      return { ok: true, list: memory.recommendations({ id, kind }) }
+    })
     api.route('/persona/person', async (req) => {
       const detail = memory.personaPerson(http.query(req).qq || '')
       return detail ? { ok: true, ...detail } : { ok: false, message: '没有找到这个人' }
@@ -135,6 +141,11 @@ export default {
     api.route('/persona/person/save', async (req) => {
       const b = await http.body(req)
       return memory.savePersonaPerson(b.qq, b)
+    })
+    api.route('/persona/person/delete', async (req) => memory.deletePerson((await http.body(req)).qq))
+    api.route('/persona/person/no-memory', async (req) => {
+      const b = await http.body(req)
+      return memory.setNoMemory(b.qq, b.enabled, { deleteExisting: b.deleteExisting === true })
     })
     api.route('/memory/relations/delete', async (req) => memory.deleteRelation((await http.body(req)).id))
     api.route('/memory/chats', async () => ({ ok: true, list: memory.chats() }))
@@ -154,7 +165,7 @@ export default {
     api.route('/profiles', async () => ({ ok: true, list: memory.profiles() }))
     api.route('/profiles/save', async (req) => {
       const b = await http.body(req)
-      memory.setProfile(String(b.qq || ''), String(b.text || ''))
+      if (memory.setProfile(String(b.qq || ''), String(b.text || '')) === false) return { ok: false, message: '这个人尚未有直接互动，或已设置不再记住' }
       return { ok: true, message: b.text ? '小档案已保存' : '小档案已清空' }
     })
     api.route('/profiles/rebuild', async (req) => {
@@ -175,12 +186,12 @@ export default {
     })
     api.route('/style/save', async (req) => {
       const b = await http.body(req)
-      memory.setStyle(String(b.key || ''), (b.list || []).map((t) => String(t).trim()).filter(Boolean))
+      if (memory.setStyle(String(b.key || ''), (b.list || []).map((t) => String(t).trim()).filter(Boolean)) === false) return { ok: false, message: '这个人尚未有直接互动，或已设置不再记住' }
       return { ok: true, message: '说话方式已保存' }
     })
     api.route('/insights/save', async (req) => {
       const b = await http.body(req)
-      memory.setInsights(String(b.key || ''), (b.list || []).map((t) => String(t).trim()).filter(Boolean))
+      if (memory.setInsights(String(b.key || ''), (b.list || []).map((t) => String(t).trim()).filter(Boolean)) === false) return { ok: false, message: '这个人尚未有直接互动，或已设置不再记住' }
       return { ok: true, message: '相处经验已保存' }
     })
     api.route('/memory/extract', async (req) => {
