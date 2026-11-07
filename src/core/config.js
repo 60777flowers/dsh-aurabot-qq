@@ -286,6 +286,8 @@ export const DEFAULTS = {
       timeoutMs: 2000,
     },
     residentMaxChars: 1200, preferPersonal: true,
+    // 面板「记忆库」里四组进阶设置的折叠状态（true = 收起）；改动会立即写回配置文件
+    uiCollapsed: { people: true, tiers: true, vector: true, rerank: true },
   }, // residentMaxChars / preferPersonal 为本地保留配置；extractIdleMinutes 为 0 时关闭空闲提炼；手动记忆不受容量限制
   song: {
     enabled: false,

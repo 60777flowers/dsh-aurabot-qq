@@ -119,6 +119,15 @@ export default {
       const all = memory.recalls()
       return { ok: true, list: all.slice(0, limit), total: all.length, hasMore: all.length > limit }
     })
+    api.route('/memory/ui', async (req) => {
+      const b = await http.body(req)
+      const key = String(b.key || '')
+      const allowed = ['people', 'tiers', 'vector', 'rerank']
+      if (!allowed.includes(key)) return { ok: false, message: '未知的折叠区域' }
+      const cur = api.config().memory || {}
+      api.setConfig({ memory: { ...cur, uiCollapsed: { ...(cur.uiCollapsed || {}), [key]: Boolean(b.collapsed) } } })
+      return { ok: true, message: b.collapsed ? '已收起' : '已展开' }
+    })
     api.route('/memory/restore', async (req) => memory.restore((await http.body(req)).id))
     api.route('/persona/overview', async () => ({ ok: true, list: memory.personaOverview() }))
     api.route('/persona/person', async (req) => {

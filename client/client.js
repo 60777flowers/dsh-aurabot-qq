@@ -426,6 +426,9 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-deep:#9cc4f5;--ab-sea:#6
 .ab-muted{color:var(--ab-sub)}
 .ab-small{font-size:12px}
 .ab-section-title{font-size:12px;font-weight:600;color:var(--ab-dim);letter-spacing:.06em;margin:18px 2px 8px}
+.ab-fold{display:flex;align-items:center;gap:6px;width:100%;background:none;border:0;padding:0;font:inherit;text-align:left;cursor:pointer}
+.ab-fold:hover{color:var(--ab-text)}
+.ab-fold-arrow{width:12px;display:inline-block;flex:0 0 12px}
 .ab-sel{position:relative;display:inline-block;min-width:200px;max-width:100%}
 .ab-sel-btn{width:100%;display:flex;align-items:center;gap:8px;border:1px solid var(--ab-line-2);border-radius:9px;padding:6px 10px;background:var(--ab-card);color:var(--ab-text);font:inherit;cursor:pointer;text-align:left}
 .ab-sel-btn:hover{border-color:var(--ab-sky)}
@@ -3444,6 +3447,27 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const loadIns = () => getCached('/insights').then((r) => setStyles(r.styles || {}))
       const times = draft.memory.consolidateTimes || []
       const setTime = (i, v) => { const t = times.slice(); t[i] = v; setDraft(setPath(draft, 'memory.consolidateTimes', t)) }
+      // 四组进阶设置默认收起；展开/收起立即写回配置文件（memory.uiCollapsed）
+      const [fold, setFold] = useState(() => ({ ...(st.config.memory?.uiCollapsed || {}) }))
+      useEffect(() => { setFold((prev) => ({ ...prev, ...(st.config.memory?.uiCollapsed || {}) })) }, [st.config.memory?.uiCollapsed])
+      const toggleFold = async (key) => {
+        const next = !(fold[key] ?? true)
+        setFold((prev) => ({ ...prev, [key]: next }))
+        const r = await post('/memory/ui', { key, collapsed: next })
+        if (!r.ok) {
+          setFold((prev) => ({ ...prev, [key]: !next }))
+          toast(r.message || '没保存', 'err')
+        }
+      }
+      const section = (key, title, children) => {
+        const open = fold[key] === false // 没配置过 / true = 收起
+        return h('div', null,
+          h('button', {
+            type: 'button', className: 'ab-section-title ab-fold', 'aria-expanded': String(open),
+            title: open ? '收起' : '展开', onClick: () => toggleFold(key),
+          }, h('span', { className: 'ab-fold-arrow' }, open ? '▾' : '▸'), title),
+          open ? h('div', null, children) : null)
+      }
       const memOn = modOn(st, 'memory')
       useEffect(() => { if (memOn) { load(''); loadIns() } }, [memOn])
       useEffect(() => { if (!modOn(st, 'mood')) return; getCached('/mood/history').then((r) => setMoodHistory(r.history || [])).catch(() => {}) }, [modOn(st, 'mood')])
@@ -3509,26 +3533,28 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h(Row, { label: '记住最近多久的聊天' }, f.num('memory.shortTermHours', { min: 0.1, step: 0.1 }), h('span', { className: 'ab-muted' }, '小时')),
           h(Row, { label: '聊天停多久后整理' }, f.num('memory.shortTermIdleMinutes', { min: 0 }), h('span', { className: 'ab-muted' }, '分钟')),
           h(Row, { label: '刚才的印象最多多少字' }, f.num('memory.shortTermChars', { min: 1 }), h('span', { className: 'ab-muted' }, '字')),
-          h('div', { className: 'ab-section-title' }, '人物与群印象'),
-          h(Row, { label: '讨厌的人说话时不接的几率', hint: '消息仍会看到和记住；0% 表示照常回复，主人和一起说话的其他人不受影响' }, f.range('memory.dislikeSilence', 0, 1, 0.05, (v) => Math.round(v * 100) + '%')),
-          h(Row, { label: '每项人物印象最多多少字' }, f.num('memory.profileFieldChars', { min: 0 })),
-          h(Row, { label: '群里最多带几个人的画像' }, f.num('memory.profilePeople', { min: 0 })),
-          h(Row, { label: '人物画像总字数上限' }, f.num('memory.profileChars', { min: 0 })),
-          h(Row, { label: '记住群印象', hint: '只在对应的群里带上' }, f.sw('memory.chatImpression')),
-          h(Row, { label: '群印象字数上限' }, f.num('memory.chatImpressionChars', { min: 0 })),
-          h('div', { className: 'ab-section-title' }, '分层记忆与遗忘'),
-          h(Row, { label: '压缩旧聊天和记忆', hint: '原话到期前先压成梗概；失败或预算不足时保留原文' }, f.sw('memory.gistEnabled')),
-          h(Row, { label: '梗概过多少天变成印象' }, f.num('memory.gistDays', { min: 0 })),
-          h(Row, { label: '印象保留多少天' }, f.num('memory.impressionDays', { min: 0 })),
-          h(Row, { label: '每天最多压缩多少批', hint: '压缩同时占用下面的每日整理批次' }, f.num('memory.gistDailyBatches', { min: 0 })),
-          h(Row, { label: '每天整理和压缩共用批次' }, f.num('memory.extractDailyBatches', { min: 0 })),
-          h(Row, { label: '琐碎事实保留多少天' }, f.num('memory.tierDays.1', { min: 0 })),
-          h(Row, { label: '一般事实保留多少天' }, f.num('memory.tierDays.2', { min: 0 })),
-          h(Row, { label: '重要事实保留多少天', hint: '永久档不会自动过期；没有档位的老记忆沿用原来的遗忘方式' }, f.num('memory.tierDays.3', { min: 0 })),
-          h(Row, { label: '把细节浓缩成长期印象', hint: '具体的事慢慢淡忘，留下更概括的关系和感受（比如「主人很疼她，总惦记她爱吃的东西」）。这些印象不会被自动整理改掉，也不会过期；手动加的和你自己总结的不会被压缩。每次整理最多多两次模型调用，默认开。' }, f.sw('memory.compress')),
-          h(Row, { label: '多久以前的事开始浓缩', hint: '这些天以前的琐碎记忆才会被概括；最近的事先留着具体细节。默认 14 天' }, f.num('memory.compressAfterDays', { min: 1, max: 365 }), h('span', { className: 'ab-muted' }, '天')),
-          h(Row, { label: '私聊时想起别处的话', hint: '和你私聊时，带上她最近 24 小时在别的聊天里说过的话，每轮多占约 300 字。只进你的私聊，别处一律不带。默认关。' }, f.sw('memory.crossContext')),
-          h('div', { className: 'ab-section-title' }, '向量检索（实验性）'),
+          section('people', '人物与群印象', [
+            h(Row, { label: '讨厌的人说话时不接的几率', hint: '消息仍会看到和记住；0% 表示照常回复，主人和一起说话的其他人不受影响' }, f.range('memory.dislikeSilence', 0, 1, 0.05, (v) => Math.round(v * 100) + '%')),
+            h(Row, { label: '每项人物印象最多多少字' }, f.num('memory.profileFieldChars', { min: 0 })),
+            h(Row, { label: '群里最多带几个人的画像' }, f.num('memory.profilePeople', { min: 0 })),
+            h(Row, { label: '人物画像总字数上限' }, f.num('memory.profileChars', { min: 0 })),
+            h(Row, { label: '记住群印象', hint: '只在对应的群里带上' }, f.sw('memory.chatImpression')),
+            h(Row, { label: '群印象字数上限' }, f.num('memory.chatImpressionChars', { min: 0 })),
+          ]),
+          section('tiers', '分层记忆与遗忘', [
+            h(Row, { label: '压缩旧聊天和记忆', hint: '原话到期前先压成梗概；失败或预算不足时保留原文' }, f.sw('memory.gistEnabled')),
+            h(Row, { label: '梗概过多少天变成印象' }, f.num('memory.gistDays', { min: 0 })),
+            h(Row, { label: '印象保留多少天' }, f.num('memory.impressionDays', { min: 0 })),
+            h(Row, { label: '每天最多压缩多少批', hint: '压缩同时占用下面的每日整理批次' }, f.num('memory.gistDailyBatches', { min: 0 })),
+            h(Row, { label: '每天整理和压缩共用批次' }, f.num('memory.extractDailyBatches', { min: 0 })),
+            h(Row, { label: '琐碎事实保留多少天' }, f.num('memory.tierDays.1', { min: 0 })),
+            h(Row, { label: '一般事实保留多少天' }, f.num('memory.tierDays.2', { min: 0 })),
+            h(Row, { label: '重要事实保留多少天', hint: '永久档不会自动过期；没有档位的老记忆沿用原来的遗忘方式' }, f.num('memory.tierDays.3', { min: 0 })),
+            h(Row, { label: '把细节浓缩成长期印象', hint: '具体的事慢慢淡忘，留下更概括的关系和感受（比如「主人很疼她，总惦记她爱吃的东西」）。这些印象不会被自动整理改掉，也不会过期；手动加的和你自己总结的不会被压缩。每次整理最多多两次模型调用，默认开。' }, f.sw('memory.compress')),
+            h(Row, { label: '多久以前的事开始浓缩', hint: '这些天以前的琐碎记忆才会被概括；最近的事先留着具体细节。默认 14 天' }, f.num('memory.compressAfterDays', { min: 1, max: 365 }), h('span', { className: 'ab-muted' }, '天')),
+            h(Row, { label: '私聊时想起别处的话', hint: '和你私聊时，带上她最近 24 小时在别的聊天里说过的话，每轮多占约 300 字。只进你的私聊，别处一律不带。默认关。' }, f.sw('memory.crossContext')),
+          ]),
+          section('vector', '向量检索（实验性）', [
           h('div', { className: 'ab-note' }, '默认关闭。开启后会把记忆文字和查询文字发给填写的 embedding 服务，向量只存在本机；不填 Key 的本地服务（Ollama / LM Studio）也能用。服务出错或超时会自动只用关键词。'),
           h(Row, { label: '向量检索（实验性）', hint: '补充按意思找记忆；本机已同步 ' + (stats ? stats.vector || 0 : '–') + ' 条（可刷新页面查看）' }, f.sw('memory.vector.enabled')),
           h(Row, { label: '服务预设', hint: '只是帮你填地址和模型，填完还能改' },
@@ -3567,7 +3593,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             h(Btn, { small: true, onClick: async () => { const r = await post('/memory/vector/test', { text: '今天想吃白米饭' }); toast(r.ok ? `向量正常：${r.dims} 维，用时 ${r.ms}ms` : r.message) } }, '测试'),
             h(Btn, { small: true, kind: 'ghost', onClick: async () => { toast('正在按已保存的设置重建，条数多会分批…'); const r = await post('/memory/vector/rebuild', {}); toast(r.message); setTimeout(() => load(q), 1500) } }, '重建索引')),
           h('div', { className: 'ab-muted ab-small' }, '「测试」用已保存的设置；改完先点底部保存，再测试/重建。'),
-          h('div', { className: 'ab-section-title' }, '重排候选（Reranker，可选）'),
+          ]),
+          section('rerank', '重排候选（Reranker，可选）', [
           h('div', { className: 'ab-note' }, '对已经找出来的候选重新打分，把真正相关的排前面。默认关闭；超时或失败会退回原来的关键词 + 向量顺序，不影响回复。地址/Key 留空时复用上面的向量服务。'),
           h(Row, { label: '重排候选', hint: '候选多、说法含糊、记忆库大时提升更明显' }, f.sw('memory.rerank.enabled')),
           h(Row, { label: '模型', hint: '硅基 `BAAI/bge-reranker-v2-m3` 免费' }, f.text('memory.rerank.model', { size: 'wide', placeholder: 'BAAI/bge-reranker-v2-m3' })),
@@ -3582,6 +3609,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
               else toast(r.ok ? `重排正常：${r.model}，最高分 ${Number(r.score).toFixed(3)}` : r.message)
             } }, '测试重排')),
           h('div', { className: 'ab-muted ab-small' }, '重排只处理已经通过群聊/人物权限过滤的候选，不会看到不该带出的记忆。'),
+          ]),
           h('div', { className: 'ab-section-title' }, '手动加一条'),
           h('div', { className: 'ab-flex' },
             h('input', { className: 'ab-input', style: { flex: '2 1 260px' }, placeholder: '要ta记住的事，例如：主人不吃香菜', value: adding.text, onChange: (e) => setAdding({ ...adding, text: e.target.value }) }),
