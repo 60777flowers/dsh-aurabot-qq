@@ -276,9 +276,8 @@ export function search(idx, query, o = {}) {
     eligible.set(it.id, it)
     const aboutHit = Boolean(it.about) && aboutSet.has(String(it.about))
     const vector = vectors.get(it.id)
-    const aboutOnly = s <= 0 && vector === undefined && aboutHit
-    // 零关键词只能由向量或「私人优先」的关于人记忆召回
-    if (s <= 0 && vector === undefined && !(o.preferPersonal && aboutOnly)) continue
+    // 零关键词只能由向量召回；人物加分不能把完全无关的条目带进来
+    if (s <= 0 && vector === undefined) continue
     // 用原始内容相关度设门槛，人物加分和新近程度不能把无关候选抬过线。
     // 命中比例托底：常见话题的 BM25 会随库变大而下降，不能让精确关键词因此失忆。
     const relevance = Math.max(s / (1 + s), why.length / (q.length || 1), vector ?? 0)
@@ -286,10 +285,10 @@ export function search(idx, query, o = {}) {
     const importance = 0.6 + 0.8 * (Number(it.importance) || 0.5)
     let score = ((s > 0 ? s : (vector ?? 0)) + (aboutHit ? 0.8 : 0)) * importance * (0.55 + 0.45 * retention(it, now))
     if (o.preferPersonal && isPersonalMemory(it)) score *= 1.4
-    scored.push({ it, score, relevance, keyword: s, vector, aboutOnly, why: why.sort((x, y) => y[1] - x[1]).slice(0, 3).map((w) => w[0]).concat(aboutHit ? ['（关于这个人）'] : [], vector !== undefined ? ['（语义相关）'] : []) })
+    scored.push({ it, score, relevance, keyword: s, vector, why: why.sort((x, y) => y[1] - x[1]).slice(0, 3).map((w) => w[0]).concat(aboutHit ? ['（关于这个人）'] : [], vector !== undefined ? ['（语义相关）'] : []) })
   }
   // 关键词名次始终从关键词候选里算，向量候选不能改变原本的关键词排序。
-  const hits = scored.filter((x) => (x.keyword > 0 || (o.preferPersonal && x.aboutOnly)) && x.score >= (o.minScore ?? 0.35))
+  const hits = scored.filter((x) => x.keyword > 0 && x.score >= (o.minScore ?? 0.35))
   if (o.rrf !== false) {
     const ranks = (value) => {
       const sorted = [...hits].sort((a, b) => value(b) - value(a))
@@ -324,7 +323,7 @@ export function search(idx, query, o = {}) {
       have.add(id)
     }
   }
-  return selected.map(({ keyword, vector, aboutOnly, ...hit }) => hit)
+  return selected.map(({ keyword, vector, ...hit }) => hit)
 }
 
 /** 「私人记忆」：关于某个人的，或她自己 / 主人手动记的；B站、桌宠、空间日记等经历不算。 */
