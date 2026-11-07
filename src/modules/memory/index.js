@@ -94,7 +94,13 @@ export default {
       ]
     })
 
-    api.route('/memories', async (req) => ({ ok: true, items: memory.list(http.query(req).q || '').slice(0, 300), stats: memory.stats() }))
+    api.route('/memories', async (req) => {
+      const q = http.query(req)
+      const limit = Math.min(200, Math.max(1, Math.trunc(Number(q.limit) || 60)))
+      const offset = Math.max(0, Math.trunc(Number(q.offset) || 0))
+      const page = memory.page(q.q || '', { limit, offset })
+      return { ok: true, items: page.items, total: page.total, hasMore: page.hasMore, stats: memory.stats() }
+    })
     api.route('/memory/add', async (req) => {
       const b = await http.body(req)
       return memory.add({ text: b.text, aboutName: b.aboutName || '', about: b.about || '', importance: b.importance ?? 0.6, tags: b.tags || [], source: 'panel', validFrom: b.validFrom, validUntil: b.validUntil })
@@ -108,7 +114,11 @@ export default {
       return memory.remove(b.id)
     })
     api.route('/insights', async () => ({ ok: true, items: memory.insights(), styles: memory.styles() }))
-    api.route('/memory/recalls', async () => ({ ok: true, list: memory.recalls() }))
+    api.route('/memory/recalls', async (req) => {
+      const limit = Math.min(200, Math.max(1, Math.trunc(Number(http.query(req).limit) || 20)))
+      const all = memory.recalls()
+      return { ok: true, list: all.slice(0, limit), total: all.length, hasMore: all.length > limit }
+    })
     api.route('/memory/restore', async (req) => memory.restore((await http.body(req)).id))
     api.route('/persona/overview', async () => ({ ok: true, list: memory.personaOverview() }))
     api.route('/persona/person', async (req) => {

@@ -2672,7 +2672,8 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
     return hits.length ? Math.min(1, hits[0].score / 3) : 0
   }
 
-  function list(q) {
+  /** 排序/搜索后的原始条目 + 派生字段构造器；列表和分页共用。 */
+  function prepare(q) {
     const items = load().items
     // 面板里过时的也列出来（排在后面），能看到被哪条取代、能恢复
     const byId = new Map(items.map((m) => [m.id, m]))
@@ -2686,8 +2687,24 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
       relatedItems: (m.related || []).map((id) => byId.get(id)).filter((other) => other && isCurrent(other)).slice(0, RELATED_LIMIT)
         .map((other) => ({ id: other.id, text: other.text, validityText: validityText(other) })),
     })
-    if (!q) return items.slice().sort((a, b) => (Number(!isCurrent(a)) - Number(!isCurrent(b))) || b.at - a.at).map(withBy)
-    return search(index(), q, { limit: 100, minScore: 0.01, includeInvalid: true, includeGroup: true }).map((h) => withBy({ ...h.it, score: Number(h.score.toFixed(2)) }))
+    const raw = !q
+      ? items.slice().sort((a, b) => (Number(!isCurrent(a)) - Number(!isCurrent(b))) || b.at - a.at)
+      : search(index(), q, { limit: 100, minScore: 0.01, includeInvalid: true, includeGroup: true }).map((h) => ({ ...h.it, score: Number(h.score.toFixed(2)) }))
+    return { raw, withBy }
+  }
+
+  function list(q) {
+    const { raw, withBy } = prepare(q)
+    return raw.map(withBy)
+  }
+
+  /** 面板分页：先排序/搜索，再切片，只给当前页构造派生字段。 */
+  function page(q, { limit = 60, offset = 0 } = {}) {
+    const { raw, withBy } = prepare(q)
+    const start = Math.max(0, Math.trunc(Number(offset) || 0))
+    const take = Math.max(0, Math.min(200, Math.trunc(Number(limit) || 0)))
+    const slice = take ? raw.slice(start, start + take) : raw
+    return { items: slice.map(withBy), total: raw.length, hasMore: start + slice.length < raw.length }
   }
 
   // 换平台时允许下一次 tick 不等空闲；流水仍然只写入这个人的私聊记录。
@@ -2796,6 +2813,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
     },
     setInsights: (key, list) => setInsights(key, list.map((x) => (typeof x === 'string' ? { id: randomUUID().slice(0, 8), text: x, at: Date.now() } : x))),
     list,
+    page,
     stats: () => {
       const items = load().items
       const live = items.filter((m) => isCurrent(m))

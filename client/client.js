@@ -254,7 +254,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-deep:#9cc4f5;--ab-sea:#6
 .ab-sticker .x{position:absolute;top:4px;right:4px;opacity:0;transition:opacity .15s}
 .ab-sticker:hover .x{opacity:1}
 .ab-list{display:flex;flex-direction:column}
-.ab-li{display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-top:1px solid var(--ab-line)}
+.ab-li{display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-top:1px solid var(--ab-line);content-visibility:auto;contain-intrinsic-size:56px}
 .ab-li:first-child{border-top:0}
 .ab-li .meta{color:var(--ab-dim);font-size:11.5px;white-space:nowrap}
 .ab-li .body{flex:1;min-width:0;white-space:pre-wrap;word-break:break-word}
@@ -3348,12 +3348,27 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const [mem, setMem] = useState(null)
       const [stats, setStats] = useState(null)
       const [q, setQ] = useState('')
+      const [hasMore, setHasMore] = useState(false)
+      const [memTotal, setMemTotal] = useState(0)
+      const [moreBusy, setMoreBusy] = useState(false)
       const [capacityInput, setCapacityInput] = useState(null)
       const capacityBeforeEdit = useRef(null)
       const capacity = memoryCapacity(draft.memory.capacity)
       const capacityTotal = Object.values(capacity).reduce((sum, n) => sum + n, 0)
       const [adding, setAdding] = useState({ text: '', aboutName: '', importance: 0.6 })
-      const load = (query) => get('/memories?q=' + encodeURIComponent(query ?? q)).then((r) => { setMem(r.items || []); setStats(r.stats || null) })
+      const load = (query) => get('/memories?limit=60&offset=0&q=' + encodeURIComponent(query ?? q)).then((r) => {
+        setMem(r.items || []); setStats(r.stats || null); setHasMore(Boolean(r.hasMore)); setMemTotal(Number(r.total) || 0)
+      })
+      const loadMore = async () => {
+        if (moreBusy || !hasMore) return
+        setMoreBusy(true)
+        try {
+          const r = await get('/memories?limit=60&offset=' + ((mem || []).length) + '&q=' + encodeURIComponent(q))
+          if (r.ok === false) return toast(r.message || '加载失败', 'err')
+          setMem((prev) => [...(prev || []), ...(r.items || [])])
+          setHasMore(Boolean(r.hasMore)); setMemTotal(Number(r.total) || 0)
+        } finally { setMoreBusy(false) }
+      }
       const [styles, setStyles] = useState({})
       const loadIns = () => get('/insights').then((r) => setStyles(r.styles || {}))
       const times = draft.memory.consolidateTimes || []
@@ -3504,7 +3519,11 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h('div', { className: 'ab-section-title' }, '翻一翻'),
           h('input', { className: 'ab-input wide', placeholder: '搜索记忆，例如：白米饭、游戏、约定…', value: q, onChange: (e) => setQ(e.target.value) }),
           mem === null ? h(Empty, { icon: '⏳', text: '加载中…' }) : mem.length === 0 ? h(Empty, { icon: '🫧', text: q ? '没找到相关的记忆' : '还没有记住什么。' }) :
-            h('div', { className: 'ab-list', style: { marginTop: 8 } }, mem.map((m) => h(MemoryRow, { key: m.id, m, onChanged: () => load(), toast })))),
+            h('div', { className: 'ab-list', style: { marginTop: 8 } }, mem.map((m) => h(MemoryRow, { key: m.id, m, onChanged: () => load(), toast }))),
+          hasMore ? h('div', { className: 'ab-flex', style: { marginTop: 8 } },
+            h(Btn, { small: true, kind: 'ghost', disabled: moreBusy, onClick: loadMore },
+              moreBusy ? '加载中…' : `加载更多（已显示 ${mem ? mem.length : 0}/${memTotal}）`)) : null,
+        ),
         h(RecallLog, null),
         h(MemoryImport, { toast, onDone: () => load() }),
       )
@@ -3799,7 +3818,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     /** 最近几轮她想起了什么、因为哪些词想起来的。 */
     function RecallLog() {
       const [list, setList] = useState(null)
-      const load = () => get('/memory/recalls').then((r) => setList(r.list || []))
+      const load = () => get('/memory/recalls?limit=10').then((r) => setList(r.list || []))
       useEffect(() => { load() }, [])
       return h(Card, { title: '最近想起了什么', desc: '每次回复前ta会按对方说的话翻记忆。这里能看到最近几次想起了哪几条、是因为哪几个词想起来的；想不起来的那次也会列出来。', right: h(Btn, { small: true, kind: 'ghost', onClick: load }, '刷新') },
         !list ? h(Empty, { icon: '⏳', text: '加载中…' }) : list.length === 0 ? h(Empty, { icon: '🫧', text: '还没有记录（重启后从头记）。' }) :
@@ -5806,7 +5825,15 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         setSt(r)
         if (!dirtyRef.current) setDraft(clone(r.config))
       }, [])
-      useEffect(() => { reload(); const t = setInterval(reload, 5000); return () => clearInterval(t) }, [reload])
+      useEffect(() => {
+        reload()
+        // 全量 /state 较重：15 秒一次，页面在后台时跳过；切回前台立刻补一次
+        const tick = () => { if (document.visibilityState !== 'hidden') reload() }
+        const t = setInterval(tick, 15000)
+        const onVis = () => { if (document.visibilityState === 'visible') reload() }
+        document.addEventListener('visibilitychange', onVis)
+        return () => { clearInterval(t); document.removeEventListener('visibilitychange', onVis) }
+      }, [reload])
       const go = (id) => { setTab(id); try { localStorage.setItem('aurabot.tab', id) } catch (e) {} }
       // 标签多、一屏放不下：滚轮横着滚，选中的标签自动滚进视野
       const tabsRef = useRef(null)

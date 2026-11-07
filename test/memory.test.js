@@ -343,3 +343,17 @@ test('提炼：带每句话的时间，说话时间进记忆，去重不改它',
   mem.remove(m.id)
 })
 
+test('memory page: limit/offset 不重不漏，total/hasMore 正确', () => {
+  const all = mem.list('')
+  assert.ok(all.length >= 3, '前置数据够分页')
+  const p1 = mem.page('', { limit: 2, offset: 0 })
+  const p2 = mem.page('', { limit: 2, offset: 2 })
+  assert.equal(p1.total, all.length)
+  assert.equal(p1.items.length, 2)
+  assert.equal(p1.hasMore, true)
+  assert.deepEqual([...p1.items, ...p2.items].map((x) => x.id), all.slice(0, 4).map((x) => x.id))
+  const last = mem.page('', { limit: 2, offset: all.length - 1 })
+  assert.equal(last.items.length, 1)
+  assert.equal(last.hasMore, false)
+})
+
