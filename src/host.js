@@ -54,6 +54,7 @@ const PKG = (() => {
   try { return JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) } catch (error) { return { version: '?' } }
 })()
 const VERSION = PKG.version
+const STARTED_AT = Date.now()
 const PREFIX = '/aurabot/api'
 
 /**
@@ -892,6 +893,7 @@ export function apply(ctx) {
     return {
       ok: true,
       version: VERSION,
+      startedAt: STARTED_AT,
       apiVersion: API_VERSION,
       config: publicConfig(cfg),
       onebot: { state: onebotState, login, endpoint: { httpUrl: endpoint().httpUrl, wsUrl: endpoint().wsUrl }, problem: onebotState === 'connected' && loginOk ? '' : await connectionProblem(), warmup: gatewayWarmSince ? { since: gatewayWarmSince, seconds: Math.max(0, Math.round((Date.now() - gatewayWarmSince) / 1000)), phase: warmupPhase.phase || '', label: warmupPhase.label || '' } : null },
