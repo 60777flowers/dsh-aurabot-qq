@@ -1178,11 +1178,12 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const f = useField(draft, setDraft)
       const sl = st.snowluma
       const [procs, setProcs] = useState(null)
+      const [otherProcs, setOtherProcs] = useState([])
       const [moveTo, setMoveTo] = useState('')
       // 远端桌宠直连：对外地址的本地编辑态（null = 跟着服务端当前值显示）
       const [pubBase, setPubBase] = useState(null)
       const conn = st.onebot.state === 'connected'
-      const loadProcs = async () => { const r = await get('/snowluma/processes'); setProcs(r.list || []); if (!r.ok) toast(r.message) }
+      const loadProcs = async () => { const r = await get('/snowluma/processes'); setProcs(r.list || []); setOtherProcs(r.others || []); if (!r.ok) toast(r.message) }
       const act = (p) => async () => { const r = await post(p); toast(r.message || (r.ok ? '好了' : '没成功')); reload() }
       const login = st.onebot.login
       const external = draft.gateway === 'onebot'
@@ -1232,7 +1233,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
                 h('td', { style: p.nt === false ? { color: 'var(--ab-warn)' } : null }, (p.qqVersion || '—') + (p.nt === false ? '（非 NT）' : '')),
                 h('td', null, p.injected ? (p.connected ? '已接入' : '已注入，连接中') : '未接入'),
                 h('td', null, p.isBot ? h('span', { className: 'ab-badge' }, '机器人号') : h('span', { className: 'ab-muted ab-small' }, '不会碰')))))),
-            h('div', { className: 'ab-muted ab-small', style: { marginTop: 6 } }, '注：SnowLuma 只能注入 QQ NT 版（9.9 及以上）；老版 QQ 不会出现在这里，也接不进来。')) : null,
+            h('div', { className: 'ab-muted ab-small', style: { marginTop: 6 } }, '注：SnowLuma 只能注入 QQ NT 版（9.9 及以上）；老版 QQ 不会出现在这里，也接不进来。'),
+            otherProcs.length ? h('div', { className: 'ab-note warn', style: { marginTop: 8 } }, '另外看到 ' + otherProcs.length + ' 个老版 QQ（' + otherProcs.map((p) => (p.qqVersion || '版本未知') + '，pid ' + p.pid).join('；') + '）：SnowLuma 接不了，别用它登录机器人号。') : null) : null,
         ),
         h(Card, { title: 'QQ 会话放在哪', desc: '每个 QQ 私聊 / 群都是 DSH 里「Aurabot · QQ」工作区下的一个会话，ta在会话里读写文件也在这个文件夹。改了以后新开的会话放到新位置；已有的会话还在原来的地方，想全部挪过去就在「概览」点「重新开始所有 QQ 会话」。' },
           h(Row, { label: '工作区文件夹', hint: '填完整路径（比如 D:\\Aurabot\\qq-chats）；留空 = 默认位置' }, f.text('workspaceDir', { size: 'wide', placeholder: st.workspaceDir || '' })),

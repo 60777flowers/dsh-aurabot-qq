@@ -43,6 +43,29 @@ async function qqInfoOf(pid) {
   return { version: hit.version, path: hit.path, ...classifyQqVersion(hit.version, hit.path) }
 }
 
+// SnowLuma 只列出它能接的 QQ NT 进程；老版 QQ（非 NT）不会出现在它的列表里。
+// 这里独立扫一遍系统里的 QQ/TIM 进程，只挑出老版的用于提示，不参与注入。
+let oldQqCache = { at: 0, list: [] }
+async function oldQqProcesses() {
+  if (process.platform !== 'win32') return []
+  if (Date.now() - oldQqCache.at < 60_000) return oldQqCache.list
+  const script = `Get-Process -Name QQ,TIM -ErrorAction SilentlyContinue | ForEach-Object { $p = ''; try { $p = $_.Path } catch {}; $v = ''; if ($p) { try { $v = (Get-Item -LiteralPath $p).VersionInfo.FileVersion } catch {} }; Write-Output ("{0}|{1}|{2}" -f $_.Id, $p, $v) }`
+  const text = await new Promise((resolve) => {
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: 5000, windowsHide: true }, (error, stdout) => resolve(String(stdout || '')))
+  })
+  const seen = new Set()
+  const list = []
+  for (const row of parseProcessLines(text)) {
+    if (seen.has(row.pid)) continue
+    seen.add(row.pid)
+    const info = classifyQqVersion(row.version, row.path)
+    if (info.nt !== false) continue // 只报老版；NT 的交给 SnowLuma 列表
+    list.push({ pid: row.pid, path: row.path, qqVersion: row.version, nt: false, versionLabel: info.label })
+  }
+  oldQqCache = { at: Date.now(), list }
+  return list
+}
+
 export const DOWNLOAD_PAGE = 'https://github.com/SnowLuma/SnowLuma/releases/latest'
 
 function readJsonSafe(file) {
@@ -559,6 +582,8 @@ export function createSnowLumaManager({ getConfig, log, savePassword }) {
     start,
     stop,
     processes,
+    /** 系统里 SnowLuma 接不了的老版 QQ（只用于提示） */
+    oldQqProcesses,
     attachBot,
     confirmLogin,
     /** 手动点「接入机器人号」时清掉之前核对失败的记录，让主人能重试 */
