@@ -1492,6 +1492,8 @@ export function apply(ctx) {
     }
     const bots = procs.filter((p) => p.isBot)
     add('processes', 'QQ 进程', procs.length > 0, procs.length ? `看到 ${procs.length} 个 QQ，其中机器人号 ${bots.length} 个${bots.length ? '（pid ' + bots.map((p) => p.pid).join('/') + '）' : ''}` : consoleState.ok ? 'SnowLuma 没看到 QQ 进程' : '控制台没登录，没查', '先把机器人号的 QQ 登录上（别用管理员运行），再点「接入机器人号」。SnowLuma 只能注入 QQ NT 版（9.9 及以上）；老版 QQ 注入不了，先升级 QQ')
+    const oldBots = bots.filter((p) => p.nt === false)
+    if (oldBots.length) add('qq-version', 'QQ 版本', false, `检测到 QQ ${oldBots.map((p) => p.qqVersion || '版本未知').join('/')}（${oldBots[0].versionLabel || '老版'}）`, 'SnowLuma 只能注入 QQ NT 版（9.9 及以上）；请升级 QQ 后再接入（仍可点「接入机器人号」尝试，不会拦）')
     if (snowluma.lowIntegrity) add('integrity', 'SnowLuma 完整性级别', false, 'SnowLuma 以「低完整性」运行，看不到 QQ 进程', '把 SnowLuma 重新解压到普通目录（例如 D:\\SnowLuma），在「连接」页改好目录再启动')
     const connected = onebotState === 'connected'
     add('gateway', '插件 ↔ OneBot 网关', connected, connected ? '已连接' : String(onebotState || '未连接'), '连不上时看上面几项，或者点「接入机器人号」重试')

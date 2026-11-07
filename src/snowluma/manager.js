@@ -10,6 +10,35 @@ import { existsSync, readFileSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import net from 'node:net'
 import { registerSecret } from '../core/redact.js'
+import { classifyQqVersion } from './qq-version.js'
+
+// QQ.exe 文件版本读取（Windows）：只用于「老版 QQ」软提示；失败/超时一律当未知，不影响注入。
+const qqVersionCache = new Map()
+const qqVersionPending = new Map()
+function fileVersionOf(exePath) {
+  if (process.platform !== 'win32' || !exePath) return Promise.resolve('')
+  const cached = qqVersionCache.get(exePath)
+  if (cached && Date.now() - cached.at < 10 * 60_000) return Promise.resolve(cached.version)
+  // 同一个 exe 同时被多个进程行读到（QQ 有多个子进程）时只启动一次 PowerShell
+  if (qqVersionPending.has(exePath)) return qqVersionPending.get(exePath)
+  const promise = new Promise((resolve) => {
+    const p = String(exePath).replace(/'/g, "''")
+    const script = `$v=(Get-Item -LiteralPath '${p}').VersionInfo; Write-Output ($v.FileVersion + '|' + $v.ProductVersion)`
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: 4000, windowsHide: true }, (error, stdout) => {
+      const text = String(stdout || '').trim()
+      const version = text.split('|').map((s) => s.trim()).find((s) => /^\d+(\.\d+){2,3}$/.test(s)) || ''
+      qqVersionCache.set(exePath, { version, at: Date.now() })
+      resolve(version)
+    })
+  }).finally(() => qqVersionPending.delete(exePath))
+  qqVersionPending.set(exePath, promise)
+  return promise
+}
+
+async function qqInfoOf(exePath) {
+  const version = await fileVersionOf(exePath)
+  return { version, ...classifyQqVersion(version, exePath) }
+}
 import { snowlumaCompat } from './compat.js'
 
 export const DOWNLOAD_PAGE = 'https://github.com/SnowLuma/SnowLuma/releases/latest'
@@ -337,9 +366,10 @@ export function createSnowLumaManager({ getConfig, log, savePassword }) {
 
   async function processes() {
     const j = await api('/api/processes')
-    return (j.list || []).map((p) => ({
+    const rows = (j.list || []).map((p) => ({
       pid: p.pid,
       name: p.name,
+      path: p.path || '',
       injected: Boolean(p.injected),
       connected: Boolean(p.connected),
       loggedIn: Boolean(p.loggedIn),
@@ -349,6 +379,14 @@ export function createSnowLumaManager({ getConfig, log, savePassword }) {
       nickname: p.account?.nickname || '',
       isBot: String(p.account?.uin ?? p.uin ?? '') === String(getConfig().botQQ),
     }))
+    // 版本读取只做软提示：一个 exe 只读一次（缓存 10 分钟），读不到就是未知
+    await Promise.all(rows.map(async (row) => {
+      const info = await qqInfoOf(row.path)
+      row.qqVersion = info.version
+      row.nt = info.nt
+      row.versionLabel = info.label
+    }))
+    return rows
   }
 
   const QQ_NT_HINT = '如果 QQ 是老版本（非 NT），SnowLuma 注入不了，请升级到 QQ NT 版（9.9 及以上）'
@@ -370,19 +408,22 @@ export function createSnowLumaManager({ getConfig, log, savePassword }) {
       lastAttach = { at: Date.now(), ok: false, message: reason + ntHint }
       return lastAttach
     }
+    const qq = await qqInfoOf(proc.path)
+    // 老版 QQ 只提示、不拦：仍然尝试注入，失败时把检测到的版本一起说出来
+    const versionNote = qq.nt === false ? `（检测到 QQ ${qq.version || '版本未知'}，${qq.versionLabel}；SnowLuma 只能注入 NT 版）` : ''
     if (unverified) pendingVerify = { pid: proc.pid, at: Date.now() }
     const note = unverified ? '（SnowLuma 没报账号，连上后会核对是不是机器人号，不是就立刻断开）' : ''
     if (proc.injected && proc.connected) {
-      lastAttach = { at: Date.now(), ok: true, message: `机器人号（pid ${proc.pid}）已接入${note}` }
+      lastAttach = { at: Date.now(), ok: true, message: `机器人号（pid ${proc.pid}）已接入${note}${versionNote}` }
       return lastAttach
     }
     try {
       const r = await api(`/api/processes/${proc.pid}/load`, { method: 'POST' })
       const ok = Boolean(r.success)
-      lastAttach = { at: Date.now(), ok, message: ok ? `已给 QQ 进程（pid ${proc.pid}）注入${note}` : `${r.message || '注入失败'}（${QQ_NT_HINT}）` }
+      lastAttach = { at: Date.now(), ok, message: ok ? `已给 QQ 进程（pid ${proc.pid}）注入${note}${versionNote}` : `${r.message || '注入失败'}（${QQ_NT_HINT}）${versionNote}` }
       log.info(lastAttach.message)
     } catch (error) {
-      lastAttach = { at: Date.now(), ok: false, message: `注入失败：${error.message}（${QQ_NT_HINT}）` }
+      lastAttach = { at: Date.now(), ok: false, message: `注入失败：${error.message}（${QQ_NT_HINT}）${versionNote}` }
     }
     return lastAttach
   }
