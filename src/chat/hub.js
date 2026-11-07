@@ -616,10 +616,12 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
   async function createSession(chat, level, turnToken) {
     const failure = sessionFailure(chat.chatId)
     if (failure && Date.now() < failure.until) throw backoffError(chat.chatId, failure)
-    if (sessionCreating.has(chat.chatId)) return sessionCreating.get(chat.chatId)
+    // 同一个聊天里「正式」和「调试」是两条会话；按模式分开去重，切模式时不能被在途的旧创建挡住。
+    const key = chat.chatId + ':' + (getConfig().debug ? 'debug' : 'live')
+    if (sessionCreating.has(key)) return sessionCreating.get(key)
     const task = Promise.resolve().then(() => createSessionNow(chat, level, turnToken))
-    sessionCreating.set(chat.chatId, task)
-    try { return await task } finally { if (sessionCreating.get(chat.chatId) === task) sessionCreating.delete(chat.chatId) }
+    sessionCreating.set(key, task)
+    try { return await task } finally { if (sessionCreating.get(key) === task) sessionCreating.delete(key) }
   }
 
   async function createSessionNow(chat, level, turnToken) {
