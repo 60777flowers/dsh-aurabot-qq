@@ -1469,6 +1469,8 @@ export function apply(ctx) {
   route('/snowluma/diagnose', async () => {
     const items = []
     const add = (id, label, ok, detail, hint = '') => items.push({ id, label, ok: Boolean(ok), detail: String(detail || ''), hint })
+    /** 橙色提示项：不计入整体 ok（软提示，不拦操作） */
+    const addWarn = (id, label, detail, hint = '') => items.push({ id, label, ok: true, warn: true, detail: String(detail || ''), hint })
     const inst = snowluma.detect()
     add('installed', 'SnowLuma 目录', inst.installed, inst.installed ? `${inst.dir}${inst.version ? '（v' + inst.version + '）' : ''}` : inst.reason, '在向导第 2 步填解压目录：纯英文路径，目录里能直接看到 index.mjs')
     if (inst.installed) {
@@ -1501,7 +1503,7 @@ export function apply(ctx) {
     if (oldBots.length) add('qq-version', 'QQ 版本', false, `检测到 QQ ${oldBots.map((p) => p.qqVersion || '版本未知').join('/')}（${oldBots[0].versionLabel || '老版'}）`, 'SnowLuma 只能注入 QQ NT 版（9.9 及以上）；请升级 QQ 后再接入（仍可点「接入机器人号」尝试，不会拦）')
     let otherOld = []
     try { otherOld = (await snowluma.oldQqProcesses()).filter((p) => !procs.some((x) => x.pid === p.pid)) } catch (error) {}
-    if (otherOld.length) add('old-qq', '老版 QQ 进程', false, `另外看到 ${otherOld.length} 个老版 QQ（${otherOld.map((p) => p.qqVersion || '版本未知').join('/')}）`, 'SnowLuma 只能注入 QQ NT 版（9.9 及以上）；老版 QQ 只能当普通客户端，别用它登录机器人号')
+    if (otherOld.length) addWarn('old-qq', '老版 QQ 进程', `另外看到 ${otherOld.length} 个老版 QQ（${otherOld.map((p) => p.qqVersion || '版本未知').join('/')}）`, 'SnowLuma 只能注入 QQ NT 版（9.9 及以上）；老版 QQ 只能当普通客户端，别用它登录机器人号')
     if (snowluma.lowIntegrity) add('integrity', 'SnowLuma 完整性级别', false, 'SnowLuma 以「低完整性」运行，看不到 QQ 进程', '把 SnowLuma 重新解压到普通目录（例如 D:\\SnowLuma），在「连接」页改好目录再启动')
     const connected = onebotState === 'connected'
     add('gateway', '插件 ↔ OneBot 网关', connected, connected ? '已连接' : String(onebotState || '未连接'), '连不上时看上面几项，或者点「接入机器人号」重试')
