@@ -279,14 +279,30 @@ export function apply(ctx) {
   }
   // 网关未就绪时先攒着：只有「确定没发出去」的消息才入队，连接后按 TTL 补发。
   const outbox = createOutbox({ log: logger.child('outbox') })
+  // 网关预热：从第一次 connecting 到 connected 之间的时间，用于面板显示「已等 N 秒」而不是干等
+  let gatewayWarmSince = 0
+  let gatewayLastLogAt = 0
+  // 预热阶段：QQ 没开 / 正在登录 / 已登录未接入 / 已接入等 OneBot / OneBot 已监听
+  let warmupPhase = { phase: '', label: '' }
+  let warmupProbing = false
   const onebot = createOneBotClient({
     endpoint,
     log: logger.child('onebot'),
     onState: (s, d) => {
       onebotState = s
+      if (s === 'connected' || s === 'stopped' || s === 'unconfigured') { gatewayWarmSince = 0; warmupPhase = { phase: '', label: '' } }
+      else if (!gatewayWarmSince && cfg.enabled) gatewayWarmSince = Date.now()
       if (s !== 'connected') { loginOk = false; pendingEvents = [] }
       else checkLogin().then(() => { if (loginOk) flushOutbox() }).catch((error) => log.warn('核对登录号出错：', error.message))
-      logger.child('onebot').info(`QQ 网关：${s}${d ? '（' + d + '）' : ''}`)
+      // 预热阶段 connecting/disconnected 会每 3 秒来回刷：首次和每 20 秒记一条 info，其余进 debug
+      const line = `QQ 网关：${s}${d ? '（' + d + '）' : ''}`
+      const now = Date.now()
+      if (s === 'connected' || s === 'stopped' || s === 'unconfigured' || now - gatewayLastLogAt > 20_000) {
+        logger.child('onebot').info(line)
+        gatewayLastLogAt = now
+      } else {
+        logger.child('onebot').debug(line)
+      }
       mods?.emit('onebot/state', s)
     },
     onEvent: (ev) => {
@@ -312,19 +328,45 @@ export function apply(ctx) {
   }
   // 连接后漏掉的、或补发中途又断网的，定时再试；没连接时直接返回。
   ctx.effect(() => ctx.interval(() => { flushOutbox().catch(() => {}) }, 10_000), 'aurabot: 补发队列')
-  const groupRoles = createGroupRoles({ onebot, getConfig, log: logger.child('chat') })
 
-  async function flushOutbox () {
-    if (onebotState !== 'connected' || !loginOk) return
+  /** 预热阶段变化时记一条 info（同一阶段不重复刷）。 */
+  function setWarmupPhase (phase, label) {
+    if (warmupPhase.phase === phase) return
+    warmupPhase = { phase, label }
+    if (gatewayWarmSince) logger.child('onebot').info(`网关预热：${label}`)
+  }
+  /**
+   * 每 2 秒看一次卡在哪一步：QQ 没开 → QQ 在登录 → 已登录没接入 → 已接入等 OneBot 会话 → OneBot 已监听。
+   * 只在预热期跑；连上/关掉/超过 5 分钟就停。
+   */
+  async function probeWarmup () {
+    if (warmupProbing || !gatewayWarmSince || onebotState === 'connected') return
+    if (!cfg.enabled || cfg.gateway !== 'snowluma') return
+    if (Date.now() - gatewayWarmSince > 300_000) return
+    warmupProbing = true
     try {
-      const r = await outbox.flush((action, params, opts) => onebot.call(action, params, { ...opts, retries: 0 }))
-      if (r.sent || r.dropped || r.left) log.info(`补发队列：成功 ${r.sent}，丢弃 ${r.dropped}，剩余 ${r.left}`)
+      const inst = snowluma.detect()
+      if (!inst.installed) return setWarmupPhase('no-snowluma', 'SnowLuma 还没装好')
+      const ep = endpoint()
+      let wsPort = 0
+      try { wsPort = Number(new URL(ep.wsUrl).port) || 0 } catch (error) {}
+      if (wsPort && await tcpOpen(wsPort)) return setWarmupPhase('onebot-ready', `OneBot 已经在 ${wsPort} 端口监听，正在握手`)
+      let list
+      try { list = await snowluma.processes() } catch (error) { return setWarmupPhase('snowluma-wait', 'SnowLuma 还没起来或控制台没响应') }
+      const bots = list.filter((p) => p.isBot)
+      if (!bots.length) return setWarmupPhase('no-qq', '没看到机器人号的 QQ 进程：先把机器人号 QQ 登录上')
+      const logged = bots.find((p) => p.loggedIn)
+      if (!logged) return setWarmupPhase('qq-logging-in', '看到 QQ 进程了，等它登录完成')
+      if (!logged.injected) return setWarmupPhase('not-attached', 'QQ 已登录，还没接入机器人号（点「接入机器人号」）')
+      return setWarmupPhase('session-starting', 'QQ 已登录且已接入，等 OneBot 会话启动')
     } catch (error) {
-      logger.child('onebot').warn('补发队列出错：', error.message)
+      setWarmupPhase('unknown', '正在等网关（' + error.message + '）')
+    } finally {
+      warmupProbing = false
     }
   }
-  // 连接后漏掉的、或补发中途又断网的，定时再试；没连接时直接返回。
-  ctx.effect(() => ctx.interval(() => { flushOutbox().catch(() => {}) }, 10_000), 'aurabot: 补发队列')
+  ctx.effect(() => ctx.interval(() => { probeWarmup().catch(() => {}) }, 2000), 'aurabot: 网关预热探测')
+  const groupRoles = createGroupRoles({ onebot, getConfig, log: logger.child('chat') })
   const local = createLocal({ getConfig, log: logger })
   const mutes = createMutes()
 
@@ -1084,9 +1126,9 @@ export function apply(ctx) {
       version: VERSION,
       apiVersion: API_VERSION,
       config: publicConfig(cfg),
-      onebot: { state: onebotState, login, endpoint: { httpUrl: endpoint().httpUrl, wsUrl: endpoint().wsUrl }, problem: onebotState === 'connected' && loginOk ? '' : await connectionProblem() },
+      onebot: { state: onebotState, login, endpoint: { httpUrl: endpoint().httpUrl, wsUrl: endpoint().wsUrl }, problem: onebotState === 'connected' && loginOk ? '' : await connectionProblem(), warmup: gatewayWarmSince ? { since: gatewayWarmSince, seconds: Math.max(0, Math.round((Date.now() - gatewayWarmSince) / 1000)), phase: warmupPhase.phase || '', label: warmupPhase.label || '' } : null },
       outbox: outbox.status(),
-      snowluma: { ...inst, running, consented: await consented(running), owns: snowluma.ownsProcess, lastAttach: snowluma.lastAttach, downloadPage: DOWNLOAD_PAGE, webui: snowluma.webuiUrl() },
+      snowluma: { ...inst, compat: snowluma.compat(), running, consented: await consented(running), owns: snowluma.ownsProcess, lastAttach: snowluma.lastAttach, downloadPage: DOWNLOAD_PAGE, webui: snowluma.webuiUrl() },
       stats: hub.stats(),
       // 模块关着时给个空壳，面板照常显示
       mood: use('mood')?.state?.() ?? { value: 0, label: '心情模块关着', reason: '', history: [] },
@@ -1771,7 +1813,11 @@ export function apply(ctx) {
     wrongAccount = ''
     snowluma.clearRejected()
     const r = await snowluma.attachBot()
-    if (cfg.enabled && onebot.state === 'stopped') onebot.start()
+    // 刚注入完 OneBot 会话可能还没起：立刻再试一次 WS，比等 3 秒轮询更快
+    if (cfg.enabled && r.ok && onebotState !== 'connected') {
+      if (onebot.state === 'stopped') onebot.start()
+      else onebot.restart()
+    }
     return r
   })
   route('/commands', async () => ({ ok: true, list: commandList(mods.commands()) }))
@@ -1848,14 +1894,25 @@ export function apply(ctx) {
     return { ...(await overview()), message: '设置完成，大肥鱼可以上线啦' }
   })
   route('/snowluma/processes', async () => {
-    try { return { ok: true, list: await snowluma.processes() } } catch (error) { return { ok: false, message: error.message, list: [] } }
+    try {
+      const list = await snowluma.processes()
+      let others = []
+      try { others = (await snowluma.oldQqProcesses()).filter((p) => !list.some((x) => x.pid === p.pid)) } catch (error) {}
+      return { ok: true, list, others }
+    } catch (error) { return { ok: false, message: error.message, list: [], others: [] } }
   })
   /** 一键诊断：把「连不上 QQ」卡在哪一步逐项列出来，用户发截图就能定位。 */
   route('/snowluma/diagnose', async () => {
     const items = []
     const add = (id, label, ok, detail, hint = '') => items.push({ id, label, ok: Boolean(ok), detail: String(detail || ''), hint })
+    /** 橙色提示项：不计入整体 ok（软提示，不拦操作） */
+    const addWarn = (id, label, detail, hint = '') => items.push({ id, label, ok: true, warn: true, detail: String(detail || ''), hint })
     const inst = snowluma.detect()
     add('installed', 'SnowLuma 目录', inst.installed, inst.installed ? `${inst.dir}${inst.version ? '（v' + inst.version + '）' : ''}` : inst.reason, '在向导第 2 步填解压目录：纯英文路径，目录里能直接看到 index.mjs')
+    if (inst.installed) {
+      const compat = snowluma.compat()
+      add('version', 'SnowLuma 版本', compat.status === 'ok', `v${inst.version || '?'}（${compat.label}）`, compat.status === 'ok' ? '' : `${compat.message} 下载页：${DOWNLOAD_PAGE}`)
+    }
     const running = await snowluma.running()
     add('running', 'SnowLuma 运行状态', running, running ? '控制台有响应：' + snowluma.webuiUrl() : '控制台没有响应', '点「启动 SnowLuma」；仍然起不来就看「日志」页的 snowluma 段')
     let consoleState = { ok: false, message: '控制台没在跑，跳过' }
@@ -1877,7 +1934,12 @@ export function apply(ctx) {
       try { procs = await snowluma.processes() } catch (error) {}
     }
     const bots = procs.filter((p) => p.isBot)
-    add('processes', 'QQ 进程', procs.length > 0, procs.length ? `看到 ${procs.length} 个 QQ，其中机器人号 ${bots.length} 个${bots.length ? '（pid ' + bots.map((p) => p.pid).join('/') + '）' : ''}` : consoleState.ok ? 'SnowLuma 没看到 QQ 进程' : '控制台没登录，没查', '先把机器人号的 QQ 登录上（别用管理员运行），再点「接入机器人号」')
+    add('processes', 'QQ 进程', procs.length > 0, procs.length ? `看到 ${procs.length} 个 QQ，其中机器人号 ${bots.length} 个${bots.length ? '（pid ' + bots.map((p) => p.pid).join('/') + '）' : ''}` : consoleState.ok ? 'SnowLuma 没看到 QQ 进程' : '控制台没登录，没查', '先把机器人号的 QQ 登录上（别用管理员运行），再点「接入机器人号」。SnowLuma 只能注入 QQ NT 版（9.9 及以上）；老版 QQ 注入不了，先升级 QQ')
+    const oldBots = bots.filter((p) => p.nt === false)
+    if (oldBots.length) add('qq-version', 'QQ 版本', false, `检测到 QQ ${oldBots.map((p) => p.qqVersion || '版本未知').join('/')}（${oldBots[0].versionLabel || '老版'}）`, 'SnowLuma 只能注入 QQ NT 版（9.9 及以上）；请升级 QQ 后再接入（仍可点「接入机器人号」尝试，不会拦）')
+    let otherOld = []
+    try { otherOld = (await snowluma.oldQqProcesses()).filter((p) => !procs.some((x) => x.pid === p.pid)) } catch (error) {}
+    if (otherOld.length) addWarn('old-qq', '老版 QQ 进程', `另外看到 ${otherOld.length} 个老版 QQ（${otherOld.map((p) => p.qqVersion || '版本未知').join('/')}）`, 'SnowLuma 只能注入 QQ NT 版（9.9 及以上）；老版 QQ 只能当普通客户端，别用它登录机器人号')
     if (snowluma.lowIntegrity) add('integrity', 'SnowLuma 完整性级别', false, 'SnowLuma 以「低完整性」运行，看不到 QQ 进程', '把 SnowLuma 重新解压到普通目录（例如 D:\\SnowLuma），在「连接」页改好目录再启动')
     const connected = onebotState === 'connected'
     add('gateway', '插件 ↔ OneBot 网关', connected, connected ? '已连接' : String(onebotState || '未连接'), '连不上时看上面几项，或者点「接入机器人号」重试')
@@ -1906,6 +1968,12 @@ export function apply(ctx) {
     }
     if (wrongAccount) return `连上的是 ${wrongAccount}，不是机器人号 ${cfg.botQQ}，已经断开：只登着机器人号那个 QQ，再点「接入机器人号」`
     if (la && la.at && !la.ok && la.message) return '接入机器人号没成功：' + la.message
+    // 预热期（SnowLuma 已起、OneBot 会话还没就绪）别说成「连不上」，把正在等什么说清楚
+    if (gatewayWarmSince && Date.now() - gatewayWarmSince < 300_000) {
+      const sec = Math.max(1, Math.round((Date.now() - gatewayWarmSince) / 1000))
+      const label = warmupPhase.label || '正在等 SnowLuma 的 OneBot 会话'
+      return `网关预热中（已等 ${sec} 秒）：${label}。QQ 登录完成后会自动连上；想看每一步点「一键诊断」`
+    }
     return `连 ${ep.wsUrl || ep.httpUrl} 没连上：确认机器人号的 QQ 开着、已经登录，并且 SnowLuma 控制台里这个号显示已接入`
   }
   route('/onebot/reconnect', async () => {

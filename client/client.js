@@ -959,6 +959,24 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     }
     const copy = (text, toast, msg) => { try { navigator.clipboard.writeText(text); if (msg) toast(msg, 'ok') } catch (e) { toast('复制失败，手动选中复制吧', 'err') } }
 
+    // SnowLuma 版本提醒：只针对「低于最低支持版本」弹一次；升级到 >= 2.3.4 或点过「不再提示」就不再出现
+    const SNOWLUMA_WARN_KEY = 'aurabot.snowlumaCompatDismissed'
+    function SnowLumaCompatBanner({ st, go }) {
+      const compat = st && st.snowluma && st.snowluma.compat
+      const [dismissed, setDismissed] = useState(() => { try { return localStorage.getItem(SNOWLUMA_WARN_KEY) === '1' } catch (e) { return false } })
+      if (!compat || compat.status !== 'outdated' || dismissed) return null
+      const dismiss = () => { try { localStorage.setItem(SNOWLUMA_WARN_KEY, '1') } catch (e) {} setDismissed(true) }
+      return h('div', { className: 'ab-note warn', style: { marginTop: 12 } },
+        h('div', { className: 'ab-flex', style: { alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+          h('b', null, '建议升级 SnowLuma'),
+          h('div', { className: 'ab-spacer' }),
+          h(Btn, { small: true, kind: 'ghost', onClick: dismiss }, '不再提示')),
+        h('div', { style: { marginTop: 6 } }, compat.message),
+        h('div', { className: 'ab-flex', style: { marginTop: 8, gap: 8, flexWrap: 'wrap' } },
+          h(Btn, { small: true, kind: 'primary', onClick: () => window.open(st.snowluma.downloadPage, '_blank') }, '打开下载页 ↗'),
+          h(Btn, { small: true, onClick: () => go('connect') }, '去连接页看看')))
+    }
+
     /** 更新提示：GitHub 上有新版本时给「跟当前系统/形态对应」的命令、链接和更新按钮；刚更新完显示一次这次更新了什么。 */
     function UpdateNotes({ st, toast }) {
       const [upd, setUpd] = useState(null)
@@ -1322,11 +1340,12 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const f = useField(draft, setDraft)
       const sl = st.snowluma
       const [procs, setProcs] = useState(null)
+      const [otherProcs, setOtherProcs] = useState([])
       const [moveTo, setMoveTo] = useState('')
       // 远端桌宠直连：对外地址的本地编辑态（null = 跟着服务端当前值显示）
       const [pubBase, setPubBase] = useState(null)
       const conn = st.onebot.state === 'connected'
-      const loadProcs = async () => { const r = await get('/snowluma/processes'); setProcs(r.list || []); if (!r.ok) toast(r.message) }
+      const loadProcs = async () => { const r = await get('/snowluma/processes'); setProcs(r.list || []); setOtherProcs(r.others || []); if (!r.ok) toast(r.message) }
       const act = (p) => async () => { const r = await post(p); toast(r.message || (r.ok ? '好了' : '没成功')); reload() }
       const login = st.onebot.login
       const external = draft.gateway === 'onebot'
@@ -1348,7 +1367,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             h('div', { className: cx('ab-step', sl.installed && 'done') }, h('div', null,
               h('b', null, '解压到一个纯英文的目录'), h('div', { className: 'ab-muted ab-small' }, '推荐 C:\\Aurabot\\snowluma。解压后这个目录里应该直接能看到 index.mjs 和 node.exe。'),
               h('div', { className: 'ab-flex', style: { marginTop: 6 } }, f.text('snowluma.dir', { size: 'wide', placeholder: 'C:\\Aurabot\\snowluma' })),
-              !sl.installed && sl.reason ? h('div', { className: 'ab-small', style: { color: 'var(--ab-warn)', marginTop: 4 } }, sl.reason) : sl.installed ? h('div', { className: 'ab-small', style: { color: 'var(--ab-ok)', marginTop: 4 } }, '找到了 SnowLuma v' + sl.version) : null)),
+              !sl.installed && sl.reason ? h('div', { className: 'ab-small', style: { color: 'var(--ab-warn)', marginTop: 4 } }, sl.reason) : sl.installed ? h('div', { className: 'ab-small', style: { color: sl.compat && sl.compat.status !== 'ok' ? 'var(--ab-warn)' : 'var(--ab-ok)', marginTop: 4 } }, '找到了 SnowLuma v' + sl.version + (sl.compat ? '（' + sl.compat.label + '）' : '')) : null)),
             h('div', { className: cx('ab-step', sl.running && 'done') }, h('div', null,
               h('b', null, '启动'), h('div', { className: 'ab-muted ab-small' }, '后台运行，不弹窗口；以后会跟着 DSH 自动启动。'),
               h('div', { className: 'ab-flex', style: { marginTop: 6 } },
@@ -1359,19 +1378,25 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
               h('b', null, '阅读并同意 SnowLuma 的用户协议'), h('div', { className: 'ab-muted ab-small', style: { marginBottom: 6 } }, '同意之前 SnowLuma 不会工作。'),
               h(Agreement, { running: sl.running, toast, onChange: reload }))),
             h('div', { className: cx('ab-step', conn && login && login.uin === draft.botQQ && 'done') }, h('div', null,
-              h('b', null, '登录机器人号并接入'), h('div', { className: 'ab-muted ab-small' }, '在电脑上另开一个 QQ 登录机器人号 ' + draft.botQQ + '（可以最小化），然后点「接入机器人号」。'),
+              h('b', null, '登录机器人号并接入'), h('div', { className: 'ab-muted ab-small' }, '在电脑上另开一个 QQ 登录机器人号 ' + draft.botQQ + '（可以最小化），然后点「接入机器人号」。QQ 必须是 NT 版（9.9 及以上）；老版 QQ 注入不了，先升级 QQ。'),
               h('div', { className: 'ab-flex', style: { marginTop: 6 } },
                 h(Btn, { small: true, kind: 'primary', disabled: !sl.running, onClick: act('/snowluma/attach') }, '接入机器人号'),
                 h(Btn, { small: true, disabled: !sl.running, onClick: loadProcs }, '看看有哪些 QQ 进程'),
                 h(Btn, { small: true, onClick: async () => { const r = await get('/onebot/test'); toast(r.message) } }, '测试连接')),
               sl.lastAttach && sl.lastAttach.at ? h('div', { className: 'ab-small', style: { marginTop: 4, color: sl.lastAttach.ok ? 'var(--ab-ok)' : 'var(--ab-warn)' } }, timeAgo(sl.lastAttach.at) + '：' + sl.lastAttach.message) : null)),
           ),
+          sl.installed && sl.compat && sl.compat.status !== 'ok' ? h('div', { className: 'ab-note warn', style: { marginTop: 10 } },
+            h('b', null, 'SnowLuma 版本提示：'), sl.compat.message, ' ',
+            h('a', { href: sl.downloadPage, target: '_blank', rel: 'noreferrer' }, '打开下载页 ↗')) : null,
           procs ? h('div', { style: { marginTop: 14 } }, procs.length === 0 ? h('div', { className: 'ab-muted' }, '没找到 QQ 进程。') :
-            h('table', { className: 'ab-table' }, h('thead', null, h('tr', null, ['进程', '登录的号', '昵称', '状态', ''].map((x) => h('th', { key: x }, x)))),
+            h('table', { className: 'ab-table' }, h('thead', null, h('tr', null, ['进程', '登录的号', '昵称', 'QQ 版本', '状态', ''].map((x) => h('th', { key: x }, x)))),
               h('tbody', null, procs.map((p) => h('tr', { key: p.pid },
                 h('td', null, p.pid), h('td', null, p.uin || '识别不出'), h('td', null, p.nickname || '—'),
+                h('td', { style: p.nt === false ? { color: 'var(--ab-warn)' } : null }, (p.qqVersion || '—') + (p.nt === false ? '（非 NT）' : '')),
                 h('td', null, p.injected ? (p.connected ? '已接入' : '已注入，连接中') : '未接入'),
-                h('td', null, p.isBot ? h('span', { className: 'ab-badge' }, '机器人号') : h('span', { className: 'ab-muted ab-small' }, '不会碰'))))))) : null,
+                h('td', null, p.isBot ? h('span', { className: 'ab-badge' }, '机器人号') : h('span', { className: 'ab-muted ab-small' }, '不会碰')))))),
+            h('div', { className: 'ab-muted ab-small', style: { marginTop: 6 } }, '注：SnowLuma 只能注入 QQ NT 版（9.9 及以上）；老版 QQ 不会出现在这里，也接不进来。'),
+            otherProcs.length ? h('div', { className: 'ab-note warn', style: { marginTop: 8 } }, '另外看到 ' + otherProcs.length + ' 个老版 QQ（' + otherProcs.map((p) => (p.qqVersion || '版本未知') + '，pid ' + p.pid).join('；') + '）：SnowLuma 接不了，别用它登录机器人号。') : null) : null,
         ),
         h(Card, { title: 'QQ 会话放在哪', desc: '每个 QQ 私聊 / 群都是 DSH 里「Aurabot · QQ」工作区下的一个会话，ta在会话里读写文件也在这个文件夹。改了以后新开的会话放到新位置；已有的会话还在原来的地方，想全部挪过去就在「概览」点「重新开始所有 QQ 会话」。' },
           h(Row, { label: '工作区文件夹', hint: '填完整路径（比如 D:\\Aurabot\\qq-chats）；留空 = 默认位置' }, f.text('workspaceDir', { size: 'wide', placeholder: st.workspaceDir || '' })),
@@ -6120,7 +6145,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
               h('div', { style: { marginTop: 6 } }, h(Btn, { small: true, onClick: () => window.open(sl.downloadPage, '_blank') }, '打开下载页 ↗')))),
             h('div', { className: cx('ab-step', sl.installed && 'done') }, h('div', null, h('b', null, '解压到纯英文目录'), h('div', { className: 'ab-muted ab-small' }, '推荐 C:\\Aurabot\\snowluma，解压后目录里能直接看到 index.mjs。'),
               h('div', { className: 'ab-flex', style: { marginTop: 6 } }, f.text('snowluma.dir', { size: 'wide', placeholder: 'C:\\Aurabot\\snowluma' }), h(Btn, { small: true, onClick: async () => { await save(draft); reload() } }, '检查')),
-              h('div', { className: 'ab-small', style: { marginTop: 4, color: sl.installed ? 'var(--ab-ok)' : 'var(--ab-warn)' } }, sl.installed ? '✓ 找到了 SnowLuma v' + sl.version : sl.reason))))),
+              h('div', { className: 'ab-small', style: { marginTop: 4, color: sl.installed && (!sl.compat || sl.compat.status === 'ok') ? 'var(--ab-ok)' : 'var(--ab-warn)' } }, sl.installed ? '✓ 找到了 SnowLuma v' + sl.version + (sl.compat ? '（' + sl.compat.label + '）' : '') : sl.reason))))),
         // 2. 启动 + 协议（接自己的 OneBot 时不用）
         external ? h('div', null, h('p', { className: 'ab-desc' }, '用的是你自己的 OneBot 服务，这一步不用做，直接下一步。')) :
         h('div', null,
@@ -6132,7 +6157,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         // 3. 接入
         h('div', null,
           external ? h('p', { className: 'ab-desc' }, '确认你的 OneBot 服务登录的是机器人号 ' + (st.config.botQQ || '') + '，然后点「测试连接」。插件连上后会先核对登录的号，不是机器人号就断开。') :
-          h('p', { className: 'ab-desc' }, '在这台电脑上另开一个 QQ，登录机器人号 ' + (st.config.botQQ || '') + '（可以最小化）。你的大号 QQ 照常开着就行——插件只会接入机器人号，绝不碰别的号。'),
+          h('p', { className: 'ab-desc' }, '在这台电脑上另开一个 QQ，登录机器人号 ' + (st.config.botQQ || '') + '（可以最小化）。你的大号 QQ 照常开着就行——插件只会接入机器人号，绝不碰别的号。QQ 需要 NT 版（9.9 及以上）：老版 QQ 注入不了，先升级 QQ。'),
           external ? h('div', { className: 'ab-flex' },
             h(Btn, { kind: 'primary', small: true, onClick: async () => { const r = await post('/onebot/reconnect'); toast(r.message, r.ok ? 'ok' : 'err'); reload() } }, '连接'),
             h(Btn, { small: true, onClick: async () => { const r = await get('/onebot/test'); toast(r.message) } }, '测试连接')) :
@@ -6149,11 +6174,11 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
                 slowAttach ? h('div', { className: 'ab-small', style: { marginTop: 6 } }, '已经等了 45 秒还没连上：先按上面的原因排查，或者点「一键诊断」。') : null) : null,
               h('div', { className: 'ab-muted ab-small', style: { marginTop: 8 } }, '接入后一般十几秒内会连上；连不上时这里会直接写出卡在哪一步。')),
           diag ? h('div', { className: 'ab-note', style: { marginTop: 10 } },
-            h('div', { className: 'ab-small' }, '诊断结果：' + (diag.ok ? '全部正常' : '有问题，看下面带 ✗ 的项')),
+            h('div', { className: 'ab-small' }, '诊断结果：' + (diag.ok ? ((diag.items || []).some((it) => it.warn) ? '正常，有提示项（橙色 !）' : '全部正常') : '有问题，看下面带 ✗ 的项')),
             (diag.items || []).map((it) => h('div', { key: it.id, className: 'ab-small', style: { padding: '5px 0', borderTop: '1px solid var(--ab-line)' } },
-              h('span', { style: { color: it.ok ? 'var(--ab-ok)' : 'var(--ab-warn)' } }, it.ok ? '✓ ' : '✗ '),
-              h('b', null, it.label + '：'), it.detail,
-              !it.ok && it.hint ? h('div', { className: 'ab-muted' }, '→ ' + it.hint) : null)),
+              h('span', { style: { color: it.warn ? '#e6a23c' : it.ok ? 'var(--ab-ok)' : 'var(--ab-warn)' } }, it.warn ? '! ' : it.ok ? '✓ ' : '✗ '),
+              h('b', { style: it.warn ? { color: '#e6a23c' } : null }, it.label + '：'), it.detail,
+              (it.warn || !it.ok) && it.hint ? h('div', { className: 'ab-muted' }, '→ ' + it.hint) : null)),
             diag.problem ? h('div', { className: 'ab-muted ab-small', style: { marginTop: 6 } }, '当前提示：' + diag.problem) : null) : null,
           procs ? h('table', { className: 'ab-table', style: { marginTop: 10 } }, h('tbody', null, procs.map((p) => h('tr', { key: p.pid }, h('td', null, p.pid), h('td', null, p.uin || '识别不出'), h('td', null, p.nickname || ''), h('td', null, p.isBot ? h('span', { className: 'ab-badge' }, '机器人号') : h('span', { className: 'ab-muted ab-small' }, '不会碰')))))) : null),
         // 4. 完成
@@ -6341,6 +6366,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
               return h('i', { className: cx('ab-dot', flag && 'ok'), title: flag ? '开着' : '关着' })
             },
           }),
+          showWizard ? null : h(SnowLumaCompatBanner, { st, go }),
           showWizard ? null : h(TabBoundary, { key: curTab.id, onHome: () => go('overview') }, h(body, { ...props, mod: curTab.ext })),
           showWizard || curTab.ext ? null : mods.filter((m) => hasUi(m) && tabOf(m) === curTab.id).map((m) => h('div', { key: 'embed-' + m.id, style: { marginTop: 14 } }, h(ExtPage, { ...props, mod: m.id, embedded: true }))),
           dirty && !showWizard ? h('div', { className: 'ab-savebar' }, h('span', { className: 'msg' }, '有改动还没保存'),
