@@ -67,6 +67,23 @@ test('WebDAV：PUT 最新备份，按 keep 删除旧的', async () => {
   assert.equal(r.message.includes('SECRET_PW'), false)
 })
 
+test('WebDAV：可以只上传指定的仅配置备份', async () => {
+  push.pushHooks.fetch = okFetch
+  rmSync(join(root, 'backups'), { recursive: true, force: true })
+  calls.length = 0
+  putBackup('aurabot-config-20261104-0330.zip')
+  const r = await push.pushBackup({
+    provider: 'webdav',
+    webdav: { url: base, username: 'u', password: 'p' },
+    keep: 2,
+  }, { sourceName: 'aurabot-config-20261104-0330.zip' })
+  assert.equal(r.ok, true)
+  assert.equal(r.name, 'aurabot-config-20261104-0330.zip')
+  const put = calls.find((c) => c.method === 'PUT')
+  assert.equal(put.url, folder + 'aurabot-config-20261104-0330.zip')
+  assert.equal(put.body.toString(), 'zip-aurabot-config-20261104-0330.zip')
+})
+
 test('WebDAV：缺地址/账号/密码时明确报错', async () => {
   await assert.rejects(push.pushBackup({ provider: 'webdav', webdav: {} }), /WebDAV 服务器地址/)
   await assert.rejects(push.pushBackup({ provider: 'webdav', webdav: { url: base } }), /用户名/)

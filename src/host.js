@@ -1697,7 +1697,7 @@ export function apply(ctx) {
     autoCreate: r.autoCreate !== false,
     forceOverwrite: !!r.forceOverwrite,
     hasToken: Boolean(r.token),
-    webdav: { url: r.webdav?.url || '', username: r.webdav?.username || '', hasPassword: Boolean(r.webdav?.password) },
+    webdav: { url: r.webdav?.url || '', username: r.webdav?.username || '', hasPassword: Boolean(r.webdav?.password), configOnly: r.webdav?.configOnly === true },
   })
   route('/backup/remote/state', async () => ({ ok: true, remote: remoteView(), job: pushJob, nextAt: nextRemoteAt() }))
   route('/backup/remote/config', backupAction(async (req) => {
@@ -1715,11 +1715,15 @@ export function apply(ctx) {
     if (backupJob?.running) return { ok: false, message: '正在打包，等这轮打包完再推' }
     pushJob = { running: true, pack: !!pack, at: Date.now() }
     try {
-      if (pack) {
-        const result = await createBackup({ version: VERSION, workspaceDir: workspaceDirOf(getConfig()) })
-        log.info(`云备份自动打包完成：${result.name}，${result.files} 个文件`)
+      const remote = getConfig().backup?.remote || {}
+      const configOnly = remote.provider === 'webdav' && remote.webdav?.configOnly === true
+      let sourceName = ''
+      if (pack || configOnly) {
+        const result = await createBackup({ version: VERSION, workspaceDir: workspaceDirOf(getConfig()), configOnly })
+        sourceName = result.name
+        log.info(`${configOnly ? '仅配置' : ''}云备份打包完成：${result.name}，${result.files} 个文件`)
       }
-      const r = await pushBackup(getConfig().backup?.remote, { version: VERSION })
+      const r = await pushBackup(remote, { version: VERSION, sourceName })
       pushJob = { running: false, ok: true, result: r, at: Date.now() }
       log.info(`云备份推送完成：${r.message}`)
     } catch (error) {
@@ -1740,7 +1744,7 @@ export function apply(ctx) {
     const r = getConfig().backup?.remote || {}
     if (r.provider !== 'webdav') return { ok: false, message: '先把云备份方式切到 WebDAV' }
     const name = String((await readBody(req)).name || '')
-    if (!/^aurabot-backup-\d{8}-\d{4}\.zip$/.test(name)) return { ok: false, message: '备份文件名不对' }
+    if (!/^aurabot-(?:backup|config)-\d{8}-\d{4}\.zip$/.test(name)) return { ok: false, message: '备份文件名不对' }
     try {
       const got = await downloadWebdavBackup(r, name)
       const dir = dataDir('backups')

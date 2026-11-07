@@ -31,6 +31,8 @@ const MARKER = '.aurabot-backup-marker' // 备份仓标记：中转目录与远�
 const NAME_RE = /^[A-Za-z0-9_.-]+$/
 /** 分支白名单：再拒掉 .. 与 - 开头，防 refspec/选项注入。 */
 const BRANCH_RE = /^[A-Za-z0-9._/-]+$/
+/** 云备份 zip：完整备份与仅配置备份（WebDAV 可只传后者）。 */
+const BACKUP_ZIP_RE = /^aurabot-(?:backup|config)-\d{8}-\d{4}\.zip$/
 
 // 测试钩子：测试注入假 spawn / fetch，不打真网络不真跑 git（对齐 petHooks 模式）；splitMax 调小测分卷
 export const pushHooks = { spawn: null, fetch: null, splitMax: null }
@@ -222,7 +224,7 @@ async function webdavList(folder, auth, password) {
     let href = m[1].replace(/&amp;/g, '&')
     try { href = decodeURIComponent(href) } catch { /* 保留原样 */ }
     const name = href.split('/').filter(Boolean).pop() || ''
-    if (/^aurabot-backup-\d{8}-\d{4}\.zip$/.test(name)) names.add(name)
+    if (BACKUP_ZIP_RE.test(name)) names.add(name)
   }
   return [...names]
 }
@@ -237,7 +239,7 @@ export async function listWebdavBackups(r) {
 /** 面板「从 WebDAV 恢复」：下载指定 zip 到内存。 */
 export async function downloadWebdavBackup(r, name) {
   const file = String(name || '')
-  if (!/^aurabot-backup-\d{8}-\d{4}\.zip$/.test(file)) throw new Error('备份文件名不对')
+  if (!BACKUP_ZIP_RE.test(file)) throw new Error('备份文件名不对')
   const s = await ensureWebdavFolder(r)
   const res = await webdavFetch(s.folder + encodeURIComponent(file), {
     headers: { authorization: s.auth },
@@ -251,12 +253,19 @@ export async function downloadWebdavBackup(r, name) {
   return { name: file, buffer: buf }
 }
 
-async function pushBackupWebdav(r, { onLog = () => {} } = {}) {
+async function pushBackupWebdav(r, { onLog = () => {}, sourceName = '' } = {}) {
   const { folder, password, auth } = await ensureWebdavFolder(r)
   const dir = join(dataDir('backups'))
-  const zips = existsSync(dir) ? readdirSync(dir).filter((n) => /^aurabot-backup-\d{8}-\d{4}\.zip$/.test(n)).sort().reverse() : []
-  if (!zips.length) throw new Error('还没有备份文件：先「立即备份」一次，或等每天到点自动打包')
-  const name = zips[0]
+  const all = existsSync(dir) ? readdirSync(dir).filter((n) => BACKUP_ZIP_RE.test(n)).sort().reverse() : []
+  let name = String(sourceName || '')
+  if (name) {
+    if (!BACKUP_ZIP_RE.test(name)) throw new Error('要上传的备份文件名不对')
+    if (!all.includes(name)) throw new Error('本机 backups 里找不到要上传的备份：' + name)
+  } else {
+    const re = r.webdav?.configOnly === true ? /^aurabot-config-/ : /^aurabot-backup-/
+    name = all.find((n) => re.test(n)) || ''
+  }
+  if (!name) throw new Error('还没有备份文件：先「立即备份」一次，或等每天到点自动打包')
   const full = join(dir, name)
   let buf
   try { buf = await readFile(full) } catch (error) { throw new Error('读不了最新备份文件：' + redact(error.message, password)) }
@@ -275,7 +284,8 @@ async function pushBackupWebdav(r, { onLog = () => {} } = {}) {
   try {
     const remote = await webdavList(folder, auth, password)
     const keep = Math.max(1, Math.round(Number(r.keep) || 7))
-    const sorted = [...new Set([name, ...remote])].sort().reverse()
+    const prefix = name.startsWith('aurabot-config-') ? 'aurabot-config-' : 'aurabot-backup-'
+    const sorted = [...new Set([name, ...remote.filter((n) => n.startsWith(prefix))])].sort().reverse()
     kept = Math.min(keep, sorted.length)
     const old = sorted.slice(keep)
     for (const oldName of old) {
@@ -309,7 +319,6 @@ export async function pushBackup(remote, options = {}) {
   if (String(r.provider || 'gitee') === 'webdav') return pushBackupWebdav(r, options)
   return pushBackupGitee(r, options)
 }
-
 async function pushBackupGitee(r, { version = '', onLog = () => {} } = {}) {
   const token = String(r.token || '')
   if (!r.owner || !r.repo) throw new Error('先在面板填 Gitee 用户名和仓库名')
