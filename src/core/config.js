@@ -304,10 +304,13 @@ export const DEFAULTS = {
     keepWork: false, // 留着中间文件（调试用）
     pypiMirror: 'auto', // 安装时用的下载源：auto = 先测一下，官方源慢就用国内镜像；cn = 一直用国内镜像；off = 只用官方源
   },
-  // 云备份：每天到点自动打包并把最新备份推到 Gitee 私有仓库（走本机 git）
+  // 云备份：每天到点自动打包并把最新备份推到 Gitee 私有仓库（走本机 git）或 WebDAV
   backup: {
     remote: {
       enabled: false, // 到点自动「打包 + 推送」；关了就只剩面板手动推
+      provider: 'gitee', // gitee | webdav
+      // WebDAV：填到文件夹（不是文件），密码按密钥处理
+      webdav: { url: '', username: '', password: '' },
       owner: '', // Gitee 用户名
       repo: '', // 仓库名（没有的话推送时按 autoCreate 自动建私有的）
       token: '', // 私人令牌（要 projects + repo 权限），存配置时按密钥处理
@@ -756,7 +759,7 @@ export function normalize(raw) {
 }
 
 // 面板里不回传原文的字段：路径（几层都行）
-const SECRETS = [['snowluma', 'webuiPassword'], ['snowluma', 'httpToken'], ['snowluma', 'wsToken'], ['imageGen', 'apiKey'], ['voice', 'asrApi', 'apiKey'], ['memory', 'vector', 'apiKey'], ['memory', 'rerank', 'apiKey'], ['song', 'neteaseCookie'], ['bili', 'cookie'], ['bili', 'sessdata'], ['bili', 'biliJct'], ['heybox', 'cookie'], ['bridge', 'token'], ['voice', 'volcano', 'apiKey'], ['backup', 'remote', 'token']]
+const SECRETS = [['snowluma', 'webuiPassword'], ['snowluma', 'httpToken'], ['snowluma', 'wsToken'], ['imageGen', 'apiKey'], ['voice', 'asrApi', 'apiKey'], ['memory', 'vector', 'apiKey'], ['memory', 'rerank', 'apiKey'], ['song', 'neteaseCookie'], ['bili', 'cookie'], ['bili', 'sessdata'], ['bili', 'biliJct'], ['heybox', 'cookie'], ['bridge', 'token'], ['voice', 'volcano', 'apiKey'], ['backup', 'remote', 'token'], ['backup', 'remote', 'webdav', 'password']]
 // 扩展模块设置里的密码类字段（模块加载时登记）：['ext', 模块id, 字段]
 const extraSecrets = new Map()
 export function registerSecretField(path) { extraSecrets.set(path.join('\u0000'), path) }

@@ -143,7 +143,7 @@ export function apply(ctx) {
   let pushTimer = null // 云备份每日定时
   const getConfig = () => cfg
   setSsrpMode(() => (getConfig().security && getConfig().security.ssrfMode === 'loose' ? 'loose' : 'strict'))
-  const secrets = () => { for (const k of ['webuiPassword', 'httpToken', 'wsToken']) registerSecret(cfg.snowluma[k]); registerSecret(cfg.imageGen.apiKey); registerSecret(cfg.bridge.token); registerSecret(cfg.backup?.remote?.token) } // backup 令牌也按密钥脱敏（云备份）
+  const secrets = () => { for (const k of ['webuiPassword', 'httpToken', 'wsToken']) registerSecret(cfg.snowluma[k]); registerSecret(cfg.imageGen.apiKey); registerSecret(cfg.bridge.token); registerSecret(cfg.backup?.remote?.token); registerSecret(cfg.backup?.remote?.webdav?.password) } // backup 令牌/WebDAV 密码也按密钥脱敏（云备份）
   const setConfig = (next) => {
     const before = cfg
     cfg = saveConfig(next)
@@ -1686,14 +1686,28 @@ export function apply(ctx) {
     if (next.getTime() <= Date.now()) next.setDate(next.getDate() + 1)
     return next.toISOString()
   }
-  const remoteView = (r = cfg.backup?.remote || {}) => ({ enabled: !!r.enabled, owner: r.owner, repo: r.repo, branch: r.branch, time: r.time, keep: r.keep, autoCreate: r.autoCreate !== false, forceOverwrite: !!r.forceOverwrite, hasToken: Boolean(r.token) })
+  const remoteView = (r = cfg.backup?.remote || {}) => ({
+    enabled: !!r.enabled,
+    provider: r.provider === 'webdav' ? 'webdav' : 'gitee',
+    owner: r.owner,
+    repo: r.repo,
+    branch: r.branch,
+    time: r.time,
+    keep: r.keep,
+    autoCreate: r.autoCreate !== false,
+    forceOverwrite: !!r.forceOverwrite,
+    hasToken: Boolean(r.token),
+    webdav: { url: r.webdav?.url || '', username: r.webdav?.username || '', hasPassword: Boolean(r.webdav?.password) },
+  })
   route('/backup/remote/state', async () => ({ ok: true, remote: remoteView(), job: pushJob, nextAt: nextRemoteAt() }))
   route('/backup/remote/config', backupAction(async (req) => {
     const patch = { ...(await readBody(req)) }
     if (!patch.token) delete patch.token // 令牌留空 = 沿用旧值，别把配好的抹掉
+    if (patch.webdav && !patch.webdav.password) delete patch.webdav.password // WebDAV 密码同理
     setConfig(mergeFromPanel(cfg, { backup: { remote: patch } })) // setConfig 里会重排定时器
     const r = cfg.backup.remote
-    log.info(`云备份设置已更新｜${r.enabled ? `每天 ${r.time} 推 ${r.owner}/${r.repo}，留 ${r.keep} 份` : '关'}`)
+    const where = r.provider === 'webdav' ? (r.webdav?.url || 'WebDAV') : `${r.owner}/${r.repo}`
+    log.info(`云备份设置已更新｜${r.enabled ? `每天 ${r.time} 推 ${where}，留 ${r.keep} 份` : '关'}`)
     return { ok: true, message: '存好了', remote: remoteView() }
   }))
   const doPush = async (pack) => {

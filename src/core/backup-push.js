@@ -162,11 +162,118 @@ async function resetHistory(wd, r, name, version, token, onLog) {
 }
 
 /**
+ * WebDAV 备份：把最新 zip PUT 到用户给的文件夹，再按 keep 删旧的。
+ * 不走 git、不分卷；文件夹必须已经在云端建好。
+ */
+function webdavSettings(r) {
+  const w = r.webdav || {}
+  const raw = String(w.url || '').trim()
+  if (!raw) throw new Error('先在面板填 WebDAV 文件夹地址（例如 https://dav.example.com/remote.php/dav/files/me/aurabot）')
+  let u
+  try { u = new URL(raw) } catch { throw new Error('WebDAV 地址格式不对，要填完整的 http(s) 地址') }
+  if (!/^https?:$/.test(u.protocol)) throw new Error('WebDAV 地址必须以 http:// 或 https:// 开头')
+  if (u.username || u.password) throw new Error('WebDAV 地址里不要写用户名密码，填到下面的两栏里')
+  if (u.search || u.hash) throw new Error('WebDAV 地址只填文件夹，不要带 ? 或 #')
+  const username = String(w.username || '').trim()
+  const password = String(w.password || '')
+  if (!username || !password) throw new Error('先在面板填 WebDAV 用户名和应用密码')
+  return { url: raw.replace(/\/+$/, ''), username, password, auth: 'Basic ' + Buffer.from(username + ':' + password).toString('base64') }
+}
+
+async function webdavFetch(url, { method = 'GET', headers = {}, body, timeout = 15000, password = '' } = {}) {
+  const doFetch = pushHooks.fetch || fetch
+  try {
+    return await doFetch(url, { method, headers, body, redirect: 'error', signal: AbortSignal.timeout(timeout) })
+  } catch (error) {
+    throw new Error(redact('WebDAV 连不上：' + (error?.message || error), password))
+  }
+}
+
+async function webdavList(base, auth, password) {
+  const res = await webdavFetch(base + '/', {
+    method: 'PROPFIND',
+    headers: { authorization: auth, depth: '1', 'content-type': 'application/xml; charset=utf-8' },
+    body: '<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:getcontentlength/></d:prop></d:propfind>',
+    timeout: 15000,
+    password,
+  })
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) throw new Error('WebDAV 用户名或应用密码不对（HTTP ' + res.status + '）')
+    if (res.status === 404) throw new Error('WebDAV 文件夹不存在：先在云端建好这个目录，再把地址填到面板')
+    throw new Error('WebDAV 列目录失败（HTTP ' + res.status + '）')
+  }
+  let text = ''
+  try { text = await res.text() } catch { return [] }
+  const names = new Set()
+  for (const m of text.matchAll(/<(?:[A-Za-z0-9_-]+:)?href[^>]*>([^<]+)</gi)) {
+    let href = m[1].replace(/&amp;/g, '&')
+    try { href = decodeURIComponent(href) } catch { /* 保留原样 */ }
+    const name = href.split('/').filter(Boolean).pop() || ''
+    if (/^aurabot-backup-\d{8}-\d{4}\.zip$/.test(name)) names.add(name)
+  }
+  return [...names]
+}
+
+async function pushBackupWebdav(r, { onLog = () => {} } = {}) {
+  const { url: base, password, auth } = webdavSettings(r)
+  const dir = join(dataDir('backups'))
+  const zips = existsSync(dir) ? readdirSync(dir).filter((n) => /^aurabot-backup-\d{8}-\d{4}\.zip$/.test(n)).sort().reverse() : []
+  if (!zips.length) throw new Error('还没有备份文件：先「立即备份」一次，或等每天到点自动打包')
+  const name = zips[0]
+  const full = join(dir, name)
+  let buf
+  try { buf = await readFile(full) } catch (error) { throw new Error('读不了最新备份文件：' + redact(error.message, password)) }
+  onLog({ out: `上传 ${name}（${Math.round(buf.length / 1024)} KB）到 WebDAV…` })
+  const put = await webdavFetch(base + '/' + encodeURIComponent(name), {
+    method: 'PUT',
+    headers: { authorization: auth, 'content-type': 'application/zip' },
+    body: buf,
+    timeout: 30 * 60 * 1000,
+    password,
+  })
+  if (!put.ok) throw new Error('WebDAV 上传失败（HTTP ' + put.status + '）：检查地址是不是文件夹、账号有没有写权限')
+  let dropped = 0
+  let kept = 1
+  let warning = ''
+  try {
+    const remote = await webdavList(base, auth, password)
+    const keep = Math.max(1, Math.round(Number(r.keep) || 7))
+    const sorted = [...new Set([name, ...remote])].sort().reverse()
+    kept = Math.min(keep, sorted.length)
+    const old = sorted.slice(keep)
+    for (const oldName of old) {
+      const del = await webdavFetch(base + '/' + encodeURIComponent(oldName), {
+        method: 'DELETE', headers: { authorization: auth }, timeout: 15000, password,
+      })
+      if (del.ok) dropped++
+      else warning = '上传成功，但旧备份 ' + oldName + ' 没删掉（HTTP ' + del.status + '）'
+    }
+  } catch (error) {
+    warning = '上传成功，但清理旧备份失败：' + redact(error.message, password)
+  }
+  const keep = Math.max(1, Math.round(Number(r.keep) || 7))
+  return {
+    ok: true,
+    name,
+    folder: base,
+    parts: 1,
+    kept,
+    dropped,
+    message: `已上传 ${name} 到 WebDAV（远端保留最近 ${keep} 份${dropped ? '，清了 ' + dropped + ' 份旧的' : ''}）${warning ? '；' + warning : ''}`,
+  }
+}
+
+/**
  * 把最新备份推到 Gitee。返回 { ok, name, kept, dropped, message }。
  * 失败抛错，报错文案都过 redact，不带令牌。
  */
-export async function pushBackup(remote, { version = '', onLog = () => {} } = {}) {
+export async function pushBackup(remote, options = {}) {
   const r = remote || {}
+  if (String(r.provider || 'gitee') === 'webdav') return pushBackupWebdav(r, options)
+  return pushBackupGitee(r, options)
+}
+
+async function pushBackupGitee(r, { version = '', onLog = () => {} } = {}) {
   const token = String(r.token || '')
   if (!r.owner || !r.repo) throw new Error('先在面板填 Gitee 用户名和仓库名')
   if (!token) throw new Error('先在面板填 Gitee 私人令牌（要 projects + repo 权限）')

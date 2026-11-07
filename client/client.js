@@ -5659,12 +5659,21 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       )
     }
 
-    /** 云备份（Gitee 私有仓库）：每天到点自动打包，把最新备份推上去，远端只留最近 N 份。 */
+    /** 云备份（Gitee 私有仓库 / WebDAV）：每天到点自动打包，把最新备份推上去，远端只留最近 N 份。 */
     function RemoteBackup({ toast }) {
       const [s, setS] = useState(null)
       const [form, setForm] = useState(null)
       const set = (k) => (e) => setForm({ ...form, [k]: k === 'keep' ? Math.max(1, Math.round(Number(e.target.value) || 1)) : (k === 'enabled' || k === 'autoCreate' || k === 'forceOverwrite' ? e.target.checked : e.target.value) })
-      const load = () => get('/backup/remote/state').then((st) => { setS(st); const v = st.remote || {}; setForm({ enabled: !!v.enabled, owner: v.owner || '', repo: v.repo || '', token: '', branch: v.branch || 'master', time: v.time || '03:30', keep: v.keep || 7, autoCreate: v.autoCreate !== false, forceOverwrite: !!v.forceOverwrite }) })
+      const load = () => get('/backup/remote/state').then((st) => {
+        setS(st)
+        const v = st.remote || {}
+        setForm({
+          provider: v.provider === 'webdav' ? 'webdav' : 'gitee',
+          enabled: !!v.enabled, owner: v.owner || '', repo: v.repo || '', token: '', branch: v.branch || 'master',
+          time: v.time || '03:30', keep: v.keep || 7, autoCreate: v.autoCreate !== false, forceOverwrite: !!v.forceOverwrite,
+          webdavUrl: v.webdav?.url || '', webdavUsername: v.webdav?.username || '', webdavPassword: '',
+        })
+      })
       useEffect(() => { load() }, [])
       const running = Boolean(s && s.job && s.job.running)
       useEffect(() => { if (!running) return; const t = setInterval(load, 1000); return () => clearInterval(t) }, [running])
@@ -5672,40 +5681,74 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const after = (r2) => { toast(r2.ok ? (r2.message || '好了') : r2.message, r2.ok ? 'ok' : 'err'); load() }
       if (!form) return null
       const job = s && s.job
+      const webdav = form.provider === 'webdav'
       const Input = (k, placeholder, type) => h('input', { className: 'ab-input', type: type || 'text', placeholder, value: form[k], onChange: set(k), style: { minWidth: 0 } })
       const Field = (label, k, placeholder, type) => h('div', { style: { flex: 1, minWidth: 0 } },
         h('div', { className: 'ab-small ab-muted', style: { marginBottom: 2 } }, label),
         Input(k, placeholder, type))
-      return h(Card, { title: '云备份（Gitee 私有仓库）', desc: '每天到点自动打包一份备份，推到你自己的 Gitee 私有仓库，换电脑或坏盘时也能找回来。' },
-        h('div', { className: 'ab-note warn', style: { marginBottom: 10 } }, '⚠️ 仓库必须是「私有」的！备份里有你全部的聊天记录、记忆和账号凭证，推到公开仓库等于把它们挂到网上。推送前会先向 Gitee 核实仓库确实是私有的，公开仓库一律拒绝推。'),
+      const saveBody = () => {
+        const b = { provider: form.provider, enabled: form.enabled, time: form.time, keep: form.keep }
+        if (webdav) {
+          b.webdav = { url: form.webdavUrl.trim(), username: form.webdavUsername.trim(), ...(form.webdavPassword ? { password: form.webdavPassword } : {}) }
+        } else {
+          Object.assign(b, { owner: form.owner.trim(), repo: form.repo.trim(), branch: form.branch.trim() || 'master', autoCreate: form.autoCreate, forceOverwrite: form.forceOverwrite })
+          if (form.token) b.token = form.token
+        }
+        return b
+      }
+      return h(Card, { title: '云备份（Gitee / WebDAV）', desc: '每天到点自动打包一份备份，推到你的私有仓库或 WebDAV，换电脑或坏盘时也能找回来。' },
+        h(Seg, {
+          value: form.provider,
+          onChange: (v) => setForm({ ...form, provider: v }),
+          options: [{ value: 'gitee', label: 'Gitee 私有仓库' }, { value: 'webdav', label: 'WebDAV' }],
+        }),
+        webdav
+          ? h('div', { className: 'ab-note warn', style: { margin: '10px 0' } }, '⚠️ 备份里有全部聊天记录、记忆和账号凭证。WebDAV 请用自己可控的私有网盘，并尽量走 HTTPS；插件只把 zip 上传到你填的文件夹，不会传给第三方。')
+          : h('div', { className: 'ab-note warn', style: { margin: '10px 0' } }, '⚠️ 仓库必须是「私有」的！备份里有你全部的聊天记录、记忆和账号凭证，推到公开仓库等于把它们挂到网上。推送前会先向 Gitee 核实仓库确实是私有的，公开仓库一律拒绝推。'),
         h('div', { className: 'ab-flex', style: { alignItems: 'center' } },
           h('label', { className: 'ab-small', style: { display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' } }, h('input', { type: 'checkbox', checked: form.enabled, onChange: set('enabled') }), '每天自动备份并推送'),
           form.enabled ? h('span', { className: 'ab-small ab-muted' }, '下次：' + (s && s.nextAt ? String(s.nextAt).slice(0, 16).replace('T', ' ') : '到点就跑')) : null),
-        h('div', { className: 'ab-flex', style: { marginTop: 10 } },
-          Field('Gitee 用户名', 'owner', '如 gitee.com/小鱼 里的「小鱼」'),
-          Field('仓库名（私有）', 'repo', '如 aurabot-backup，没有会自动建'),
-          Field('分支（一般不用改）', 'branch', 'master')),
+        webdav
+          ? h('div', null,
+            h('div', { className: 'ab-flex', style: { marginTop: 10 } },
+              Field('WebDAV 文件夹地址', 'webdavUrl', 'https://dav.example.com/remote.php/dav/files/me/aurabot')),
+            h('div', { className: 'ab-flex', style: { marginTop: 8 } },
+              Field('用户名', 'webdavUsername', 'WebDAV 账号'),
+              Field('应用密码', 'webdavPassword', s && s.remote && s.remote.webdav && s.remote.webdav.hasPassword ? '已保存，留空就不改' : '建议用应用专用密码', 'password')))
+          : h('div', null,
+            h('div', { className: 'ab-flex', style: { marginTop: 10 } },
+              Field('Gitee 用户名', 'owner', '如 gitee.com/小鱼 里的「小鱼」'),
+              Field('仓库名（私有）', 'repo', '如 aurabot-backup，没有会自动建'),
+              Field('分支（一般不用改）', 'branch', 'master')),
+            h('div', { className: 'ab-flex', style: { marginTop: 8 } },
+              Field('Gitee 私人令牌', 'token', s && s.remote && s.remote.hasToken ? '已保存，留空就不改' : '下面第 2 步生成的那串', 'password')),
+            h('div', { className: 'ab-flex', style: { marginTop: 8, alignItems: 'center', flexWrap: 'wrap' } },
+              h('label', { className: 'ab-small', style: { display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' } }, h('input', { type: 'checkbox', checked: form.autoCreate, onChange: set('autoCreate') }), '仓库不存在时自动建（建的就是私有，推荐开）'),
+              h('label', { className: 'ab-small', style: { display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' } }, h('input', { type: 'checkbox', checked: form.forceOverwrite, onChange: set('forceOverwrite') }), '允许覆盖已有内容的仓库'))),
         h('div', { className: 'ab-flex', style: { marginTop: 8 } },
-          Field('Gitee 私人令牌', 'token', s && s.remote && s.remote.hasToken ? '已保存，留空就不改' : '下面第 2 步生成的那串', 'password'),
           Field('每天几点备份', 'time', '如 03:30'),
           Field('远端留几份', 'keep', '如 7')),
-        h('div', { className: 'ab-flex', style: { marginTop: 8, alignItems: 'center', flexWrap: 'wrap' } },
-          h('label', { className: 'ab-small', style: { display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' } }, h('input', { type: 'checkbox', checked: form.autoCreate, onChange: set('autoCreate') }), '仓库不存在时自动建（建的就是私有，推荐开）'),
-          h('label', { className: 'ab-small', style: { display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' } }, h('input', { type: 'checkbox', checked: form.forceOverwrite, onChange: set('forceOverwrite') }), '允许覆盖已有内容的仓库'),
+        h('div', { className: 'ab-flex', style: { marginTop: 10, alignItems: 'center' } },
           h('span', { className: 'ab-flex' },
-            h(Btn, { small: true, kind: 'primary', disabled: running, onClick: async () => { const body = { ...form }; if (!body.token) delete body.token; after(await call('/backup/remote/config', body)) } }, '保存设置'),
-            h(Btn, { small: true, disabled: running, onClick: async () => { if (!confirm('现在就把最新备份推到 Gitee？（不会重新打包，推 backups 里最新的一份）')) return; after(await call('/backup/push')) } }, running ? '推送中…' : '立即推送'))),
+            h(Btn, { small: true, kind: 'primary', disabled: running, onClick: async () => after(await call('/backup/remote/config', saveBody())) }, '保存设置'),
+            h(Btn, { small: true, disabled: running, onClick: async () => { if (!confirm('现在就把最新备份推到 ' + (webdav ? 'WebDAV' : 'Gitee') + '？（不会重新打包，推 backups 里最新的一份）')) return; after(await call('/backup/push')) } }, running ? '推送中…' : '立即推送'))),
         job && job.error ? h('div', { className: 'ab-note err', style: { marginTop: 10 } }, '推送失败：' + job.error) : null,
         job && job.result ? h('div', { className: 'ab-small ab-muted', style: { marginTop: 10 } }, '上次推送：' + job.result.message) : null,
-        h('details', { open: !(s && s.remote && s.remote.hasToken), style: { marginTop: 10 } },
-          h('summary', { className: 'ab-small', style: { cursor: 'pointer' } }, '📖 第一次用？跟着下面 4 步做（点这里收起）'),
-          h('div', { className: 'ab-small ab-muted', style: { marginTop: 8, lineHeight: 1.8 } },
-            h('div', null, h('b', null, '第 1 步 · 注册 Gitee：'), '打开 ', h('a', { href: 'https://gitee.com/signup', target: '_blank', rel: 'noreferrer' }, 'gitee.com'), ' 注册一个账号（手机号或邮箱都行，免费的）。'),
-            h('div', null, h('b', null, '第 2 步 · 生成令牌：'), '登录后点右上角头像 →「设置」→ 左侧「安全设置」→「私人令牌」→「+ 生成新令牌」，勾选 ', h('b', null, 'projects'), ' 权限后提交，把显示出来的那串字符复制粘贴到上面的「Gitee 私人令牌」里（只显示一次，丢了就重新生成一个）。'),
-            h('div', null, h('b', null, '第 3 步 · 安装 git：'), '打开 ', h('a', { href: 'https://git-scm.com/downloads', target: '_blank', rel: 'noreferrer' }, 'git-scm.com/downloads'), '，下载 Windows 版，一路点「下一步」装完，然后重启 DSH。装过的可以跳过。'),
-            h('div', null, h('b', null, '第 4 步 · 填上面的表格：'), '「Gitee 用户名」填你个人主页地址 gitee.com/ 后面那串；「仓库名」自己起一个，比如 aurabot-backup；「私人令牌」粘第 2 步的；勾上「每天自动备份并推送」，点「保存设置」。仓库让插件自动建就行（建出来就是私有的）。如果自己在 Gitee 网页上建，右上角「+」→ 新建仓库时务必选 ', h('b', null, '「私有」'), '，不要勾「设置初始化 README」。'),
-            h('div', { style: { marginTop: 6 } }, '弄完点一次「立即推送」试试，提示「已推送」就成功了，之后每天都会自动备份。备份超过 95MB 会自动分成若干卷推送（文件名带 .part01、.part02…）；恢复时把各卷按顺序合并回一个 zip 再导入——Windows 命令示例：copy /b aurabot-backup-xxx.zip.part01+aurabot-backup-xxx.zip.part02+… 完整的.zip')),
-        h('div', { className: 'ab-small ab-muted', style: { marginTop: 10 } }, '令牌只存在本机配置里，不会上传；推送走电脑上装的 git。有报错看上面的红字，一般都是令牌权限没勾对或 git 没装。')))
+        h('details', { open: webdav ? !(s && s.remote && s.remote.webdav && s.remote.webdav.hasPassword) : !(s && s.remote && s.remote.hasToken), style: { marginTop: 10 } },
+          h('summary', { className: 'ab-small', style: { cursor: 'pointer' } }, webdav ? '📖 WebDAV 怎么填（点这里收起）' : '📖 第一次用？跟着下面 4 步做（点这里收起）'),
+          webdav
+            ? h('div', { className: 'ab-small ab-muted', style: { marginTop: 8, lineHeight: 1.8 } },
+              h('div', null, h('b', null, '第 1 步 · 建文件夹：'), '在你的 WebDAV 网盘里新建一个专用文件夹，比如 aurabot；复制它的 WebDAV 地址填到上面（要填到文件夹，不是文件）。'),
+              h('div', null, h('b', null, '第 2 步 · 账号：'), '填 WebDAV 用户名和应用密码/专用密码（不要用主账号密码；多数网盘在「安全设置 / 应用密码」里生成）。'),
+              h('div', null, h('b', null, '第 3 步 · 保存并试推：'), '点「保存设置」，再点「立即推送」。成功后每天会按设置的时间自动打包上传，远端按「留几份」清理旧 zip。'),
+              h('div', { style: { marginTop: 6 } }, '插件只支持把 zip 直接 PUT 到已有文件夹，不会自动建目录；坚果云、Nextcloud、群晖等支持 WebDAV 的网盘都可以。'))
+            : h('div', { className: 'ab-small ab-muted', style: { marginTop: 8, lineHeight: 1.8 } },
+              h('div', null, h('b', null, '第 1 步 · 注册 Gitee：'), '打开 ', h('a', { href: 'https://gitee.com/signup', target: '_blank', rel: 'noreferrer' }, 'gitee.com'), ' 注册一个账号（手机号或邮箱都行，免费的）。'),
+              h('div', null, h('b', null, '第 2 步 · 生成令牌：'), '登录后点右上角头像 →「设置」→ 左侧「安全设置」→「私人令牌」→「+ 生成新令牌」，勾选 ', h('b', null, 'projects'), ' 权限后提交，把显示出来的那串字符复制粘贴到上面的「Gitee 私人令牌」里（只显示一次，丢了就重新生成一个）。'),
+              h('div', null, h('b', null, '第 3 步 · 安装 git：'), '打开 ', h('a', { href: 'https://git-scm.com/downloads', target: '_blank', rel: 'noreferrer' }, 'git-scm.com/downloads'), '，下载 Windows 版，一路点「下一步」装完，然后重启 DSH。装过的可以跳过。'),
+              h('div', null, h('b', null, '第 4 步 · 填上面的表格：'), '「Gitee 用户名」填你个人主页地址 gitee.com/ 后面那串；「仓库名」自己起一个，比如 aurabot-backup；「私人令牌」粘第 2 步的；勾上「每天自动备份并推送」，点「保存设置」。仓库让插件自动建就行（建出来就是私有的）。如果自己在 Gitee 网页上建，右上角「+」→ 新建仓库时务必选 ', h('b', null, '「私有」'), '，不要勾「设置初始化 README」。'),
+              h('div', { style: { marginTop: 6 } }, '弄完点一次「立即推送」试试，提示「已推送」就成功了，之后每天都会自动备份。备份超过 95MB 会自动分成若干卷推送（文件名带 .part01、.part02…）；恢复时把各卷按顺序合并回一个 zip 再导入——Windows 命令示例：copy /b aurabot-backup-xxx.zip.part01+aurabot-backup-xxx.zip.part02+… 完整的.zip')),
+        h('div', { className: 'ab-small ab-muted', style: { marginTop: 10 } }, webdav ? 'WebDAV 密码只存在本机配置里，不会展示；推送由插件直接上传，不经过第三方。' : '令牌只存在本机配置里，不会上传；推送走电脑上装的 git。有报错看上面的红字，一般都是令牌权限没勾对或 git 没装。')))
     }
 
     /** 备份：打包数据目录，换电脑时导入，重启 DSH 后换上。 */
