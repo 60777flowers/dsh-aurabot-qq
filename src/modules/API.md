@@ -319,11 +319,42 @@ return function Panel({ settings, save, toast }) {
 | `bili` | B 站 | `watch(链接)` `comment(链接, 文字)` `run()` `checkReplies()` `account()` `state()` |
 | `song` | 翻唱 | `request({ song, pitch, chatId })` `search(关键词)` `status()` `install()` |
 
+人物记忆统一使用 `features/memory-store.js` 的 `load/save`，不另建名单或记忆文件。`memory.deletePerson(qq, { keepNoMemory?: boolean })` 删除画像、关于该人的事实及跟进、相关事实引用、涉及他的关系、个人梗概、相处经验、说话习惯、短期摘要和标签，并用 `hub.forgetChatLog(qq)` 把旧流水标为已忘；只提到他名字的别人的事实保留。主人不能删除。`forgetChatLog(qq, query?)` 省略 query 表示整个人，传关键词仍是原来的局部遗忘。
+
+`memory.setNoMemory(qq, enabled, { deleteExisting?: false })` 设置画像上的 `profiles[qq].noMemory`；开启时可调用人物删除并保留该标记，撤销后恢复后续记忆。主人不能设置。各写入和注入路径统一调用 `memory.remembers(qq)`，不要在模块里重复判断标记。停止记忆仍然允许 `noteVia` 和 QQ 流水记录当前对话，但不会提炼个人事实、画像、关系、相处经验、说话习惯、短期摘要或跟进；已有的个人记忆也不参与上下文和召回。`讨厌` 标签仅影响是否愿意回复，与停止记忆分别设置。
+
+`memory.isAcquainted(qq)` 统一识别私聊过、在群里 @ 她或回复她、被她回复过的人，以及 QQ 好友、私聊/主动搭话白名单和主人。证据来自现有流水的 `interaction: string[]`（这条消息直接互动的 QQ；旧私聊流水不需要该字段），好友列表由 hub 在内存里缓存。`memory.profileOnlyAcquainted` 默认开，自动提炼个人事实（主人在本人私聊确认的事实仍可保存，但不作为第三人的交集或画像依据）、聊天的 `remember` 工具、`saveImpressions`、`buildProfile`、个人相处经验/说话习惯与关系均受它控制；群公共事实沿用原规则，旧画像保留。面板可以手动编辑已有画像；新建画像同样检查有无交集，所有编辑都不能绕过不再记住。模块若自动形成聊天中的个人事实，使用 `add({ ..., acquaintedOnly: true })` 复用同一检查；面板手动添加和导入不受自动提炼范围限制，但始终遵守 `remembers`。人物墙按主人、互动次数与最近互动加权排序，`lastActive` 仍用于原有的活跃筛选，不作为亲疏依据。
+
+面板接口：`POST /persona/person/delete { qq }`；`POST /persona/person/no-memory { qq, enabled, deleteExisting? }`。前端删除有两次确认，开启不再记住时询问是否同时删除旧记忆。所有遗忘操作沿用 `forgetVersion`，在途提炼、摘要、画像、压缩和异步召回不能把旧结果写回或重新注入。
+
 平台是工具，同一个人只有一套记忆。模块确认平台账号对应的 QQ 后，可以用 `noteVia` 把双方对话写进同一份私聊流水（`who` 为 `user` 或 `bot`，`at` 是可选的毫秒时间戳），用 `contextVia` 取得这位 QQ 用户的私聊记忆上下文。模块用 `noteVia` 写入流水后，开启的短期状态会自动生效。核对不了身份的账号不要写入，也不要读取记忆。
 
 接 B 站、抖音、帖子、网页等外部内容平台时，看见或分享的内容用 `memory.addEvent({ kind: 'seen', text, meta: { title, author, url, platform, id } })`。它表示「她看过的内容」，不是作者对她说的话，不参与人物事实、画像、相处经验或长期印象的提炼。仍存于同一记忆库的 `items`（`features/memory-store.js` 统一 `load/save`），`source` 仍为 `event`。不要再把内容里的 `remember` 结果另存成普通事实或经历。
 
 `addEvent` 的 `kind` 可省略（原有「做过的事」），或传 `'seen'`。`meta` 可省略，只保留 title / author / url / platform / id 五个可选字符串，分别最多 160 / 80 / 500 / 40 / 100 字符，其他字段丢弃；`id` 也接受数字并转成字符串。`seen` 不挂到某个人名下；`text` 可记感受，省略时用标题。时间轴平台选项从 `meta.platform` 和聊天梗概保留的 `via` 自动汇总，不要求固定平台名。写入真实聊天平台的双方对话则用上面的 `noteVia`，不要用 `seen` 代替聊天流水。
+
+事实档位由 `features/memory-rules.js` 统一定义，`add({ ..., tier })` / `update(id, { tier })` 接受以下编号。为保证升级不缩短旧记忆的期限，旧编号不重排；面板按保留期排列，模块不要用编号大小比较重要性。
+
+| 编号 | 名称 | 默认天数 | 旧数据兼容 |
+|---|---|---|---|
+| 4 | 短暂 | 1 | 新增 |
+| 1 | 琐碎 | 7 | 原编号、配置与时间不变 |
+| 5 | 小事 | 15 | 新增 |
+| 2 | 一般 | 30 | 原编号、配置与时间不变 |
+| 3 | 重要 | 90 | 原编号、配置与时间不变 |
+| 0 | 永久 | 不过期 | 原编号不变 |
+
+有限档天数继续使用 `memory.tierDays[编号]`，面板可调；0 天表示下次整理即可尝试压缩，只有 `tier: 0` 表示永久。旧自定义天数保留，没有 `tier` 的老记录继续沿用遗忘曲线；`tier: 'core'` 仍是已有的长期印象。到期事实先压成梗概，模型失败、预算不足或关闭梗概压缩时保留原事实。自动去重/修订按配置的实际保留期提升档位，永久和长期印象不会被自动降级；面板明确改档可自行选择期限。面板的 `factTiers`（`stats()` 和人物详情返回）、`tierLabel`、`tierDays` 均为派生显示值，不再存一份。
+
+`memory.recallMinRelevance` 为 0～1 的召回最低相关度，默认 0；0 表示关闭新增门槛，保留升级前的召回能力，原来的 BM25 最低分和向量 0.55 下限继续生效。关键词取原始 BM25 的 `s / (1 + s)` 与「命中查询词数 / 查询词数」中的较高值，向量用余弦相似度，任一路达到门槛即可；命中比例托底，避免常见话题随库增大、BM25 下降后被误杀。这是检索启发分，不是概率，不能和重排模型的分数混用。先按来源/人物过滤，再检查相关度，之后才计算人物匹配、重要性和新近程度加分；重排只看过线候选。上一句和 `related` 补充的相关度按 0.6 折算后也要过线，未整理原话同样复用该门槛。面板检索和只读推荐不受聊天召回门槛限制。
+
+面板只读接口：
+
+- `GET /persona/graph` → `{ ok, nodes, links }`。`memory.personaGraph()` 从现有人物墙与 `relations` 派生；节点含 `qq/name/closeness/interactions/isOwner`，边含 `id/source/target/label/text/chatId`。亲疏沿用人物墙的互动证据，不用发言数代替互动。旧关系无 QQ 时只在名字唯一匹配时连线，未识别的人不凭空建画像，不再记住的人不显示。前端 SVG 每页最多 48 人，只展示本页节点之间的边，支持搜索与键盘打开详情。
+- `GET /memory/related?id=...&kind=...` → `{ ok, list }`。`kind` 可省略，或为 `gist/seen`；人物事实、梗概和看过的内容均可作为入口。`memory.recommendations({ id, kind?, chat? })` 优先已有 `related`，再用同话题检索、同人物补充，最多六条，排除自身、已删除、已过时、未来才生效和停记内容。没有 `chat` 时仅供管理面板；其他模块必须传真实聊天 `chat`，复用召回的来源/主人隐私规则，不能给聊天工具直接暴露管理视角。梗概始终只来自锚点所在聊天（传 `chat` 时是当前聊天）。推荐返回 `reason/displayText/validityText`，不写命中数、召回日志或关联引用。
+- `GET /memory/platforms` → `{ ok, list }`。`memory.platformStats()` 按平台返回 `platform/episodes/gists/seen`：原话含现存双方聊天流水，梗概含两级梗概/印象，看过内容只计当前有效 `seen`。忽略已忘、系统流水和停记人物。优先读 `meta.platform` / `via`，兼容单字符串和数组；无标签的 QQ 私聊/群聊算 `qq`，无法辨认的算 `unknown`。标签去重，多来源梗概在每个来源各计一次，不能把各平台计数相加当作总条数。时间轴筛选与统计复用 `memoryPlatforms()`，QQ 与其他平台混聊压缩后仍保留各自来源标签；记忆归属、会话与权限不按平台拆分。
+
+这些接口的视图、计数和推荐均即时计算，不新增存储文件或关系索引表。普通事实的写前相似去重也只在同一 `chatId` 中进行，避免相同说法跨聊天合并后丢失出处。注入出处会标明私聊 QQ、实际存在的 `via` 标签，转述还会保留原说话人的 QQ。
 
 事实 `add` / `update` 支持可选 `validFrom`、`validUntil`（毫秒时间戳或明确年月日），开始时间默认取 `saidAt`。老记录只有 `invalidAt` 时，按它作为结束时间读取；新事实使旧事实过时时，保留 `supersededBy`，结束时间取新事实的 `saidAt`。`related` 是最多 6 个事实 id 的双向引用，由记忆库维护。面板返回的 `validityText`、`displayText`、`relatedItems` 是显示用的派生值，不重复存储。`timeline({ kind?, platform?, chatId?, level?, about? })` 汇总聊天梗概和 `seen`，其中 `kind` 为 `gist` 或 `seen`，平台来自每条返回值的 `platforms`。
 
