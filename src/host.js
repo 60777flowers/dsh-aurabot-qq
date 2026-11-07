@@ -38,7 +38,7 @@ import { createCommunity, REGISTRY_URL, GITEE_MIRROR } from './core/community.js
 import { createApprovalRelay } from './security/approval.js'
 import { captureSystemPrompt } from './security/leak-guard.js'
 import { applyPendingRestore, cancelRestore, createBackup, listBackups, pendingModules, pendingRestore, saveUpload, setPendingModules, stageRestore } from './core/backup.js'
-import { pushBackup } from './core/backup-push.js'
+import { pushBackup, listWebdavBackups, downloadWebdavBackup } from './core/backup-push.js'
 import { cleanText } from './core/text.js'
 import { createBridge } from './core/bridge.js'
 import { createDangerGuard, safeOwnedSession } from './security/danger.js'
@@ -1731,6 +1731,28 @@ export function apply(ctx) {
     return { ok: true, message: '推送流程跑完了，结果看状态' }
   }
   route('/backup/push', backupAction(async () => doPush(false)))
+  route('/backup/remote/list', backupAction(async () => {
+    const r = getConfig().backup?.remote || {}
+    if (r.provider !== 'webdav') return { ok: false, message: '先把云备份方式切到 WebDAV' }
+    try { return await listWebdavBackups(r) } catch (error) { return { ok: false, message: error.message } }
+  }))
+  route('/backup/remote/restore', backupAction(async (req) => {
+    const r = getConfig().backup?.remote || {}
+    if (r.provider !== 'webdav') return { ok: false, message: '先把云备份方式切到 WebDAV' }
+    const name = String((await readBody(req)).name || '')
+    if (!/^aurabot-backup-\d{8}-\d{4}\.zip$/.test(name)) return { ok: false, message: '备份文件名不对' }
+    try {
+      const got = await downloadWebdavBackup(r, name)
+      const dir = dataDir('backups')
+      mkdirSync(dir, { recursive: true })
+      const target = join(dir, name)
+      writeFileSync(target, got.buffer)
+      log.info(`已从 WebDAV 拉回备份：${name}（${got.buffer.length} 字节）`)
+      return await stageRestore(target)
+    } catch (error) {
+      return { ok: false, message: error.message }
+    }
+  }))
   const scheduleRemoteBackup = () => {
     if (pushTimer) { clearTimeout(pushTimer); pushTimer = null }
     const r = cfg.backup?.remote

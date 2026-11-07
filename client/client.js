@@ -5703,7 +5703,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           options: [{ value: 'gitee', label: 'Gitee 私有仓库' }, { value: 'webdav', label: 'WebDAV' }],
         }),
         webdav
-          ? h('div', { className: 'ab-note warn', style: { margin: '10px 0' } }, '⚠️ 备份里有全部聊天记录、记忆和账号凭证。WebDAV 请用自己可控的私有网盘，并尽量走 HTTPS；插件只把 zip 上传到你填的文件夹，不会传给第三方。')
+          ? h('div', { className: 'ab-note warn', style: { margin: '10px 0' } }, '⚠️ 备份里有全部聊天记录、记忆和账号凭证。WebDAV 请用自己可控的私有网盘，并尽量走 HTTPS；插件会自动创建 aurabot-backups 文件夹，只把 zip 上传到你的服务器，不会传给第三方。')
           : h('div', { className: 'ab-note warn', style: { margin: '10px 0' } }, '⚠️ 仓库必须是「私有」的！备份里有你全部的聊天记录、记忆和账号凭证，推到公开仓库等于把它们挂到网上。推送前会先向 Gitee 核实仓库确实是私有的，公开仓库一律拒绝推。'),
         h('div', { className: 'ab-flex', style: { alignItems: 'center' } },
           h('label', { className: 'ab-small', style: { display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' } }, h('input', { type: 'checkbox', checked: form.enabled, onChange: set('enabled') }), '每天自动备份并推送'),
@@ -5711,10 +5711,11 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         webdav
           ? h('div', null,
             h('div', { className: 'ab-flex', style: { marginTop: 10 } },
-              Field('WebDAV 文件夹地址', 'webdavUrl', 'https://dav.example.com/remote.php/dav/files/me/aurabot')),
+              Field('服务器地址', 'webdavUrl', 'https://dav.jianguoyun.com/')),
             h('div', { className: 'ab-flex', style: { marginTop: 8 } },
-              Field('用户名', 'webdavUsername', 'WebDAV 账号'),
-              Field('应用密码', 'webdavPassword', s && s.remote && s.remote.webdav && s.remote.webdav.hasPassword ? '已保存，留空就不改' : '建议用应用专用密码', 'password')))
+              Field('用户名', 'webdavUsername', '坚果云账号邮箱 / WebDAV 用户名'),
+              Field('密码/应用授权码', 'webdavPassword', s && s.remote && s.remote.webdav && s.remote.webdav.hasPassword ? '已保存，留空就不改' : '坚果云：账户信息 → 安全选项 → 添加应用密码', 'password')),
+            h('div', { className: 'ab-small ab-muted', style: { marginTop: 6 } }, '会自动在服务器根目录创建 aurabot-backups 文件夹；填到已有文件夹也可以。'))
           : h('div', null,
             h('div', { className: 'ab-flex', style: { marginTop: 10 } },
               Field('Gitee 用户名', 'owner', '如 gitee.com/小鱼 里的「小鱼」'),
@@ -5738,10 +5739,10 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h('summary', { className: 'ab-small', style: { cursor: 'pointer' } }, webdav ? '📖 WebDAV 怎么填（点这里收起）' : '📖 第一次用？跟着下面 4 步做（点这里收起）'),
           webdav
             ? h('div', { className: 'ab-small ab-muted', style: { marginTop: 8, lineHeight: 1.8 } },
-              h('div', null, h('b', null, '第 1 步 · 建文件夹：'), '在你的 WebDAV 网盘里新建一个专用文件夹，比如 aurabot；复制它的 WebDAV 地址填到上面（要填到文件夹，不是文件）。'),
-              h('div', null, h('b', null, '第 2 步 · 账号：'), '填 WebDAV 用户名和应用密码/专用密码（不要用主账号密码；多数网盘在「安全设置 / 应用密码」里生成）。'),
-              h('div', null, h('b', null, '第 3 步 · 保存并试推：'), '点「保存设置」，再点「立即推送」。成功后每天会按设置的时间自动打包上传，远端按「留几份」清理旧 zip。'),
-              h('div', { style: { marginTop: 6 } }, '插件只支持把 zip 直接 PUT 到已有文件夹，不会自动建目录；坚果云、Nextcloud、群晖等支持 WebDAV 的网盘都可以。'))
+              h('div', null, h('b', null, '第 1 步 · 服务器地址：'), '坚果云填 https://dav.jianguoyun.com/；其他网盘填 WebDAV 根地址（不是子目录也能用，插件会自动建 aurabot-backups）。'),
+              h('div', null, h('b', null, '第 2 步 · 用户名和密码/应用授权码：'), '坚果云用户名就是账号邮箱；密码不是登录密码，去网页端「账户信息 → 安全选项 → 添加应用密码」生成一个，填到第二栏。'),
+              h('div', null, h('b', null, '第 3 步 · 保存并试推：'), '点「保存设置」，再点「立即推送」。成功后每天按设置时间自动上传，远端按「留几份」清理旧 zip。'),
+              h('div', { style: { marginTop: 6 } }, '插件会自动创建 aurabot-backups 文件夹；如果服务器不允许根目录建目录，可以先手动建好再把地址填到该文件夹。'))
             : h('div', { className: 'ab-small ab-muted', style: { marginTop: 8, lineHeight: 1.8 } },
               h('div', null, h('b', null, '第 1 步 · 注册 Gitee：'), '打开 ', h('a', { href: 'https://gitee.com/signup', target: '_blank', rel: 'noreferrer' }, 'gitee.com'), ' 注册一个账号（手机号或邮箱都行，免费的）。'),
               h('div', null, h('b', null, '第 2 步 · 生成令牌：'), '登录后点右上角头像 →「设置」→ 左侧「安全设置」→「私人令牌」→「+ 生成新令牌」，勾选 ', h('b', null, 'projects'), ' 权限后提交，把显示出来的那串字符复制粘贴到上面的「Gitee 私人令牌」里（只显示一次，丢了就重新生成一个）。'),
@@ -5757,6 +5758,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const [path, setPath] = useState('')
       const [busy, setBusy] = useState(false)
       const [over, setOver] = useState(false)
+      const [remoteFiles, setRemoteFiles] = useState(null)
+      const [remoteBusy, setRemoteBusy] = useState(false)
       const fileRef = useRef(null)
       const load = () => get('/backup/state').then(setS)
       useEffect(() => { load() }, [])
@@ -5773,6 +5776,19 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         if (!confirm('导入「' + file.name + '」？\n\n重启 DSH 后，这台电脑上的配置、记忆、人设等会被备份里的内容替换，原来的文件留在 backups 文件夹。')) return
         setBusy(true)
         try { after(await fetch(API + '/backup/upload', { method: 'POST', headers: { 'x-aurabot-backup': '1' }, body: file }).then((r) => r.json())) } catch (e) { toast(e.message) } finally { setBusy(false) }
+      }
+      const loadRemote = async () => {
+        setRemoteBusy(true)
+        try {
+          const r = await call('/backup/remote/list')
+          if (!r.ok) toast(r.message, 'err')
+          else setRemoteFiles(r.files || [])
+        } finally { setRemoteBusy(false) }
+      }
+      const restoreRemote = async (name) => {
+        if (!confirm('从 WebDAV 拉回并导入「' + name + '」？\n\n重启 DSH 后，这台电脑上的配置、记忆、人设等会被备份里的内容替换。')) return
+        setBusy(true)
+        try { after(await call('/backup/remote/restore', { name })) } finally { setBusy(false) }
       }
       const size = (n) => (n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.ceil(n / 1024) + ' KB')
       const job = s && s.job
@@ -5797,6 +5813,17 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             h('div', { key: 'p', className: 'ab-flex', style: { marginTop: 10 } },
               h('input', { className: 'ab-input', placeholder: '文件很大时填完整路径，如 D:\\aurabot-backup.zip', value: path, onChange: (e) => setPath(e.target.value) }),
               h(Btn, { small: true, disabled: busy || !path.trim(), onClick: async () => { if (!confirm('导入这个备份？重启 DSH 后会替换这台电脑上的数据。')) return; setBusy(true); try { after(await call('/backup/restore-path', { path })) } finally { setBusy(false) } } }, '导入')),
+            h('div', { key: 'r', style: { marginTop: 14 } },
+              h('div', { className: 'ab-section-title' }, '从 WebDAV 恢复'),
+              h('div', { className: 'ab-flex' },
+                h(Btn, { small: true, disabled: remoteBusy, onClick: loadRemote }, remoteBusy ? '读取中…' : '拉取备份列表')),
+              remoteFiles === null
+                ? h('div', { className: 'ab-muted ab-small', style: { marginTop: 6 } }, '先在「云备份」里切到 WebDAV 并保存设置。')
+                : remoteFiles.length === 0
+                  ? h('div', { className: 'ab-muted ab-small', style: { marginTop: 6 } }, '远端 aurabot-backups 里还没有备份。')
+                  : h('div', { style: { marginTop: 8 } }, remoteFiles.map((name) => h('div', { key: name, className: 'ab-flex', style: { alignItems: 'center', padding: '5px 0', borderTop: '1px solid var(--ab-line)' } },
+                    h('span', { className: 'ab-small', style: { flex: 1, minWidth: 0, wordBreak: 'break-all' } }, name),
+                    h(Btn, { small: true, disabled: busy, onClick: () => restoreRemote(name) }, '拉回并恢复'))))),
           ]),
         h(Card, { title: '不会带过去的', desc: '这些要在新电脑上重新弄一下。' },
           h('div', { className: 'ab-small ab-muted' }, 'DSH 自己的设置和模型密钥、QQ 网关 SnowLuma 的登录、QQ 工作区以外的 DSH 会话；抖音和小黑盒的浏览器登录要重新扫码；日志和缓存不备份；翻唱环境和桌宠的 Electron 要重新安装；数据目录以外的路径（比如 ffmpeg、本地图片文件夹）在新电脑上要重新填。')))

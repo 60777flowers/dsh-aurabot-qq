@@ -6,28 +6,33 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 let push
+let okFetch
 const root = mkdtempSync(join(tmpdir(), 'aurabot-webdav-'))
-const base = 'https://dav.example.com/aurabot'
+const base = 'https://dav.example.com'
+const folder = base + '/aurabot-backups/'
 const calls = []
 
 before(async () => {
   process.env.AURABOT_DATA_DIR = root
   push = await import('../src/core/backup-push.js')
   push.pushHooks.spawn = () => { throw new Error('WebDAV 不应该跑 git') }
-  push.pushHooks.fetch = async (url, init = {}) => {
+  okFetch = async (url, init = {}) => {
     calls.push({ url, method: init.method || 'GET', headers: init.headers || {}, body: init.body })
     const method = init.method || 'GET'
+    if (method === 'MKCOL') return { ok: true, status: 201 }
     if (method === 'PUT') return { ok: true, status: 201 }
     if (method === 'DELETE') return { ok: true, status: 204 }
+    if (method === 'GET') return { ok: true, status: 200, arrayBuffer: async () => Buffer.from('downloaded-zip') }
     if (method === 'PROPFIND') {
       const files = ['aurabot-backup-20261101-0330.zip', 'aurabot-backup-20261102-0330.zip', 'aurabot-backup-20261103-0330.zip']
       return {
         ok: true, status: 207,
-        text: async () => '<d:multistatus>' + files.map((f) => `<d:response><d:href>/aurabot/${f}</d:href></d:response>`).join('') + '</d:multistatus>',
+        text: async () => '<d:multistatus>' + files.map((f) => `<d:response><d:href>/aurabot-backups/${f}</d:href></d:response>`).join('') + '</d:multistatus>',
       }
     }
     return { ok: false, status: 500 }
   }
+  push.pushHooks.fetch = okFetch
 })
 
 after(() => rmSync(root, { recursive: true, force: true }))
@@ -51,19 +56,21 @@ test('WebDAV：PUT 最新备份，按 keep 删除旧的', async () => {
   assert.equal(r.name, 'aurabot-backup-20261103-0330.zip')
   assert.equal(r.dropped, 1)
   const put = calls.find((c) => c.method === 'PUT')
-  assert.equal(put.url, base + '/aurabot-backup-20261103-0330.zip')
+  assert.equal(put.url, folder + 'aurabot-backup-20261103-0330.zip')
   assert.equal(put.headers.authorization, 'Basic ' + Buffer.from('user:SECRET_PW').toString('base64'))
   assert.equal(put.body.toString(), 'zip-aurabot-backup-20261103-0330.zip')
+  const mkcol = calls.find((c) => c.method === 'MKCOL')
+  assert.equal(mkcol.url, folder)
   const dels = calls.filter((c) => c.method === 'DELETE').map((c) => c.url)
-  assert.deepEqual(dels, [base + '/aurabot-backup-20261101-0330.zip'])
+  assert.deepEqual(dels, [folder + 'aurabot-backup-20261101-0330.zip'])
   assert.match(r.message, /WebDAV/)
   assert.equal(r.message.includes('SECRET_PW'), false)
 })
 
 test('WebDAV：缺地址/账号/密码时明确报错', async () => {
-  await assert.rejects(push.pushBackup({ provider: 'webdav', webdav: {} }), /WebDAV 文件夹地址/)
+  await assert.rejects(push.pushBackup({ provider: 'webdav', webdav: {} }), /WebDAV 服务器地址/)
   await assert.rejects(push.pushBackup({ provider: 'webdav', webdav: { url: base } }), /用户名/)
-  await assert.rejects(push.pushBackup({ provider: 'webdav', webdav: { url: base, username: 'u', password: '' } }), /应用密码/)
+  await assert.rejects(push.pushBackup({ provider: 'webdav', webdav: { url: base, username: 'u', password: '' } }), /应用授权码/)
 })
 
 test('WebDAV：网络错误信息里不出现密码', async () => {
@@ -72,4 +79,16 @@ test('WebDAV：网络错误信息里不出现密码', async () => {
     push.pushBackup({ provider: 'webdav', webdav: { url: base, username: 'u', password: 'SECRET_PW' }, keep: 1 }),
     (err) => !String(err.message).includes('SECRET_PW') && /WebDAV/.test(err.message),
   )
+})
+
+test('WebDAV：列出远端备份并可下载；只填 aurabot-backups 也不会重复建目录', async () => {
+  push.pushHooks.fetch = okFetch
+  calls.length = 0
+  const cfg = { provider: 'webdav', webdav: { url: base + '/aurabot-backups', username: 'u', password: 'p' } }
+  const list = await push.listWebdavBackups(cfg)
+  assert.deepEqual(list.files, ['aurabot-backup-20261103-0330.zip', 'aurabot-backup-20261102-0330.zip', 'aurabot-backup-20261101-0330.zip'])
+  const got = await push.downloadWebdavBackup(cfg, 'aurabot-backup-20261103-0330.zip')
+  assert.equal(got.buffer.toString(), 'downloaded-zip')
+  assert.ok(calls.some((c) => c.method === 'MKCOL' && c.url === folder))
+  await assert.rejects(push.downloadWebdavBackup(cfg, '../evil.zip'), /文件名/)
 })

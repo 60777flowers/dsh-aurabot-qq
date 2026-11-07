@@ -168,16 +168,29 @@ async function resetHistory(wd, r, name, version, token, onLog) {
 function webdavSettings(r) {
   const w = r.webdav || {}
   const raw = String(w.url || '').trim()
-  if (!raw) throw new Error('先在面板填 WebDAV 文件夹地址（例如 https://dav.example.com/remote.php/dav/files/me/aurabot）')
+  if (!raw) throw new Error('先在面板填 WebDAV 服务器地址（例如 https://dav.jianguoyun.com/）')
   let u
   try { u = new URL(raw) } catch { throw new Error('WebDAV 地址格式不对，要填完整的 http(s) 地址') }
   if (!/^https?:$/.test(u.protocol)) throw new Error('WebDAV 地址必须以 http:// 或 https:// 开头')
   if (u.username || u.password) throw new Error('WebDAV 地址里不要写用户名密码，填到下面的两栏里')
-  if (u.search || u.hash) throw new Error('WebDAV 地址只填文件夹，不要带 ? 或 #')
+  if (u.search || u.hash) throw new Error('WebDAV 地址只填服务器地址，不要带 ? 或 #')
   const username = String(w.username || '').trim()
   const password = String(w.password || '')
-  if (!username || !password) throw new Error('先在面板填 WebDAV 用户名和应用密码')
-  return { url: raw.replace(/\/+$/, ''), username, password, auth: 'Basic ' + Buffer.from(username + ':' + password).toString('base64') }
+  if (!username || !password) throw new Error('先在面板填 WebDAV 用户名和密码/应用授权码')
+  const base = raw.replace(/\/+$/, '')
+  // 兼容以前填到 aurabot-backups 的写法；否则在服务器根下自动建这个固定文件夹
+  const folder = /\/aurabot-backups$/i.test(new URL(base).pathname) ? base + '/' : base + '/aurabot-backups/'
+  return { base, folder, username, password, auth: 'Basic ' + Buffer.from(username + ':' + password).toString('base64') }
+}
+
+async function ensureWebdavFolder(r) {
+  const s = webdavSettings(r)
+  const res = await webdavFetch(s.folder, { method: 'MKCOL', headers: { authorization: s.auth }, timeout: 15000, password: s.password })
+  // 201 = 新建成功；405 = 已存在；200 = 有些服务端直接返回成功
+  if (res.ok || res.status === 405) return s
+  if (res.status === 401 || res.status === 403) throw new Error('WebDAV 用户名或密码/应用授权码不对（HTTP ' + res.status + '）')
+  if (res.status === 409) throw new Error('WebDAV 服务器地址不对：父目录不存在，检查地址是否填到了正确的云盘根目录')
+  throw new Error('WebDAV 自动创建 aurabot-backups 文件夹失败（HTTP ' + res.status + '）：检查账号有没有写权限')
 }
 
 async function webdavFetch(url, { method = 'GET', headers = {}, body, timeout = 15000, password = '' } = {}) {
@@ -189,8 +202,8 @@ async function webdavFetch(url, { method = 'GET', headers = {}, body, timeout = 
   }
 }
 
-async function webdavList(base, auth, password) {
-  const res = await webdavFetch(base + '/', {
+async function webdavList(folder, auth, password) {
+  const res = await webdavFetch(folder, {
     method: 'PROPFIND',
     headers: { authorization: auth, depth: '1', 'content-type': 'application/xml; charset=utf-8' },
     body: '<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:getcontentlength/></d:prop></d:propfind>',
@@ -198,8 +211,8 @@ async function webdavList(base, auth, password) {
     password,
   })
   if (!res.ok) {
-    if (res.status === 401 || res.status === 403) throw new Error('WebDAV 用户名或应用密码不对（HTTP ' + res.status + '）')
-    if (res.status === 404) throw new Error('WebDAV 文件夹不存在：先在云端建好这个目录，再把地址填到面板')
+    if (res.status === 401 || res.status === 403) throw new Error('WebDAV 用户名或密码/应用授权码不对（HTTP ' + res.status + '）')
+    if (res.status === 404) throw new Error('WebDAV 上找不到 aurabot-backups 文件夹，检查服务器地址或权限')
     throw new Error('WebDAV 列目录失败（HTTP ' + res.status + '）')
   }
   let text = ''
@@ -214,8 +227,32 @@ async function webdavList(base, auth, password) {
   return [...names]
 }
 
+/** 面板「从 WebDAV 恢复」：列出远端备份文件名。 */
+export async function listWebdavBackups(r) {
+  const s = await ensureWebdavFolder(r)
+  const names = await webdavList(s.folder, s.auth, s.password)
+  return { ok: true, files: names.sort().reverse() }
+}
+
+/** 面板「从 WebDAV 恢复」：下载指定 zip 到内存。 */
+export async function downloadWebdavBackup(r, name) {
+  const file = String(name || '')
+  if (!/^aurabot-backup-\d{8}-\d{4}\.zip$/.test(file)) throw new Error('备份文件名不对')
+  const s = await ensureWebdavFolder(r)
+  const res = await webdavFetch(s.folder + encodeURIComponent(file), {
+    headers: { authorization: s.auth },
+    timeout: 30 * 60 * 1000,
+    password: s.password,
+  })
+  if (!res.ok) throw new Error('WebDAV 下载失败（HTTP ' + res.status + '）：检查文件是否还在、账号有没有读权限')
+  let buf
+  try { buf = Buffer.from(await res.arrayBuffer()) } catch (error) { throw new Error('WebDAV 下载内容读不出来：' + redact(error.message, s.password)) }
+  if (!buf.length) throw new Error('WebDAV 下载到的文件是空的')
+  return { name: file, buffer: buf }
+}
+
 async function pushBackupWebdav(r, { onLog = () => {} } = {}) {
-  const { url: base, password, auth } = webdavSettings(r)
+  const { folder, password, auth } = await ensureWebdavFolder(r)
   const dir = join(dataDir('backups'))
   const zips = existsSync(dir) ? readdirSync(dir).filter((n) => /^aurabot-backup-\d{8}-\d{4}\.zip$/.test(n)).sort().reverse() : []
   if (!zips.length) throw new Error('还没有备份文件：先「立即备份」一次，或等每天到点自动打包')
@@ -224,7 +261,7 @@ async function pushBackupWebdav(r, { onLog = () => {} } = {}) {
   let buf
   try { buf = await readFile(full) } catch (error) { throw new Error('读不了最新备份文件：' + redact(error.message, password)) }
   onLog({ out: `上传 ${name}（${Math.round(buf.length / 1024)} KB）到 WebDAV…` })
-  const put = await webdavFetch(base + '/' + encodeURIComponent(name), {
+  const put = await webdavFetch(folder + encodeURIComponent(name), {
     method: 'PUT',
     headers: { authorization: auth, 'content-type': 'application/zip' },
     body: buf,
@@ -236,13 +273,13 @@ async function pushBackupWebdav(r, { onLog = () => {} } = {}) {
   let kept = 1
   let warning = ''
   try {
-    const remote = await webdavList(base, auth, password)
+    const remote = await webdavList(folder, auth, password)
     const keep = Math.max(1, Math.round(Number(r.keep) || 7))
     const sorted = [...new Set([name, ...remote])].sort().reverse()
     kept = Math.min(keep, sorted.length)
     const old = sorted.slice(keep)
     for (const oldName of old) {
-      const del = await webdavFetch(base + '/' + encodeURIComponent(oldName), {
+      const del = await webdavFetch(folder + encodeURIComponent(oldName), {
         method: 'DELETE', headers: { authorization: auth }, timeout: 15000, password,
       })
       if (del.ok) dropped++
@@ -255,7 +292,7 @@ async function pushBackupWebdav(r, { onLog = () => {} } = {}) {
   return {
     ok: true,
     name,
-    folder: base,
+    folder,
     parts: 1,
     kept,
     dropped,
