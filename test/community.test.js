@@ -233,11 +233,13 @@ test('测试版：版本比较、更新通道、市场最低版本', async () =>
   assert.equal(u.compareVersions('1.1.24', '1.1.24'), 0)
   assert.equal(compareVersions('1.2.0', '1.2.0-beta.1'), 0)
   const urls = []
-  const check = u.createUpdateChecker({ pkg: { version: '1.2.0-beta.1', repository: 'https://github.com/a/b' }, fetchImpl: async (url) => { urls.push(url); return { ok: true, json: async () => ({ version: '1.2.0-beta.2' }) } } })
+  const feed = '<feed><entry><updated>2026-11-01T00:00:00Z</updated><link rel="alternate" href="https://github.com/a/b/releases/tag/v1.2.0-beta.2"/><title>beta</title></entry></feed>'
+  const check = u.createUpdateChecker({ pkg: { version: '1.2.0-beta.1', repository: 'https://github.com/a/b' }, fetchImpl: async (url) => { urls.push(url); return { ok: true, text: async () => feed } } })
   const r = await check({ force: true })
-  assert.match(urls[0], /\/beta\/package\.json$/)
+  assert.match(urls[0], /releases\.atom$/)
   assert.equal(r.newer, true)
-  assert.match(r.command, /github:a\/b#beta$/)
+  assert.equal(r.latest, '1.2.0-beta.2')
+  assert.match(r.command, /#v1\.2\.0-beta\.2$/)
   assert.equal(u.channelOf('1.2.0'), 'main')
 })
 
