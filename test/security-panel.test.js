@@ -2,6 +2,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { normalize } from '../src/core/config.js'
 
 const client = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
 const host = readFileSync(new URL('../src/host.js', import.meta.url), 'utf8')
@@ -29,6 +30,11 @@ test('危险命令确认放在安全防护页，不能藏在聊天页', () => {
   const security = client.slice(securityStart, logsStart)
   assert.ok(security.includes('security.dangerConfirm'), '安全防护页缺危险命令确认')
   assert.ok(!group.includes('security.dangerConfirm'), '聊天页不该再出现危险命令确认')
+})
+
+test('危险命令确认默认开启，显式关闭仍然生效', () => {
+  assert.equal(normalize({}).security.dangerConfirm, true, '新配置应该默认开启')
+  assert.equal(normalize({ security: { dangerConfirm: false } }).security.dangerConfirm, false, '显式关掉不能被改成开')
 })
 
 test('安全防护页：远端管理与可信反代有 UI，且配置走 security 段（首审 P1-3）', () => {

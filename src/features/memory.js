@@ -276,17 +276,20 @@ export function search(idx, query, o = {}) {
     eligible.set(it.id, it)
     const aboutHit = Boolean(it.about) && aboutSet.has(String(it.about))
     const vector = vectors.get(it.id)
+    const aboutOnly = s <= 0 && vector === undefined && aboutHit
+    // 「问约定/说好」时允许把这个人名下没有关键词命中的约定带出来；普通问题仍必须有内容相关度
+    if (s <= 0 && vector === undefined && !(o.allowAboutOnly && aboutOnly)) continue
     // 用原始内容相关度设门槛，人物加分和新近程度不能把无关候选抬过线。
     // 命中比例托底：常见话题的 BM25 会随库变大而下降，不能让精确关键词因此失忆。
     const relevance = Math.max(s / (1 + s), why.length / (q.length || 1), vector ?? 0)
     if (relevance < minRelevance) continue
-    if (s <= 0 && vector === undefined) continue // 零关键词只能由足够相似的向量召回
     const importance = 0.6 + 0.8 * (Number(it.importance) || 0.5)
-    const score = ((s > 0 ? s : vector) + (aboutHit ? 0.8 : 0)) * importance * (0.55 + 0.45 * retention(it, now))
-    scored.push({ it, score, relevance, keyword: s, vector, why: why.sort((x, y) => y[1] - x[1]).slice(0, 3).map((w) => w[0]).concat(aboutHit ? ['（关于这个人）'] : [], vector !== undefined ? ['（语义相关）'] : []) })
+    let score = ((s > 0 ? s : (vector ?? 0)) + (aboutHit ? 0.8 : 0)) * importance * (0.55 + 0.45 * retention(it, now))
+    if (o.preferPersonal && isPersonalMemory(it)) score *= 1.4
+    scored.push({ it, score, relevance, keyword: s, vector, aboutOnly, why: why.sort((x, y) => y[1] - x[1]).slice(0, 3).map((w) => w[0]).concat(aboutHit ? ['（关于这个人）'] : [], vector !== undefined ? ['（语义相关）'] : []) })
   }
   // 关键词名次始终从关键词候选里算，向量候选不能改变原本的关键词排序。
-  const hits = scored.filter((x) => x.keyword > 0 && x.score >= (o.minScore ?? 0.35))
+  const hits = scored.filter((x) => (x.keyword > 0 || (o.allowAboutOnly && x.aboutOnly)) && x.score >= (o.minScore ?? 0.35))
   if (o.rrf !== false) {
     const ranks = (value) => {
       const sorted = [...hits].sort((a, b) => value(b) - value(a))
@@ -321,8 +324,26 @@ export function search(idx, query, o = {}) {
       have.add(id)
     }
   }
-  return selected.map(({ keyword, vector, ...hit }) => hit)
+  return selected.map(({ keyword, vector, aboutOnly, ...hit }) => hit)
 }
+
+/** 「私人记忆」：关于某个人的，或她自己 / 主人手动记的；B站、桌宠、空间日记等经历不算。 */
+export function isPersonalMemory(it) {
+  if (!it) return false
+  return Boolean(it.about) || ['tool', 'auto', 'import', 'manual', 'diary'].includes(it.source)
+}
+
+/** 明确的约定/承诺：和日记分开，问「约定/说好」时优先于日记。 */
+const AGREEMENT_RE = /(约定|约好|说好|答应|讲好|定好|约定了)/
+const AGREEMENT_QUERY = /(约定|约好|说好|答应|讲好|定好)/
+
+export function isAgreementMemory(it) {
+  if (!it || it.source === 'diary' || it.source === 'event') return false
+  return AGREEMENT_RE.test(String(it.text || ''))
+}
+
+/** 这句话明显在问 B站 / 视频 / 最近看了什么：这时不该让私人记忆抢在前面。 */
+const EVENT_QUERY = /(B站|b站|视频|看了|看过|刷到|番剧|番|电影|直播|UP主|弹幕|做法|教程|音乐|歌曲|唱歌|抖音|空间|日记)/i
 
 /** 「刚才」「3 小时前」「昨天」这样的说法。 */
 export function agoText(at, now = Date.now()) {
@@ -791,6 +812,11 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
   }
 
   function add({ text, about = '', aboutName = '', tags = [], importance = 0.5, source = 'tool', chatId = '', saidAt = 0, speaker = '', status = '', scope = '', tier, validFrom, validUntil, kind, meta, followUp, guard = null, acquaintedOnly = false }) {
+    // 调试模式：任何来源都不落盘，只在日志里留痕。
+    if (getConfig().debug) {
+      log.info(`[调试] 不写记忆：${String(text || '').slice(0, 120)}`)
+      return { ok: true, debug: true, message: '调试模式：不写记忆' }
+    }
     if (kind === 'seen' && source === 'event') {
       meta = seenMeta(meta)
       about = ''; aboutName = ''; speaker = ''; scope = ''
@@ -1042,8 +1068,24 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
     storage.save(s) // 只改命中计数，不动索引
   }
 
-  function recall(query, { about, limit, where = '', context = '', onlyAbout, requireAbout, shown = true, groupChatId = '', includeGroup = false, excludeAbout = '', vectorHits, period } = {}) {
+  function recall(query, { about, limit, where = '', context = '', onlyAbout, preferPersonal, requireAbout, shown = true, groupChatId = '', includeGroup = false, excludeAbout = '', vectorHits, period } = {}) {
     const max = limit ?? getConfig().memory.recallCount
+    const prefer = (preferPersonal ?? (getConfig().memory?.preferPersonal !== false)) && !EVENT_QUERY.test(String(query || ''))
+    const agreementQuery = AGREEMENT_QUERY.test(String(query || ''))
+    // 问「约定/说好」时多取一些候选，避免明确的约定被大量日记/事件挤出候选集
+    const take = prefer ? (agreementQuery ? 500 : Math.max(max, 1) * 4) : max
+    const pick = (list) => {
+      if (!prefer) return list.slice(0, max)
+      if (agreementQuery) {
+        const agreements = list.filter((h) => isAgreementMemory(h.it))
+        const personal = list.filter((h) => isPersonalMemory(h.it) && !isAgreementMemory(h.it))
+        const other = list.filter((h) => !isPersonalMemory(h.it))
+        return [...agreements, ...personal, ...other].slice(0, max)
+      }
+      const personal = list.filter((h) => isPersonalMemory(h.it))
+      const other = list.filter((h) => !isPersonalMemory(h.it))
+      return [...personal, ...other].slice(0, max)
+    }
     const id = String(where).split('（')[0]
     const owner = String(getConfig().ownerQQ || '')
     const ownerPrivate = Boolean(owner && id === `private:${owner}`)
@@ -1052,16 +1094,16 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
     // 主人私聊（ownerPrivate）保持可以看全部。where 不是真实聊天 id 的内部调用按主人视角处理（向后兼容）。
     const socialScope = Boolean(id) && /^(private|group):/.test(id) && !ownerPrivate
     // 显式给了时间范围（工具/面板定点查）就不再从查询语句里猜时间
-    const options = { minRelevance: getConfig().memory.recallMinRelevance ?? 0, period: period ?? pastWindow(query, Date.now(), getConfig().memory.recallTriggers), about, onlyAbout, requireAbout, gistChatId: /^(private|group):/.test(id) && (!id.startsWith('group:') || getConfig().memory.groupMemory !== false) ? id : '', ownerScope: !socialScope, scopeChatId: socialScope ? id : '', groupChatId: getConfig().memory.groupMemory !== false && id === groupChatId && id.startsWith('group:') ? id : '', includeGroup: getConfig().memory.groupMemory !== false && includeGroup && ownerPrivate, excludeAbout: excluded, rrf: getConfig().memory.searchRrf !== false }
+    const options = { minRelevance: getConfig().memory.recallMinRelevance ?? 0, allowAboutOnly: agreementQuery, period: period ?? pastWindow(query, Date.now(), getConfig().memory.recallTriggers), about, onlyAbout, requireAbout, preferPersonal: prefer, gistChatId: /^(private|group):/.test(id) && (!id.startsWith('group:') || getConfig().memory.groupMemory !== false) ? id : '', ownerScope: !socialScope, scopeChatId: socialScope ? id : '', groupChatId: getConfig().memory.groupMemory !== false && id === groupChatId && id.startsWith('group:') ? id : '', includeGroup: getConfig().memory.groupMemory !== false && includeGroup && ownerPrivate, excludeAbout: excluded, rrf: getConfig().memory.searchRrf !== false }
     const idx = index()
     // 查询结束到真正回忆之间，记忆可能刚被改写、忘掉或关闭向量检索。
     const valid = Array.isArray(vectorHits) && vectorHits.length ? new Set(vector.validIds(idx.docs.map((d) => d.it))) : null
     const currentHits = valid ? vectorHits.filter((h) => valid.has(h.id)) : []
-    const hits = search(idx, query, { ...options, limit: max, vectorHits: currentHits })
+    let hits = pick(search(idx, query, { ...options, limit: take, vectorHits: currentHits }))
     // 这一句没想起几条（「嗯嗯」「然后呢」）：用上一句再找找，分数打折
     if (context && hits.length < max) {
       const have = new Set(hits.map((h) => h.it.id))
-      for (const h of search(index(), context, { ...options, limit: max, minScore: 0.5 })) {
+      for (const h of pick(search(index(), context, { ...options, limit: take, minScore: 0.5 }))) {
         if (hits.length >= max) break
         if (!have.has(h.it.id) && h.relevance * 0.6 >= options.minRelevance) {
           hits.push({ ...h, score: h.score * 0.6, relevance: h.relevance * 0.6, why: [...(h.why || []), '（上一句）'] })
@@ -1530,11 +1572,11 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
     // 内容一变就多一份快照；放在用户消息里（recallHint）只占当轮，不会越滚越大。
     // 兜底字数上限：各段条数都有上限（相处经验 8 条、说话方式按 key 限条），但单条长度没有约束，
     // 长期相处这段会慢慢变长，而它每轮都进上下文。超了从尾部截断，宁可少一句也不无声膨胀。
-    const RESIDENT_MAX_CHARS = 900
+    const residentMax = Math.min(4000, Math.max(200, Number(getConfig().memory?.residentMaxChars) || 1200))
     let resident = parts.join('\n')
-    if (resident.length > RESIDENT_MAX_CHARS) {
-      resident = resident.slice(0, RESIDENT_MAX_CHARS) + '…'
-      log.debug(`常驻记忆超长，已截断到 ${RESIDENT_MAX_CHARS} 字`)
+    if (resident.length > residentMax) {
+      resident = resident.slice(0, residentMax) + '…'
+      log.debug(`常驻记忆超长，已截断到 ${residentMax} 字`)
     }
     return resident
   }
@@ -2805,6 +2847,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
   /** 每分钟调一次：空闲聊天先提炼，定时整理保留兜底。 */
   let tickBusy = false
   async function tick() {
+    if (getConfig().debug) return
     if (tickBusy) return
     tickBusy = true
     try { return await tickOnce() } finally { tickBusy = false }

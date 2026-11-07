@@ -61,6 +61,68 @@ const VERSION = PKG.version
 const PREFIX = '/aurabot/api'
 
 /**
+ * 自动更新要在宿主上跑 `dsh plugin add`：
+ * - 桌面版：用 DSH 自带的 Electron 可执行文件 + app.asar 里的 cli.js（等价于 dsh.cmd / dsh 脚本）；
+ * - 网页版：PATH 里的 dsh（Windows 上 .cmd 要过 shell）。
+ */
+function updateExec(env, args) {
+  if (env.mode === 'desktop' && env.resourcesPath) {
+    const cliJs = join(env.resourcesPath, 'app.asar', 'dsh', 'node_modules', '@deepseek-ai', 'dsh-desktop-host', 'lib', 'cli.js')
+    if (existsSync(cliJs)) {
+      return { cmd: process.execPath, cmdArgs: [cliJs, ...args], env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, shell: false }
+    }
+  }
+  return { cmd: env.cli, cmdArgs: args, env: process.env, shell: process.platform === 'win32' }
+}
+
+/** 本机端口有没有人在听（诊断用，别拿它当业务判断）。 */
+function tcpOpen(port, host = '127.0.0.1', timeoutMs = 800) {
+  return new Promise((resolve) => {
+    const socket = new net.Socket()
+    let done = false
+    const finish = (value) => {
+      if (done) return
+      done = true
+      try { socket.destroy() } catch (error) {}
+      resolve(value)
+    }
+    socket.setTimeout(timeoutMs)
+    socket.once('connect', () => finish(true))
+    socket.once('timeout', () => finish(false))
+    socket.once('error', () => finish(false))
+    socket.connect(port, host)
+  })
+}
+
+/** 跑更新命令，收集输出；3 分钟没结束就杀掉。 */
+function runUpdate(cmd, args, env, shell = false) {
+  return new Promise((resolve) => {
+    let out = ''
+    let done = false
+    const finish = (value) => { if (!done) { done = true; resolve(value) } }
+    let child
+    try {
+      child = spawn(cmd, args, { env, shell, windowsHide: true })
+    } catch (error) {
+      return finish({ ok: false, message: '启动更新命令失败：' + error.message })
+    }
+    const timer = setTimeout(() => {
+      try { child.kill() } catch (error) {}
+      finish({ ok: false, message: '更新超时（3 分钟），可能网络不通', output: out.slice(-4000) })
+    }, 180000)
+    child.stdout?.on('data', (b) => { out += String(b) })
+    child.stderr?.on('data', (b) => { out += String(b) })
+    child.on('error', (error) => { clearTimeout(timer); finish({ ok: false, message: '更新失败：' + error.message }) })
+    child.on('exit', (code) => {
+      clearTimeout(timer)
+      finish(code === 0
+        ? { ok: true, message: '更新命令跑完了，重启 DSH 生效', output: out.slice(-4000) }
+        : { ok: false, message: '更新命令退出码 ' + code, output: out.slice(-4000) })
+    })
+  })
+}
+
+/**
  * 这个 DSH 会话是不是 Aurabot 的 QQ 聊天会话（私聊/群聊各对应一个 DSH 会话）。
  * 桌宠的干活状态只该跟 DSH 自己发起的活儿走，聊天回合不算（#184：每句聊天都弹完工气泡太吵）。
  */
@@ -251,6 +313,18 @@ export function apply(ctx) {
   // 连接后漏掉的、或补发中途又断网的，定时再试；没连接时直接返回。
   ctx.effect(() => ctx.interval(() => { flushOutbox().catch(() => {}) }, 10_000), 'aurabot: 补发队列')
   const groupRoles = createGroupRoles({ onebot, getConfig, log: logger.child('chat') })
+
+  async function flushOutbox () {
+    if (onebotState !== 'connected' || !loginOk) return
+    try {
+      const r = await outbox.flush((action, params, opts) => onebot.call(action, params, { ...opts, retries: 0 }))
+      if (r.sent || r.dropped || r.left) log.info(`补发队列：成功 ${r.sent}，丢弃 ${r.dropped}，剩余 ${r.left}`)
+    } catch (error) {
+      logger.child('onebot').warn('补发队列出错：', error.message)
+    }
+  }
+  // 连接后漏掉的、或补发中途又断网的，定时再试；没连接时直接返回。
+  ctx.effect(() => ctx.interval(() => { flushOutbox().catch(() => {}) }, 10_000), 'aurabot: 补发队列')
   const local = createLocal({ getConfig, log: logger })
   const mutes = createMutes()
 
@@ -788,6 +862,7 @@ export function apply(ctx) {
   const community = createCommunity({ mods, getConfig, setConfig, log, version: VERSION, alive: () => !unloaded })
   const booted = mods.boot()
   booted.then(() => injectPetPort()).catch(() => {})
+  booted.then(() => { if (getConfig().debug) hub.ensureDebugSession().catch((error) => log.warn('建调试会话失败：', error.message)) }).catch(() => {})
   // 模块起来之后再把策略源接上（此时 use('speakup') / use('purpose') 才拿得到实例）
   booted.then(() => wirePolicySources()).catch((error) => logger.child('出站策略').warn('策略源接线上失败：', error && error.message))
   booted.then(() => (unloaded ? [] : community.migrate())).catch((error) => log.warn('搬到社区库的模块处理失败：', error.message))
@@ -1097,10 +1172,38 @@ export function apply(ctx) {
     if (changedConn && onebot.state !== 'stopped') onebot.restart()
     if (!before.enabled && cfg.enabled) setTimeout(safe(watchdog, '看门狗'), 100)
     if (before.enabled && !cfg.enabled) onebot.stop()
-    log.info(`设置已保存｜总开关 ${cfg.enabled ? '开' : '关'}｜试运行 ${cfg.dryRun ? '开' : '关'}`)
+    log.info(`设置已保存｜总开关 ${cfg.enabled ? '开' : '关'}｜试运行 ${cfg.dryRun && !cfg.debug ? '开' : '关'}｜调试 ${cfg.debug ? '开' : '关'}`)
     await mods.sync().catch(() => {})
+    // 模块启停 / 生图开关变化后工具清单可能变了：已挂载的会话重新挂一遍
+    try { hub.remountAll?.('设置已保存') } catch (error) { log.debug('重挂工具失败：', error.message) }
     if (pw && !pw.ok) return { ...(await overview()), ok: false, message: '其他设置保存了，但控制台密码没改：' + pw.message }
-    return { ...(await overview()), message: '保存好了' + (pw ? '，' + pw.message : '') }
+    let debugNote = ''
+    if (cfg.debug) {
+      try {
+        const d = await hub.ensureDebugSession()
+        debugNote = d.created ? '，调试会话已建好' : ''
+      } catch (error) {
+        log.debug('建调试会话失败：', error.message)
+      }
+    }
+    return { ...(await overview()), message: '保存好了' + (pw ? '，' + pw.message : '') + debugNote }
+  })
+
+  route('/debug/session', async () => {
+    try {
+      return await hub.ensureDebugSession()
+    } catch (error) {
+      return { ok: false, message: error.message }
+    }
+  })
+
+  route('/debug/say', async (req) => {
+    const b = await readBody(req)
+    try {
+      return await hub.debugSay(String(b.text || ''))
+    } catch (error) {
+      return { ok: false, message: error.message }
+    }
   })
 
   // ---------- 面板代理：目的引擎 / 桌宠 ----------
@@ -1680,7 +1783,34 @@ export function apply(ctx) {
   route('/update/check', async (req) => {
     const r = await checkUpdate({ force: query(req).force === '1' })
     if (!r || !r.ok) return { ...r, env: updateEnv }
-    return { ...r, ...updatePlanOf(r), env: updateEnv }
+    const plan = updatePlanOf(r)
+    return { ...r, ...plan, env: updateEnv, plan }
+  })
+  let applyingUpdate = false
+  route('/update/apply', async () => {
+    if (applyingUpdate) return { ok: false, message: '正在更新，稍等一下' }
+    const repo = repoOf(PKG)
+    if (!repo) return { ok: false, message: '不知道插件从哪安装的，没法自动更新' }
+    const channel = wantsUnstable(getConfig().update.unstable, VERSION) ? 'beta' : 'main'
+    const plan = updatePlan({ repo, channel, env: updateEnv })
+    // 本地 link 安装（开发模式）不能被 CLI 覆盖，否则会把链接换成仓库副本
+    try {
+      const pkgFile = join(process.env.DSH_PROFILE_DIR || '', 'package.json')
+      const dep = JSON.parse(readFileSync(pkgFile, 'utf8'))?.dependencies?.[String(PKG.name)]
+      if (dep && String(dep).startsWith('link:')) {
+        return { ok: false, message: '当前是本地链接安装（开发模式），自动更新会把它换成仓库副本；请用 git 更新，或手动执行下面这条命令。', command: plan.command }
+      }
+    } catch (error) {}
+    applyingUpdate = true
+    try {
+      const arg = `github:${repo}${channel === 'main' ? '' : '#' + channel}`
+      const args = ['plugin', '--profile', updateEnv.profile, 'add', arg]
+      const exec = updateExec(updateEnv, args)
+      const r = await runUpdate(exec.cmd, exec.cmdArgs, exec.env, exec.shell)
+      return { ...r, command: plan.command, env: updateEnv }
+    } finally {
+      applyingUpdate = false
+    }
   })
   route('/changelog', async () => {
     let text = ''
@@ -1720,24 +1850,6 @@ export function apply(ctx) {
   route('/snowluma/processes', async () => {
     try { return { ok: true, list: await snowluma.processes() } } catch (error) { return { ok: false, message: error.message, list: [] } }
   })
-  /** 本机端口有没有人在听（诊断用）。 */
-  function tcpOpen(port, host = '127.0.0.1', timeoutMs = 800) {
-    return new Promise((resolve) => {
-      const socket = new net.Socket()
-      let done = false
-      const finish = (value) => {
-        if (done) return
-        done = true
-        try { socket.destroy() } catch (error) {}
-        resolve(value)
-      }
-      socket.setTimeout(timeoutMs)
-      socket.once('connect', () => finish(true))
-      socket.once('timeout', () => finish(false))
-      socket.once('error', () => finish(false))
-      socket.connect(port, host)
-    })
-  }
   /** 一键诊断：把「连不上 QQ」卡在哪一步逐项列出来，用户发截图就能定位。 */
   route('/snowluma/diagnose', async () => {
     const items = []

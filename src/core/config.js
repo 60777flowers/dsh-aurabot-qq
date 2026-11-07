@@ -10,6 +10,7 @@ import { DEFAULT_TIER_DAYS } from '../features/memory-rules.js'
 export const DEFAULTS = {
   enabled: false, // 总开关：关着一句都不发
   dryRun: true, // 试运行：只记日志不真发
+  debug: false, // 调试：不真发 + 不写记忆/流水，只在日志里看（和试运行互斥）
   setupDone: false, // 首次使用向导走完了没有
   communityMigrated: {}, // 搬到社区库的模块处理过没有（id → installed / skipped / kept），只处理一次
   botQQ: '', // 机器人 QQ 号（向导里填）
@@ -36,7 +37,7 @@ export const DEFAULTS = {
   // 单个文件有大小上限；主人私聊里能触发，群里只在主人开口那一轮能触发（可以发给白名单里的人和群）。日志里会记下发了什么。
   // imageByPath（#169）：本地图片先按路径直发，被网关明确拒绝才改用 base64；网关和 NapCat 没共享挂载时会自动回退。
   files: { enabled: true, maxMB: 50, imageByPath: true, dirs: [] },
-  // 危险命令确认（可选保护，默认关）：她在私聊里执行删根目录/格式化/关机/下载后直接执行等
+  // 危险命令确认（默认开）：她在私聊里执行删根目录/格式化/关机/下载后直接执行等
   // 终端命令前，先发 QQ 私聊问主人，回复「确认」才执行；超时或「取消」就拦下。
   // panelRemoteAccess：允许远端（非回环）访问管理接口；默认 false = 只有本机能管。
   // trustedProxy：可信反向代理地址（逗号分隔）；只有请求确实从这些地址进来，才采信
@@ -85,7 +86,7 @@ export const DEFAULTS = {
   },
   persona: { current: 'dafeiyu' },
   // 主人私聊里问起群里的事：把最近 24 小时的群聊流水补进这一轮（默认关，开启前先把群加进白名单）
-  group: { ...DEFAULT_GROUP_POLICY, overrides: {}, ownerBrief: { enabled: false, lines: 12, groups: [] } },
+  group: { ...DEFAULT_GROUP_POLICY, overrides: {}, ownerBrief: { enabled: true, lines: 24, groups: [] } },
   // 按群头衔不回：勾选的群里，专属头衔正好是 title 的成员（一般是别的机器人）说话、戳她都不理。没勾群就不起作用
   titleFilter: { enabled: true, groups: [], title: '大肥鱼' },
   voice: {
@@ -124,7 +125,7 @@ export const DEFAULTS = {
     reactMaxPerHour: 10, // 每个会话每小时最多主动贴几次
     collect: true, // 偷表情
     // 怎么偷：auto = 看到就收（默认，保持原行为）；ask = 她挑（先记着，喜欢才凭编号收）；owner = 只听主人的（只有主人语境下才提示/允许收）
-    collectMode: 'auto',
+    collectMode: 'ask',
     fromGroups: true,
     fromPrivate: true,
     maxPerHour: 20,
@@ -289,7 +290,8 @@ export const DEFAULTS = {
       topN: 20,
       timeoutMs: 2000,
     },
-  }, // extractIdleMinutes 为 0 时关闭空闲提炼；手动记忆不受容量限制
+    residentMaxChars: 1200, preferPersonal: true,
+  }, // residentMaxChars / preferPersonal 为本地保留配置；extractIdleMinutes 为 0 时关闭空闲提炼；手动记忆不受容量限制
   song: {
     enabled: false,
     root: '', // 翻唱环境目录，留空 = 自动（老安装 C:\Aurabot\rvc，新安装在用户目录下）
@@ -404,6 +406,8 @@ export function normalize(raw) {
   const c = deepMerge(DEFAULTS, raw)
   c.enabled = bool(c.enabled, false)
   c.dryRun = bool(c.dryRun, true)
+  c.debug = bool(c.debug, false)
+  if (c.debug) c.dryRun = true
   c.conversationContext = { enabled: bool(c.conversationContext?.enabled, false) }
   c.botQQ = qq(c.botQQ)
   c.ownerQQ = qq(c.ownerQQ)
@@ -458,9 +462,9 @@ export function normalize(raw) {
   if (!Array.isArray(g.quietHours) || g.quietHours.length !== 2) g.quietHours = DEFAULT_GROUP_POLICY.quietHours
   g.quietHours = g.quietHours.map((h) => num(h, 0, 0, 23))
   if (!isObj(g.overrides)) g.overrides = {}
-  if (!isObj(g.ownerBrief)) g.ownerBrief = { enabled: false, lines: 12, groups: [] }
-  g.ownerBrief.enabled = bool(g.ownerBrief.enabled, false)
-  g.ownerBrief.lines = num(g.ownerBrief.lines, 12, 1, BIG)
+  if (!isObj(g.ownerBrief)) g.ownerBrief = { enabled: true, lines: 24, groups: [] }
+  g.ownerBrief.enabled = bool(g.ownerBrief.enabled, true)
+  g.ownerBrief.lines = num(g.ownerBrief.lines, 24, 1, 30)
   g.ownerBrief.groups = qqList(g.ownerBrief.groups)
   c.voice.autoChance = num(c.voice.autoChance, 0.15, 0, 1)
   c.voice.autoMaxChars = num(c.voice.autoMaxChars, 80, 1, BIG)
@@ -496,9 +500,10 @@ export function normalize(raw) {
   c.stickers.reactMaxPerHour = num(c.stickers.reactMaxPerHour, 10, 0, BIG)
   c.stickers.react = bool(c.stickers.react, false)
   c.stickers.faces = c.stickers.faces !== false
-  c.stickers.collectMode = ['ask', 'auto', 'owner'].includes(c.stickers.collectMode) ? c.stickers.collectMode : 'auto'
+  c.stickers.collectMode = ['ask', 'auto', 'owner'].includes(c.stickers.collectMode) ? c.stickers.collectMode : 'ask'
   c.stickers.maxPerHour = num(c.stickers.maxPerHour, 20, 0, BIG)
   c.stickers.maxLibrary = num(c.stickers.maxLibrary, 300, 1, BIG)
+  c.stickers.maxSide = num(c.stickers.maxSide, 520, 80, 4096)
   // 起名单独挑的模型：两半都填了才认；填一半 / 脏数据都当没填（回落到聊天模型）
   c.stickers.captionModel = (() => {
     const m = isObj(c.stickers.captionModel) ? c.stickers.captionModel : {}
@@ -509,7 +514,7 @@ export function normalize(raw) {
   c.diary.timesPerDay = num(c.diary.timesPerDay, 2, 0, 48)
   c.diary.windowStart = hhmm(c.diary.windowStart, '10:00')
   c.diary.windowEnd = hhmm(c.diary.windowEnd, '23:30')
-  c.diary.minGapMinutes = num(c.diary.minGapMinutes, 180, 0, BIG)
+  c.diary.minGapMinutes = num(c.diary.minGapMinutes, 180, 0, 1440)
   c.diary.attachImage = bool(c.diary.attachImage, true)
   if (!isObj(c.diary.rich)) c.diary.rich = { ...DEFAULTS.diary.rich }
   for (const key of ['enabled', 'stickers', 'browsing', 'local']) c.diary.rich[key] = bool(c.diary.rich[key], DEFAULTS.diary.rich[key])
@@ -650,6 +655,8 @@ export function normalize(raw) {
   c.memory.keepChatlogDays = keepUnset ? 7 : num(c.memory.keepChatlogDays, 7, -1, 3650)
   c.memory.keepChatlogSet = true
   c.memory.mergeGroups = bool(c.memory.mergeGroups, false)
+  c.memory.residentMaxChars = num(c.memory.residentMaxChars, 1200, 200, 4000)
+  c.memory.preferPersonal = bool(c.memory.preferPersonal, true)
   for (const k of ['instantCommands', 'groupMemory', 'searchRrf']) c.memory[k] = bool(c.memory[k], true)
   c.memory.crossContext = bool(c.memory.crossContext, false)
   c.memory.extractIdleMinutes = num(c.memory.extractIdleMinutes, 30, 0, BIG)
@@ -856,6 +863,8 @@ export function saveConfig(cfg) {
 /** 给面板看的版本：密码 / token 不回传原文，只告诉有没有填。 */
 export function publicConfig(cfg) {
   const c = structuredClone(cfg)
+  // 面板上的「试运行」只表示「试运行但不调试」：调试开着时它显示为关
+  c.dryRun = Boolean(c.dryRun && !c.debug)
   for (const [g, k] of HINTED) c[g][`${k}Hint`] = c[g][k] ? '…' + String(c[g][k]).slice(-4) : ''
   for (const path of allSecrets()) {
     const p = parentOf(c, path, false)

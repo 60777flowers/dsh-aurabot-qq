@@ -88,6 +88,7 @@ export function createMood({ getConfig, dsh, log }) {
   }
   /** 推一下心情（d 可正可负），记下原因。 */
   function nudge(d, reason) {
+    if (getConfig().debug) return // 调试模式不动心情：心情是持久状态，调试不该留下痕迹
     if (!getConfig().mood.enabled || !d) return
     const s = load()
     const before = current()
@@ -126,6 +127,7 @@ export function createMood({ getConfig, dsh, log }) {
      */
     async judge({ userText, reply, who = '对方', origin = 'user' }) {
       const cfg = getConfig().mood
+      if (getConfig().debug) return null // 调试模式不判心情（省一次模型调用，也不留下状态）
       if (!cfg.enabled || !cfg.judge || !dsh) return null
       // 峰谷省钱：峰时不跑这次额外模型调用，observe() 已经用关键词兜底；谷时恢复模型判断
       if (shouldDeferBackground(getConfig())) {

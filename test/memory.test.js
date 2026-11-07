@@ -266,7 +266,7 @@ test('主人私聊群聊摘要：默认关，不会把群聊流水补进私聊',
   logs.set(day(new Date()), [groupLog('777', '小明', '今晚开黑打本', Date.now() - 60_000)])
   cfg.ownerQQ = '10000001'
   cfg.group.ownerBrief.enabled = false
-  assert.equal(normalize({}).group.ownerBrief.enabled, false, '配置默认关')
+  assert.equal(normalize({}).group.ownerBrief.enabled, true, '本地默认开'); assert.equal(normalize({}).group.ownerBrief.lines, 24, '本地默认 24 行')
   const hint = mem.recallHint({ kind: 'private', userId: '10000001', chatId: 'private:10000001' }, '群里今晚在聊什么')
   assert.doesNotMatch(hint, /群「测试群」/)
 })

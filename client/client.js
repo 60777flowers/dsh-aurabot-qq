@@ -959,10 +959,12 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     }
     const copy = (text, toast, msg) => { try { navigator.clipboard.writeText(text); if (msg) toast(msg, 'ok') } catch (e) { toast('复制失败，手动选中复制吧', 'err') } }
 
-    /** 更新提示：GitHub 上有新版本时给更新命令；刚更新完显示一次这次更新了什么。 */
+    /** 更新提示：GitHub 上有新版本时给「跟当前系统/形态对应」的命令、链接和更新按钮；刚更新完显示一次这次更新了什么。 */
     function UpdateNotes({ st, toast }) {
       const [upd, setUpd] = useState(null)
       const [notes, setNotes] = useState(null)
+      const [busy, setBusy] = useState(false)
+      const [result, setResult] = useState(null)
       useEffect(() => {
         get('/update/check').then(setUpd).catch(() => {})
         let seen = null
@@ -972,19 +974,31 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         else if (!seen) { try { localStorage.setItem('aurabot.seenVersion', st.version) } catch (e) {} }
       }, [st.version])
       const dismiss = () => { try { localStorage.setItem('aurabot.seenVersion', st.version) } catch (e) {} setNotes(null) }
+      const copy = (text) => { try { navigator.clipboard.writeText(text); toast('复制好了', 'ok') } catch (e) { toast('复制失败，手动选中复制吧', 'err') } }
+      const apply = async () => {
+        if (!upd || busy) return
+        if (!confirm('现在更新到 v' + upd.latest + '？更新完需要重启 DSH 才会生效，设置、人格、记忆都会保留。')) return
+        setBusy(true)
+        setResult(null)
+        const r = await post('/update/apply')
+        setBusy(false)
+        setResult(r)
+        toast(r.message || (r.ok ? '更新好了，重启 DSH 生效' : '更新没成功'), r.ok ? 'ok' : 'err')
+      }
+      const envText = upd && upd.platform ? (upd.platformLabel || upd.platform) + ' · ' + (upd.modeLabel || upd.mode) + '（profile: ' + upd.profile + '）' : ''
       return h(Fragment, null,
         notes ? h('div', { className: 'ab-note' },
           h('div', { className: 'ab-flex' }, h('b', null, '已更新到 v' + st.version), h('div', { className: 'ab-spacer' }), h(Btn, { small: true, kind: 'ghost', onClick: dismiss }, '知道了')),
           h('div', { style: { whiteSpace: 'pre-wrap', marginTop: 6 } }, notes)) : null,
         upd && upd.newer ? h('div', { className: 'ab-note warn' },
-          h('div', null, h('b', null, '有新版本 v' + upd.latest), '（现在是 v' + upd.current + '）。',
-            upd.platformLabel ? '当前环境：' + upd.platformLabel + (upd.modeLabel ? ' · ' + upd.modeLabel : '') + '，在对应的终端里运行下面这行，然后重启 DSH；设置、人格、记忆都会保留。' : '在终端里运行下面这行，然后重启 DSH；设置、人格、记忆都会保留。'),
+          h('div', null, h('b', null, '有新版本 v' + upd.latest), '（现在是 v' + upd.current + '）。', envText ? '当前环境：' + envText + '。' : '', '更新后重启 DSH，设置、人格、记忆都会保留。'),
           h('div', { className: 'ab-flex', style: { marginTop: 6 } },
-            h('code', { style: { flex: '1 1 300px', fontSize: 11.5, wordBreak: 'break-all' } }, upd.command),
-            h(Btn, { small: true, onClick: () => { try { navigator.clipboard.writeText(upd.command); toast('复制好了', 'ok') } catch (e) { toast('复制失败，手动选中复制吧', 'err') } } }, '复制')),
-          h('div', { className: 'ab-flex', style: { marginTop: 6, gap: 12, flexWrap: 'wrap' } },
-            h('a', { href: upd.releaseUrl || 'https://github.com/aureth-labs/dsh-aurabot-qq/releases', target: '_blank', rel: 'noreferrer' }, '打开发布页 ↗'),
-            upd.tagUrl && upd.tagUrl !== upd.releaseUrl ? h('a', { href: upd.tagUrl, target: '_blank', rel: 'noreferrer' }, 'v' + upd.latest + ' 更新说明 ↗') : null)) : null)
+            h('code', { style: { flex: '1 1 240px', fontSize: 11.5, wordBreak: 'break-all' } }, upd.command),
+            h(Btn, { small: true, onClick: () => copy(upd.command) }, '复制'),
+            h(Btn, { small: true, kind: 'primary', disabled: busy, onClick: apply }, busy ? '更新中…' : '立即更新'),
+            h('a', { key: 'release', className: 'ab-btn sm', href: upd.tagUrl || upd.releaseUrl, target: '_blank', rel: 'noreferrer' }, '打开发布页')),
+          result ? h('div', { className: 'ab-small', style: { marginTop: 6, whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: result.ok ? 'var(--dsw-alias-text-success, #2e7d32)' : 'var(--dsw-alias-text-danger, #c62828)' } },
+            result.message, result.output ? '\n' + String(result.output).slice(-1200) : '') : null) : null)
     }
 
     function Overview({ st, toast, go }) {
@@ -1086,7 +1100,14 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       return h('div', { className: 'ab-grid' },
         h(UpdateNotes, { st, toast }),
         !cfg.enabled ? h('div', { className: 'ab-note warn' }, '总开关是关着的：大肥鱼现在不会收也不会发任何 QQ 消息。准备好了就在右上角打开。') : null,
-        cfg.enabled && cfg.dryRun ? h('div', { className: 'ab-note' }, '现在是试运行：ta会照常思考回复，但只写进日志，不会真的发到 QQ。确认没问题后在右上角关掉「试运行」。') : null,
+        cfg.enabled && cfg.debug ? h('div', { className: 'ab-note warn' },
+          '现在是调试：她会照常思考回复，但既不发到 QQ，也不写任何记忆和聊天流水 —— 只出现在日志里。调试期间的对话不会被明天的记忆整理吸收，也不会影响正式上线后的她。',
+          h('div', { className: 'ab-flex', style: { marginTop: 6, alignItems: 'center' } },
+            h(Btn, { small: true, kind: 'primary', onClick: async () => { const r = await post('/debug/session'); toast(r.message || (r.ok ? '好了' : '没建好'), r.ok ? 'ok' : 'err') } }, '新建 / 打开调试会话'),
+            h('span', { className: 'ab-muted ab-small' }, '去左侧栏「Aurabot · QQ」工作区打开它，直接在输入框里跟她说话'))) : null,
+        cfg.enabled && cfg.debug ? h(Card, { title: '调试对话', desc: '在这里直接跟她说话：走她的人格和工具，但不经过 QQ、不写记忆。和左侧栏那个调试会话是同一个会话。' }, h(DebugChat, { toast })) : null,
+        cfg.enabled && !cfg.debug && cfg.dryRun ? h('div', { className: 'ab-note' }, '现在是试运行：她会照常思考回复，但只写进日志，不会真的发到 QQ。注意试运行**会照常写记忆**；只想试人格、不想留痕迹请切到「调试」。') : null,
+        st.outbox && st.outbox.count ? h('div', { className: 'ab-note warn' }, `网关还没就绪：已有 ${st.outbox.count} 条消息排队，连接后会自动补发。`) : null,
         cfg.enabled && !conn ? h('div', { className: 'ab-note err' }, '还没连上 QQ 网关' + (st.onebot.problem ? '：' + st.onebot.problem + '。' : '。去「连接」标签看看 SnowLuma 有没有装好、启动没有。') + ' ', h('a', { href: '#', onClick: (e) => { e.preventDefault(); go('connect') } }, '去连接 →')) : null,
         st.outbox && st.outbox.count ? h('div', { className: 'ab-note warn' }, `网关还没就绪：已有 ${st.outbox.count} 条消息排队，连接后会自动补发。`) : null,
         h('div', { className: 'ab-grid ab-g4' },
@@ -3647,6 +3668,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
               },
             }), h('span', { className: 'ab-muted' }, '条')),
           h(Row, { label: '每轮最多想起几条' }, f.range('memory.recallCount', 0, 12, 1, (v) => v + ' 条')),
+          h(Row, { label: '常驻记忆上限', hint: '每一轮都会带上的长期记忆最多多少字，超了从末尾截断。太小会显得忘事，太大会占上下文；默认 1200，范围 200~4000' }, f.num('memory.residentMaxChars', { min: 200, max: 4000 }), h('span', { className: 'ab-muted' }, '字')),
+          h(Row, { label: '私人记忆优先', hint: '想起相关记忆时，如果没在问 B站、视频、最近看了什么，优先带关于某个人 / 她自己记的；问具体视频时仍先想起视频' }, f.sw('memory.preferPersonal')),
           h(Row, { label: '召回最低相关度', hint: '默认 0，沿用原有检索门槛；调高会更挑剔，可能减少想起的线索。人物加分不会把无关内容抬过线，上一句和关联补充也要过线。' }, f.range('memory.recallMinRelevance', 0, 1, 0.05, (v) => Number(v).toFixed(2))),
           h(Row, { label: '什么时候自动翻旧账' }, f.select('memory.recallMode', [{ value: 'always', label: '每轮都查' }, { value: 'trigger', label: '提到过去时才查' }])),
           h(Row, { label: '翻旧账的触发词', hint: '一行一个，也可用逗号分隔；主动查记忆的工具不受影响' }, f.list('memory.recallTriggers')),
@@ -4617,7 +4640,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       useEffect(() => { setPage(1) }, [q, show, cat, hot])
       const load = (force) => get('/modules/community' + (force ? '?force=1' : '')).then(setData)
       useEffect(() => { load() }, [])
-      // 模块市场地址：换索引源（自建索引 / 国内镜像 / 内网部署）。拉取当前值与默认值，改完可保存或恢复内置。
+      // 模块市场地址：下拉选官方源（GitHub / Gitee 镜像）或自定义。拉当前值与可选源，改完可保存或恢复默认。
       const [regUrl, setRegUrl] = useState('')
       const [regDef, setRegDef] = useState('')
       const [regSources, setRegSources] = useState([])
@@ -5913,7 +5936,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       return h('div', { className: 'ab-grid' },
         h(Card, { title: '更新推送', desc: '插件有新版本时，面板会提示并给出更新命令。' },
           h(Row, { label: '订阅不稳定版本', hint: '打开后也会收到 beta 和 rc 测试版，能早点用上新功能，但可能有问题；关掉只收正式版' }, h(Switch, { on: unstable, onChange: (v) => setDraft(setPath(draft, 'update.unstable', v)) }))),
-        h(Card, { title: '危险命令确认', right: f.sw('security.dangerConfirm'), desc: '打开后，ta在私聊里要执行终端危险命令（删根目录、格式化、关机、下载后直接执行等）之前，会先发 QQ 私聊问你；你回复「确认」才执行，回复「取消」或 60 秒没回就拦下。默认关。只拦真正致命的命令，普通删除/构建/改文件不受影响。' }),
+        h(Card, { title: '危险命令确认', right: f.sw('security.dangerConfirm'), desc: '打开后，ta在私聊里要执行终端危险命令（删根目录、格式化、关机、下载后直接执行等）之前，会先发 QQ 私聊问你；你回复「确认」才执行，回复「取消」或 60 秒没回就拦下。默认开；只拦真正致命的命令，普通删除/构建/改文件不受影响。' }),
         h(Card, { title: 'SSRF 防护', desc: '限制 ta 下载图片、语音时能访问哪些地址 —— 防止有人用一条链接诱导 ta 去访问你电脑或内网里的服务（路由器管理页、云服务器的 169.254.169.254、本机端口之类）。' },
           h(Row, { label: '防护强度', hint: '部署在服务器上、或者群里有陌生人时，用「严格」' },
             h(Seg, {
@@ -5958,6 +5981,44 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h('div', { className: 'ab-muted ab-small', style: { whiteSpace: 'pre-wrap' } },
             ['· 只下载 http / https，并限制单张图片大小', '· 只从白名单里的会话收表情', '· 群管操作只认主人，对象不能是主人自己', '· 联动（bridge）默认关闭，开放时必须带密钥', '· 表情的改名 / 删除只对主人开放'].join('\n')),
         ),
+      )
+    }
+
+    /** 面板里的调试对话：不经过 QQ、不写记忆，直接把她说的话显示出来。 */
+    function DebugChat({ toast }) {
+      const [msgs, setMsgs] = useState([])
+      const [text, setText] = useState('')
+      const [busy, setBusy] = useState(false)
+      const say = async () => {
+        const t = text.trim()
+        if (!t || busy) return
+        setMsgs((m) => [...m, { who: 'me', text: t }])
+        setText('')
+        setBusy(true)
+        try {
+          const r = await post('/debug/say', { text: t })
+          setMsgs((m) => [...m, { who: 'her', text: r.ok ? (r.text || '（她这次没说话）') : '✗ ' + (r.message || '出错了') }])
+        } catch (error) {
+          setMsgs((m) => [...m, { who: 'her', text: '✗ ' + error.message }])
+        } finally {
+          setBusy(false)
+        }
+      }
+      return h('div', null,
+        msgs.length ? h('div', { className: 'ab-list', style: { maxHeight: 340, overflow: 'auto', marginBottom: 8 } },
+          msgs.map((m, i) => h('div', { key: i, className: 'ab-li' },
+            h('div', { className: 'meta' }, m.who === 'me' ? '你' : '她'),
+            h('div', { className: 'body' }, m.text)))) : h(Empty, { icon: '🐳', text: '说点什么试试 —— 比如「在吗」「今天心情怎么样」' }),
+        h('div', { className: 'ab-flex', style: { marginTop: 6 } },
+          h('input', {
+            className: 'ab-input',
+            style: { flex: 1 },
+            value: text,
+            placeholder: '对她说…（回车发送）',
+            onChange: (e) => setText(e.target.value),
+            onKeyDown: (e) => { if (e.key === 'Enter') say() },
+          }),
+          h(Btn, { small: true, kind: 'primary', disabled: busy || !text.trim(), onClick: say }, busy ? '她在想…' : '发送')),
       )
     }
 
@@ -6194,6 +6255,14 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const quickToggle = async (path, v) => {
         await save(setPath(dirtyRef.current ? draft : clone(st.config), path, v))
       }
+      // 试运行 / 调试互斥：开一个就自动关另一个。
+      // 关掉「调试」退回「试运行」（而不是直接上线）—— 上线必须自己关掉「试运行」那个开关。
+      const toggleRun = async (which, v) => {
+        const base = clone(dirtyRef.current ? draft : st.config)
+        const debug = which === 'debug' ? Boolean(v) : false
+        const dryRun = which === 'debug' ? !v : Boolean(v)
+        await save(setPath(setPath(base, 'debug', debug), 'dryRun', dryRun))
+      }
       // Ctrl/⌘ + S 保存
       useEffect(() => {
         const onKey = (e) => {
@@ -6211,7 +6280,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       }
       const cfg = st.config
       const conn = st.onebot.state === 'connected'
-      const status = !cfg.enabled ? { cls: '', text: '休息中（总开关关着）' } : !conn ? { cls: 'err', text: 'QQ 没连上' } : cfg.dryRun ? { cls: 'warn', text: '在线 · 试运行' } : { cls: 'ok', text: '在线' }
+      const status = !cfg.enabled ? { cls: '', text: '休息中（总开关关着）' } : !conn ? { cls: 'err', text: 'QQ 没连上' } : cfg.debug ? { cls: 'warn', text: '在线 · 调试' } : cfg.dryRun ? { cls: 'warn', text: '在线 · 试运行' } : { cls: 'ok', text: '在线' }
       const persona = st.personas.find((p) => p.id === cfg.persona.current)
       const props = { st, draft, setDraft: setD, toast, reload, go, openWizard: () => setWizardOpen(true) }
       const showWizard = !cfg.setupDone || wizardOpen
@@ -6260,7 +6329,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
                 h('span', { className: 'ab-pill' }, 'Aurabot v' + st.version))),
             h('div', { className: 'ab-hero-side' },
               h('div', { className: 'ab-switch-row' }, h('span', null, '总开关'), h(Switch, { on: cfg.enabled, onChange: (v) => quickToggle('enabled', v) })),
-              h('div', { className: 'ab-switch-row' }, h('span', { className: 'ab-muted' }, '试运行'), h(Switch, { on: cfg.dryRun, onChange: (v) => quickToggle('dryRun', v), title: '开着时只写日志，不真的发到 QQ' })))),
+              h('div', { className: 'ab-switch-row' }, h('span', { className: 'ab-muted' }, '试运行'), h(Switch, { on: cfg.dryRun, onChange: (v) => toggleRun('dryRun', v), title: '开着时只写日志，不真的发到 QQ（记忆照写）' })),
+              h('div', { className: 'ab-switch-row' }, h('span', { className: 'ab-muted' }, '调试'), h(Switch, { on: cfg.debug, onChange: (v) => toggleRun('debug', v), title: '调试：不真发，也不写任何记忆和聊天流水，只在日志里看。开它会自动关掉试运行' })))),
           showWizard ? h(Wizard, { st, draft, setDraft: setD, save, toast, reload, onClose: () => setWizardOpen(false) }) : null,
           showWizard ? null : h(NavBar, {
             tabs, cur: curTab, go, dirtyOf: tabDirty, subRef: tabsRef,
