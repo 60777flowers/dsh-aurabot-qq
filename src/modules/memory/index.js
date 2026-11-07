@@ -122,7 +122,16 @@ export default {
     api.route('/memory/restore', async (req) => memory.restore((await http.body(req)).id))
     api.route('/persona/overview', async () => ({ ok: true, list: memory.personaOverview() }))
     api.route('/persona/person', async (req) => {
-      const detail = memory.personaPerson(http.query(req).qq || '')
+      const q = http.query(req)
+      const notesLimit = Math.min(100, Math.max(1, Math.trunc(Number(q.notesLimit) || 20)))
+      const detail = memory.personaPerson(q.qq || '', { notesLimit })
+      return detail ? { ok: true, ...detail } : { ok: false, message: '没有找到这个人' }
+    })
+    api.route('/persona/person/notes', async (req) => {
+      const q = http.query(req)
+      const limit = Math.min(100, Math.max(1, Math.trunc(Number(q.limit) || 20)))
+      const offset = Math.max(0, Math.trunc(Number(q.offset) || 0))
+      const detail = memory.personaNotes(q.qq || '', { limit, offset })
       return detail ? { ok: true, ...detail } : { ok: false, message: '没有找到这个人' }
     })
     api.route('/persona/person/save', async (req) => {
@@ -140,8 +149,23 @@ export default {
       return { ok: true, list: memory.gists({ chatId: q.chatId || '', level: q.level || '', about: q.about || '' }) }
     })
     api.route('/memory/timeline', async (req) => {
-      const { kind, platform, chatId, level, about } = http.query(req)
-      return { ok: true, list: memory.timeline({ kind, platform, chatId, level, about }) }
+      const q = http.query(req)
+      const limit = Math.min(200, Math.max(1, Math.trunc(Number(q.limit) || 50)))
+      const offset = Math.max(0, Math.trunc(Number(q.offset) || 0))
+      const all = memory.timeline({ kind: q.kind, platform: q.platform, chatId: q.chatId, level: q.level, about: q.about })
+      // 筛选选项基于完整时间轴，不受当前筛选影响，否则选了群之后其他群就消失了
+      const facetBase = (q.kind || q.platform || q.chatId || q.level || q.about) ? memory.timeline({}) : all
+      const list = all.slice(offset, offset + limit)
+      return {
+        ok: true,
+        list,
+        total: all.length,
+        hasMore: offset + list.length < all.length,
+        facets: {
+          chats: [...new Set(facetBase.map((g) => g.chatId).filter(Boolean))],
+          platforms: [...new Set(facetBase.flatMap((g) => g.platforms || []))].sort(),
+        },
+      }
     })
     api.route('/memory/gists/delete', async (req) => memory.deleteGist((await http.body(req)).id))
     api.route('/profiles', async () => ({ ok: true, list: memory.profiles() }))

@@ -1524,4 +1524,5 @@ test('大 JSON 接口按 Accept-Encoding 压缩', async () => {
   const j = JSON.parse(gunzipSync(r.raw()).toString('utf8'))
   assert.equal(j.ok, true)
   assert.ok(j.config, '解压后还是完整的 state')
+  assert.equal('history' in j.mood, false, '心情历史已移出 /state')
 })

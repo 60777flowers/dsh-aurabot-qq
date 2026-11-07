@@ -887,6 +887,8 @@ export function apply(ctx) {
     }
     const diary = use('diary')
     const memory = use('memory')
+    const moodState = use('mood')?.state?.() ?? { value: 0, label: '心情模块关着', reason: '', history: [] }
+    const { history: _moodHistory, ...moodSummary } = moodState
     return {
       ok: true,
       version: VERSION,
@@ -897,7 +899,7 @@ export function apply(ctx) {
       snowluma: { ...inst, compat: snowluma.compat(), running, consented: await consented(running), owns: snowluma.ownsProcess, lastAttach: snowluma.lastAttach, downloadPage: DOWNLOAD_PAGE, webui: snowluma.webuiUrl() },
       stats: hub.stats(),
       // 模块关着时给个空壳，面板照常显示
-      mood: use('mood')?.state?.() ?? { value: 0, label: '心情模块关着', reason: '', history: [] },
+      mood: moodSummary,
       stickers: { count: stickers.library().items.length },
       diary: diary ? { next: diary.nextTime(), last: diary.history()[0] || null } : { next: 0, last: null },
       qzoneSocial: use('qzone-social')?.state?.() ?? null,

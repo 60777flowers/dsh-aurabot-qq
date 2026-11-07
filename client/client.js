@@ -2044,8 +2044,23 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     function Stickers({ draft, setDraft, toast }) {
       const f = useField(draft, setDraft)
       const [items, setItems] = useState(null)
+      const [hasMore, setHasMore] = useState(false)
+      const [stickerTotal, setStickerTotal] = useState(0)
+      const [moreBusy, setMoreBusy] = useState(false)
       const fileRef = useRef(null)
-      const load = () => get('/stickers').then((r) => setItems(r.items || []))
+      const load = () => get('/stickers?limit=60&offset=0').then((r) => {
+        setItems(r.items || []); setHasMore(Boolean(r.hasMore)); setStickerTotal(Number(r.total) || 0)
+      })
+      const loadMore = async () => {
+        if (moreBusy || !hasMore) return
+        setMoreBusy(true)
+        try {
+          const r = await get('/stickers?limit=60&offset=' + ((items || []).length))
+          if (r.ok === false) return toast(r.message || '加载失败', 'err')
+          setItems((prev) => [...(prev || []), ...(r.items || [])])
+          setHasMore(Boolean(r.hasMore)); setStickerTotal(Number(r.total) || 0)
+        } finally { setMoreBusy(false) }
+      }
       useEffect(() => { load() }, [])
       const [newName, setNewName] = useState('')
       // 起名用哪个模型：列 DSH 里已经接好的模型，能看图的标出来（AI 补全必须看图）
@@ -2180,7 +2195,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             models === null ? h('span', { className: 'ab-muted ab-small' }, ' 正在查模型…') : null,
             cmHit && cmHit.vision === false ? h('span', { className: 'ab-small', style: { color: 'var(--ab-warn)' } }, ' 这个模型看不了图，起名会被跳过') : null),
         ),
-        h(Card, { title: '表情库' + (items ? '（' + items.length + ' 张）' : ''), right: h('div', { className: 'ab-flex' }, bar) },
+        h(Card, { title: '表情库' + (items ? '（' + items.length + (stickerTotal > items.length ? '/' + stickerTotal : '') + ' 张）' : ''), right: h('div', { className: 'ab-flex' }, bar) },
           job ? h('div', { className: 'ab-flex', style: { margin: '0 0 10px' } },
             job.running ? h('i', { key: 's', className: 'ab-spin' }) : h('span', { key: 'k', style: { color: job.failed ? 'var(--ab-warn)' : 'var(--ab-ok)' } }, '✓'),
             h('span', { key: 't', className: 'ab-small' }, job.running
@@ -2194,6 +2209,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           items === null ? h(Empty, { icon: '⏳', text: '加载中…' }) : items.length === 0 ? h(Empty, { icon: '🐳', text: '表情库还是空的。别人在群里发表情包，ta会自己收；也可以点右上角上传，或者「从 QQ 收藏导入」机器人号已经收藏的表情。' }) :
             h('div', { className: cx('ab-stickers', picking && 'picking') },
               items.map((it) => h(StickerCell, { key: it.md5, it, onChanged: load, toast, picking, selected: picked.includes(it.md5), onToggle: toggle }))),
+          hasMore ? h('div', { className: 'ab-flex', style: { marginTop: 8 } },
+            h(Btn, { small: true, kind: 'ghost', disabled: moreBusy, onClick: loadMore }, moreBusy ? '加载中…' : `加载更多（已显示 ${items ? items.length : 0}/${stickerTotal}）`)) : null,
         ),
         h(Card, {
           title: '贴表情',
@@ -3346,6 +3363,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     function Mood({ st, draft, setDraft, toast }) {
       const f = useField(draft, setDraft)
       const [mem, setMem] = useState(null)
+      const [moodHistory, setMoodHistory] = useState([])
       const [stats, setStats] = useState(null)
       const [q, setQ] = useState('')
       const [hasMore, setHasMore] = useState(false)
@@ -3375,6 +3393,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const setTime = (i, v) => { const t = times.slice(); t[i] = v; setDraft(setPath(draft, 'memory.consolidateTimes', t)) }
       const memOn = modOn(st, 'memory')
       useEffect(() => { if (memOn) { load(''); loadIns() } }, [memOn])
+      useEffect(() => { if (!modOn(st, 'mood')) return; get('/mood/history').then((r) => setMoodHistory(r.history || [])).catch(() => {}) }, [modOn(st, 'mood')])
       useEffect(() => { if (!memOn) return; const t = setTimeout(() => load(q), 250); return () => clearTimeout(t) }, [q])
       const last = st.memory && st.memory.lastConsolidate
       const moodCard = !modOn(st, 'mood') ? h(ModOff, { name: '心情' }) : h(Card, { title: '心情', right: f.sw('mood.enabled'), desc: '被夸、被哄、被凶都会影响ta的心情（对ta说的话、主人的话影响更大），过一阵子慢慢回到平常。心情好时ta话多、更爱发表情和语音、回得快、群里更爱插话；心情差时话少、回得慢、少发表情，还会带点小脾气。' },
@@ -3386,7 +3405,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             h(Row, { label: '聊天流水留多久', hint: '默认留 7 天，刚说过的话靠它想起来；0 = 整理完就删；-1 = 永久保留；其他数字 = 留这么多天。留得越久，本机存的聊天原文越多' }, f.num('memory.keepChatlogDays', { min: -1, max: 3650 })),
             h(Row, { label: '整理时合并重复记忆', hint: '同一个人名下说的是一件事的条目并成一条。每个人多一次模型调用，默认关' }, f.sw('memory.mergeGroups')),
             h(Row, { label: '用模型判断心情', hint: '每轮聊完用模型判一次（能分清开玩笑和真骂、ta主动找你时的心意），更准；每轮多一次很短的模型调用。关着就按关键词' }, f.sw('mood.judge'))),
-          (st.mood.history || []).length ? h('div', { className: 'ab-list', style: { marginTop: 8 } }, st.mood.history.slice(0, 6).map((x, i) => h('div', { key: i, className: 'ab-li' },
+          moodHistory.length ? h('div', { className: 'ab-list', style: { marginTop: 8 } }, moodHistory.slice(0, 6).map((x, i) => h('div', { key: i, className: 'ab-li' },
             h('div', { className: 'meta' }, timeAgo(x.at)),
             h('div', { className: 'body' }, (x.to >= x.from ? '↑ ' : '↓ ') + x.from + ' → ' + x.to, h('span', { className: 'ab-muted ab-small' }, '  ' + x.reason))))) : null,
         )
@@ -3606,11 +3625,23 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const [editing, setEditing] = useState(false)
       const [tagInput, setTagInput] = useState('')
       const [error, setError] = useState('')
+      const [notesBusy, setNotesBusy] = useState(false)
       const load = async (keepForm = false) => {
         const r = await get('/persona/person?qq=' + encodeURIComponent(qq))
         if (!r.ok) { setError(r.message || '人物详情没读出来'); return }
         setError(''); setData(r)
         if (!keepForm) setForm({ ...Object.fromEntries(PERSON_FIELDS.map(([key]) => [key, r.person[key] || ''])), tags: r.person.tags || [] })
+      }
+      const loadMoreNotes = async () => {
+        if (notesBusy) return
+        const shown = (data.notes || []).length
+        if (shown >= (data.notesTotal || 0)) return
+        setNotesBusy(true)
+        try {
+          const r = await get('/persona/person/notes?qq=' + encodeURIComponent(qq) + '&limit=20&offset=' + shown)
+          if (!r.ok) return toast(r.message || '加载失败', 'err')
+          setData((prev) => prev ? { ...prev, notes: [...(prev.notes || []), ...(r.list || [])] } : prev)
+        } finally { setNotesBusy(false) }
       }
       useEffect(() => { load() }, [qq])
       if (error) return h('div', { className: 'ab-pm-detail' }, h('div', { className: 'ab-note err' }, error))
@@ -3625,15 +3656,16 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         if (r.ok) { setEditing(false); await load(); onChanged() }
       }
       const rebuild = async () => {
-        if (!data.notes.some((m) => !m.invalidAt && m.scope !== 'group' && !['hearsay', 'guess'].includes(m.status))) return toast('还没有能用来重写小档案的事实', 'err')
+        if (!(data.notesLive > 0)) return toast('还没有能用来重写小档案的事实', 'err')
         if (changed && !confirm('重写会放弃还没保存的修改，继续吗？')) return
         const r = await post('/profiles/rebuild', { qq })
         toast(r.message, r.ok ? 'ok' : 'err')
         await load(!r.ok)
       }
       const traits = [['style', '说话方式'], ['persona', '性格'], ['handle', '怎么相处']]
-      const live = data.notes.filter((m) => !memoryEnded(m))
-      const old = data.notes.filter(memoryEnded)
+      const notes = data.notes || []
+      const live = notes.filter((m) => !memoryEnded(m))
+      const old = notes.filter(memoryEnded)
       return h('div', { className: 'ab-pm-detail' },
         h('div', { className: 'ab-pm-back' }, h(Btn, { small: true, kind: 'ghost', onClick: back }, '← 返回名单')),
         h('div', { className: 'ab-pm-hero' },
@@ -3672,10 +3704,12 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             toast(res.message, res.ok ? 'ok' : 'err')
             if (res.ok) await load(true)
           } }, '删'))))) : null,
-        h(Card, { title: `记得的事 ${live.length ? live.length : ''}`.trim() },
-          live.length ? live.map((m) => h(PersonaFact, { key: m.id, m, toast, onChanged: () => load(true) })) : h(Empty, { text: '还没记住关于这个人的事。' })),
+        h(Card, { title: `记得的事 ${data.notesLive ?? live.length}`.trim() },
+          live.length ? live.map((m) => h(PersonaFact, { key: m.id, m, toast, onChanged: () => load(true) })) : h(Empty, { text: '还没记住关于这个人的事。' }),
+          notes.length < (data.notesTotal || 0) ? h('div', { className: 'ab-flex', style: { marginTop: 8 } },
+            h(Btn, { small: true, kind: 'ghost', disabled: notesBusy, onClick: loadMoreNotes }, notesBusy ? '加载中…' : `加载更多（已显示 ${notes.length}/${data.notesTotal}）`)) : null),
         data.gists.length ? h(Card, { title: '留下的感觉' }, h(GistLine, { list: data.gists, toast, onChanged: () => load(true) })) : null,
-        old.length ? h('details', { className: 'ab-card' }, h('summary', { className: 'ab-small' }, `已过时的 ${old.length} 条`),
+        old.length ? h('details', { className: 'ab-card' }, h('summary', { className: 'ab-small' }, `已过时的 ${data.notesOld ?? old.length} 条${old.length < (data.notesOld || 0) ? '（已显示 ' + old.length + '）' : ''}`),
           h('div', { style: { marginTop: 8 } }, old.map((m) => h(PersonaFact, { key: m.id, m, toast, onChanged: () => load(true) })))) : null)
     }
 
@@ -3790,19 +3824,36 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const [level, setLevel] = useState('')
       const [kind, setKind] = useState('')
       const [platform, setPlatform] = useState('')
-      const load = async () => {
-        const r = await get('/memory/timeline')
+      const [hasMore, setHasMore] = useState(false)
+      const [total, setTotal] = useState(0)
+      const [busy, setBusy] = useState(false)
+      const [facets, setFacets] = useState({ chats: [], platforms: [] })
+      const load = async (append = false) => {
+        const offset = append && list ? list.length : 0
+        const p = new URLSearchParams({ limit: '50', offset: String(offset) })
+        if (chat) p.set('chatId', chat)
+        if (level) p.set('level', level)
+        if (kind) p.set('kind', kind)
+        if (platform) p.set('platform', platform)
+        const r = await get('/memory/timeline?' + p.toString())
         if (!r.ok) { setError(r.message || '时间轴没读出来'); return }
+        setError('')
         const next = r.list || []
-        if (chat && !next.some((g) => g.chatId === chat)) setChat('')
-        setError(''); setList(next)
+        setList((prev) => append ? [...(prev || []), ...next] : next)
+        setHasMore(Boolean(r.hasMore))
+        setTotal(Number(r.total) || 0)
+        if (r.facets) setFacets({ chats: r.facets.chats || [], platforms: r.facets.platforms || [] })
       }
-      useEffect(() => { load() }, [])
+      const loadMore = async () => {
+        if (busy || !hasMore) return
+        setBusy(true)
+        try { await load(true) } finally { setBusy(false) }
+      }
+      useEffect(() => { load(false) }, [chat, level, kind, platform])
       if (error) return h('div', { className: 'ab-note err' }, error)
       if (list === null) return h(Empty, { icon: '⏳', text: '加载中…' })
-      const chats = [...new Set(list.map((g) => g.chatId).filter(Boolean))]
-      const platforms = [...new Set(list.flatMap((g) => g.platforms || []))].sort()
-      const shown = list.filter((g) => (!chat || g.chatId === chat) && (!level || String(g.level) === level) && (!kind || g.kind === kind) && (!platform || (g.platforms || []).includes(platform)))
+      const chats = facets.chats.length ? facets.chats : [...new Set(list.map((g) => g.chatId).filter(Boolean))]
+      const platforms = facets.platforms.length ? facets.platforms : [...new Set(list.flatMap((g) => g.platforms || []))].sort()
       return h(Card, { title: '时间轴', desc: '聊过的梗概和看过的内容，都能在这里翻一翻。', right: h('div', { className: 'ab-pm-filters' },
         h('select', { className: 'ab-select', 'aria-label': '筛选经历类型', value: kind, onChange: (e) => { setKind(e.target.value); setLevel('') } },
           h('option', { value: '' }, '全部经历'), h('option', { value: 'gist' }, '聊天的梗概'), h('option', { value: 'seen' }, '看过的内容')),
@@ -3812,7 +3863,9 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h('option', { value: '' }, '全部聊天'), chats.map((id) => h('option', { key: id, value: id }, gistSource(id)))),
         h('select', { className: 'ab-select', 'aria-label': '筛选层级', value: level, disabled: kind === 'seen', onChange: (e) => setLevel(e.target.value) },
           h('option', { value: '' }, '全部'), h('option', { value: '1' }, '梗概'), h('option', { value: '2' }, '印象'))) },
-      shown.length ? h(GistLine, { list: shown, toast, onChanged: load, showFrom: !chat }) : h(Empty, { text: list.length ? '没有符合条件的记录。' : '还没有压缩过的记忆，流水到期后会慢慢出现。' }))
+      list.length ? h(GistLine, { list, toast, onChanged: () => load(false), showFrom: !chat }) : h(Empty, { text: total ? '没有符合条件的记录。' : '还没有压缩过的记忆，流水到期后会慢慢出现。' }),
+      hasMore ? h('div', { className: 'ab-flex', style: { marginTop: 8 } },
+        h(Btn, { small: true, kind: 'ghost', disabled: busy, onClick: loadMore }, busy ? '加载中…' : `加载更多（已显示 ${list.length}/${total}）`)) : null)
     }
 
     /** 最近几轮她想起了什么、因为哪些词想起来的。 */

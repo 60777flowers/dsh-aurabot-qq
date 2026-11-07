@@ -357,3 +357,14 @@ test('memory page: limit/offset 不重不漏，total/hasMore 正确', () => {
   assert.equal(last.hasMore, false)
 })
 
+test('persona notes 分页：首屏最多 20，offset 能接着取', () => {
+  const person = mem.personaOverview().find((p) => mem.personaNotes(p.qq, { limit: 1, offset: 0 })?.total > 1)
+  if (!person) return
+  const first = mem.personaPerson(person.qq)
+  assert.ok(first.notes.length <= 20)
+  assert.equal(first.notesTotal, mem.personaNotes(person.qq, { limit: 100, offset: 0 }).total)
+  const next = mem.personaNotes(person.qq, { limit: 1, offset: 1 })
+  assert.equal(next.list.length, 1)
+  assert.equal(next.total, first.notesTotal)
+})
+

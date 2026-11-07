@@ -1125,12 +1125,37 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
       .sort((a, b) => Number(b.isOwner) - Number(a.isOwner) || b.lastActive - a.lastActive || a.qq.localeCompare(b.qq))
   }
 
-  function personaPerson(qq) {
+  function personaPerson(qq, { notesLimit = 20 } = {}) {
     const id = String(qq || '')
     if (!/^\d+$/.test(id)) return null
     const person = personaOverview().find((p) => p.qq === id)
     if (!person) return null
-    return { person, shortTerm: shortTermOf(id), notes: list('').filter((m) => String(m.about || '') === id), gists: gists({ about: id }), insights: insightsOf(`qq:${id}`), styles: styleOf(`qq:${id}`), relations: (load().relations || []).filter((r) => relationHas(r, id, [person.name, person.alias].filter(Boolean))).map((r) => ({ ...r, text: relationText(r) })) }
+    const allNotes = list('').filter((m) => String(m.about || '') === id)
+    const notes = allNotes.slice(0, Math.max(0, Math.min(500, Math.trunc(Number(notesLimit) || 20))))
+    return {
+      person,
+      shortTerm: shortTermOf(id),
+      notes,
+      notesTotal: allNotes.length,
+      notesLive: allNotes.filter((m) => isCurrent(m)).length,
+      notesOld: allNotes.filter((m) => !isCurrent(m)).length,
+      gists: gists({ about: id }),
+      insights: insightsOf(`qq:${id}`),
+      styles: styleOf(`qq:${id}`),
+      relations: (load().relations || []).filter((r) => relationHas(r, id, [person.name, person.alias].filter(Boolean))).map((r) => ({ ...r, text: relationText(r) })),
+    }
+  }
+
+  /** 人物详情里的 notes 分页：先过滤再切片，不把整份 notes 发给面板。 */
+  function personaNotes(qq, { limit = 20, offset = 0 } = {}) {
+    const id = String(qq || '')
+    if (!/^\d+$/.test(id)) return null
+    if (!personaOverview().some((p) => p.qq === id)) return null
+    const all = list('').filter((m) => String(m.about || '') === id)
+    const start = Math.max(0, Math.trunc(Number(offset) || 0))
+    const take = Math.max(0, Math.min(100, Math.trunc(Number(limit) || 20)))
+    const listPage = all.slice(start, start + take)
+    return { list: listPage, total: all.length, hasMore: start + listPage.length < all.length }
   }
 
   /** 只改面板允许编辑的字段，保留旧画像的名字和其他元数据。 */
@@ -2800,7 +2825,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
     vectorReset: () => vector.reset(),
     vectorSync: () => vector.sync(load().items, () => load().items),
     add, addEvent, recentEvents, update, remove, restore, recall, recallAsync, contextFor, consolidate, tick, topicScore, compressDetails, importCandidates, importCommit,
-    personaOverview, personaPerson, savePersonaPerson, personTags, dislikes, chats, saveChat, gists, timeline, deleteGist, saveRelation, deleteRelation, lookupPerson, lookupChat,
+    personaOverview, personaPerson, personaNotes, savePersonaPerson, personTags, dislikes, chats, saveChat, gists, timeline, deleteGist, saveRelation, deleteRelation, lookupPerson, lookupChat,
     profiles: () => { const s = load(); return Object.entries(s.profiles || {}).map(([qq, p]) => ({ qq, ...p })).sort((a, b) => b.at - a.at) },
     setProfile, buildProfile,
     recalls: () => recallLog.slice(),
