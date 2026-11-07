@@ -351,6 +351,7 @@ export function createSnowLumaManager({ getConfig, log, savePassword }) {
     }))
   }
 
+  const QQ_NT_HINT = '如果 QQ 是老版本（非 NT），SnowLuma 注入不了，请升级到 QQ NT 版（9.9 及以上）'
   /** 只给机器人号注入；别的号（主人的主号）碰都不碰。 */
   async function attachBot() {
     const bot = getConfig().botQQ
@@ -364,7 +365,9 @@ export function createSnowLumaManager({ getConfig, log, savePassword }) {
     }
     const { proc, reason, unverified } = pickBotProcess(list, bot, { exclude: [...rejected] })
     if (!proc) {
-      lastAttach = { at: Date.now(), ok: false, message: reason }
+      // 有 QQ 进程但一个都认不出/不匹配时，最常见的原因之一就是老版本 QQ（非 NT）
+      const ntHint = list.length && /没看到|认不出|看不到/.test(String(reason || '')) ? `（${QQ_NT_HINT}）` : ''
+      lastAttach = { at: Date.now(), ok: false, message: reason + ntHint }
       return lastAttach
     }
     if (unverified) pendingVerify = { pid: proc.pid, at: Date.now() }
@@ -376,10 +379,10 @@ export function createSnowLumaManager({ getConfig, log, savePassword }) {
     try {
       const r = await api(`/api/processes/${proc.pid}/load`, { method: 'POST' })
       const ok = Boolean(r.success)
-      lastAttach = { at: Date.now(), ok, message: ok ? `已给 QQ 进程（pid ${proc.pid}）注入${note}` : r.message || '注入失败' }
+      lastAttach = { at: Date.now(), ok, message: ok ? `已给 QQ 进程（pid ${proc.pid}）注入${note}` : `${r.message || '注入失败'}（${QQ_NT_HINT}）` }
       log.info(lastAttach.message)
     } catch (error) {
-      lastAttach = { at: Date.now(), ok: false, message: `注入失败：${error.message}` }
+      lastAttach = { at: Date.now(), ok: false, message: `注入失败：${error.message}（${QQ_NT_HINT}）` }
     }
     return lastAttach
   }
