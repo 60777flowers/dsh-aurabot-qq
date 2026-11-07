@@ -16,9 +16,22 @@ window.__ModuleLoader__.load({
 
     // ---------------- 小工具 ----------------
     const get = (p) => fetch(API + p, { cache: 'no-store' }).then((r) => r.json()).catch((e) => ({ ok: false, message: '连不上插件：' + e.message }))
+    // 面板 tab 缓存：GET 结果 30 秒内复用，切 tab 不重复拉；任何 POST 成功或上传后清空。
+    const getCache = new Map()
+    const CACHE_TTL = 30000
+    const bustCache = () => getCache.clear()
+    const getCached = (p, force = false) => {
+      const hit = getCache.get(p)
+      if (!force && hit && Date.now() - hit.at < CACHE_TTL) return Promise.resolve(hit.data)
+      return get(p).then((data) => {
+        if (!data || data.ok !== false) getCache.set(p, { at: Date.now(), data })
+        return data
+      })
+    }
     const post = (p, body) =>
       fetch(API + p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) })
         .then((r) => r.json())
+        .then((data) => { if (!data || data.ok !== false) bustCache(); return data })
         .catch((e) => ({ ok: false, message: '连不上插件：' + e.message }))
     const clone = (o) => JSON.parse(JSON.stringify(o))
     const setPath = (obj, path, value) => {
@@ -1792,7 +1805,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     function Model({ draft, setDraft, toast }) {
       const [list, setList] = useState(null)
       const [ping, setPing] = useState({})
-      useEffect(() => { get('/models').then((r) => setList(r.list || [])) }, [])
+      useEffect(() => { getCached('/models').then((r) => setList(r.list || [])) }, [])
       const key = (m) => m.provider + '::' + m.model
       const cur = draft.model.provider && draft.model.model ? draft.model.provider + '::' + draft.model.model : ''
       const curModel = cur && list ? list.find((m) => key(m) === cur) : null
@@ -2048,14 +2061,14 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const [stickerTotal, setStickerTotal] = useState(0)
       const [moreBusy, setMoreBusy] = useState(false)
       const fileRef = useRef(null)
-      const load = () => get('/stickers?limit=40&offset=0').then((r) => {
+      const load = () => getCached('/stickers?limit=40&offset=0').then((r) => {
         setItems(r.items || []); setHasMore(Boolean(r.hasMore)); setStickerTotal(Number(r.total) || 0)
       })
       const loadMore = async () => {
         if (moreBusy || !hasMore) return
         setMoreBusy(true)
         try {
-          const r = await get('/stickers?limit=40&offset=' + ((items || []).length))
+          const r = await getCached('/stickers?limit=40&offset=' + ((items || []).length))
           if (r.ok === false) return toast(r.message || '加载失败', 'err')
           setItems((prev) => [...(prev || []), ...(r.items || [])])
           setHasMore(Boolean(r.hasMore)); setStickerTotal(Number(r.total) || 0)
@@ -2065,7 +2078,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const [newName, setNewName] = useState('')
       // 起名用哪个模型：列 DSH 里已经接好的模型，能看图的标出来（AI 补全必须看图）
       const [models, setModels] = useState(null)
-      useEffect(() => { get('/models').then((r) => setModels(r.list || [])).catch(() => setModels([])) }, [])
+      useEffect(() => { getCached('/models').then((r) => setModels(r.list || [])).catch(() => setModels([])) }, [])
       const cm = (draft.stickers && draft.stickers.captionModel) || {}
       const cmKey = cm.provider && cm.model ? cm.provider + '::' + cm.model : ''
       const cmHit = cmKey && models ? models.find((m) => m.provider + '::' + m.model === cmKey) : null
@@ -2095,10 +2108,12 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           setJob(r)
           if (!r.running) {
             clearInterval(timer)
+            bustCache()
             load()
             toast(r.message || '整理完了', r.failed ? 'err' : 'ok')
           } else if ((r.done || 0) - shown.current >= 5) {
             shown.current = r.done || 0 // 每跑五张刷一下，新起的名字能早点看到
+            bustCache()
             load()
           }
         }, 2000)
@@ -2165,7 +2180,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h('label', { key: 'redo', className: 'ab-small ab-muted', title: '勾上以后连已经有名字的也重新起一遍（会重新花模型调用）' },
             h('input', { type: 'checkbox', checked: redoAll, onChange: (e) => setRedoAll(e.target.checked) }), ' 全部重做'),
           h(Btn, { key: 'pick', small: true, kind: 'ghost', onClick: () => { setPicking(true); setPicked([]) } }, '多选'),
-          h(Btn, { key: 'reload', small: true, kind: 'ghost', onClick: load }, '刷新'),
+          h(Btn, { key: 'reload', small: true, kind: 'ghost', onClick: () => { bustCache(); load() } }, '刷新'),
         ]
       return h('div', { className: 'ab-grid' },
         h(Card, { title: '表情包', right: f.sw('stickers.enabled'), desc: '回复里写 <sticker:名字> 就会发对应的表情；也会按概率自动配一张。' },
@@ -3374,26 +3389,26 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const capacity = memoryCapacity(draft.memory.capacity)
       const capacityTotal = Object.values(capacity).reduce((sum, n) => sum + n, 0)
       const [adding, setAdding] = useState({ text: '', aboutName: '', importance: 0.6 })
-      const load = (query) => get('/memories?limit=60&offset=0&q=' + encodeURIComponent(query ?? q)).then((r) => {
+      const load = (query) => getCached('/memories?limit=60&offset=0&q=' + encodeURIComponent(query ?? q)).then((r) => {
         setMem(r.items || []); setStats(r.stats || null); setHasMore(Boolean(r.hasMore)); setMemTotal(Number(r.total) || 0)
       })
       const loadMore = async () => {
         if (moreBusy || !hasMore) return
         setMoreBusy(true)
         try {
-          const r = await get('/memories?limit=60&offset=' + ((mem || []).length) + '&q=' + encodeURIComponent(q))
+          const r = await getCached('/memories?limit=60&offset=' + ((mem || []).length) + '&q=' + encodeURIComponent(q))
           if (r.ok === false) return toast(r.message || '加载失败', 'err')
           setMem((prev) => [...(prev || []), ...(r.items || [])])
           setHasMore(Boolean(r.hasMore)); setMemTotal(Number(r.total) || 0)
         } finally { setMoreBusy(false) }
       }
       const [styles, setStyles] = useState({})
-      const loadIns = () => get('/insights').then((r) => setStyles(r.styles || {}))
+      const loadIns = () => getCached('/insights').then((r) => setStyles(r.styles || {}))
       const times = draft.memory.consolidateTimes || []
       const setTime = (i, v) => { const t = times.slice(); t[i] = v; setDraft(setPath(draft, 'memory.consolidateTimes', t)) }
       const memOn = modOn(st, 'memory')
       useEffect(() => { if (memOn) { load(''); loadIns() } }, [memOn])
-      useEffect(() => { if (!modOn(st, 'mood')) return; get('/mood/history').then((r) => setMoodHistory(r.history || [])).catch(() => {}) }, [modOn(st, 'mood')])
+      useEffect(() => { if (!modOn(st, 'mood')) return; getCached('/mood/history').then((r) => setMoodHistory(r.history || [])).catch(() => {}) }, [modOn(st, 'mood')])
       useEffect(() => { if (!memOn) return; const t = setTimeout(() => load(q), 250); return () => clearTimeout(t) }, [q])
       const last = st.memory && st.memory.lastConsolidate
       const moodCard = !modOn(st, 'mood') ? h(ModOff, { name: '心情' }) : h(Card, { title: '心情', right: f.sw('mood.enabled'), desc: '被夸、被哄、被凶都会影响ta的心情（对ta说的话、主人的话影响更大），过一阵子慢慢回到平常。心情好时ta话多、更爱发表情和语音、回得快、群里更爱插话；心情差时话少、回得慢、少发表情，还会带点小脾气。' },
@@ -3590,7 +3605,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const [status, setStatus] = useState('')
       const [selected, setSelected] = useState('')
       const load = async () => {
-        const r = await get('/persona/overview')
+        const r = await getCached('/persona/overview')
         if (!r.ok) { setError(r.message || '人物列表没读出来'); return }
         setError(''); setList(r.list || [])
         setSelected((cur) => cur || (window.innerWidth > 760 && r.list?.[0]?.qq) || '')
@@ -3627,7 +3642,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const [error, setError] = useState('')
       const [notesBusy, setNotesBusy] = useState(false)
       const load = async (keepForm = false) => {
-        const r = await get('/persona/person?qq=' + encodeURIComponent(qq))
+        const r = await getCached('/persona/person?qq=' + encodeURIComponent(qq))
         if (!r.ok) { setError(r.message || '人物详情没读出来'); return }
         setError(''); setData(r)
         if (!keepForm) setForm({ ...Object.fromEntries(PERSON_FIELDS.map(([key]) => [key, r.person[key] || ''])), tags: r.person.tags || [] })
@@ -3638,7 +3653,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         if (shown >= (data.notesTotal || 0)) return
         setNotesBusy(true)
         try {
-          const r = await get('/persona/person/notes?qq=' + encodeURIComponent(qq) + '&limit=20&offset=' + shown)
+          const r = await getCached('/persona/person/notes?qq=' + encodeURIComponent(qq) + '&limit=20&offset=' + shown)
           if (!r.ok) return toast(r.message || '加载失败', 'err')
           setData((prev) => prev ? { ...prev, notes: [...(prev.notes || []), ...(r.list || [])] } : prev)
         } finally { setNotesBusy(false) }
@@ -3776,7 +3791,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const [list, setList] = useState(null)
       const [error, setError] = useState('')
       const load = async () => {
-        const r = await get('/memory/chats')
+        const r = await getCached('/memory/chats')
         if (!r.ok) { setError(r.message || '群印象没读出来'); return }
         setError(''); setList(r.list || [])
       }
@@ -3835,7 +3850,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         if (level) p.set('level', level)
         if (kind) p.set('kind', kind)
         if (platform) p.set('platform', platform)
-        const r = await get('/memory/timeline?' + p.toString())
+        const r = await getCached('/memory/timeline?' + p.toString())
         if (!r.ok) { setError(r.message || '时间轴没读出来'); return }
         setError('')
         const next = r.list || []
@@ -3871,9 +3886,9 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     /** 最近几轮她想起了什么、因为哪些词想起来的。 */
     function RecallLog() {
       const [list, setList] = useState(null)
-      const load = () => get('/memory/recalls?limit=10').then((r) => setList(r.list || []))
+      const load = () => getCached('/memory/recalls?limit=10').then((r) => setList(r.list || []))
       useEffect(() => { load() }, [])
-      return h(Card, { title: '最近想起了什么', desc: '每次回复前ta会按对方说的话翻记忆。这里能看到最近几次想起了哪几条、是因为哪几个词想起来的；想不起来的那次也会列出来。', right: h(Btn, { small: true, kind: 'ghost', onClick: load }, '刷新') },
+      return h(Card, { title: '最近想起了什么', desc: '每次回复前ta会按对方说的话翻记忆。这里能看到最近几次想起了哪几条、是因为哪几个词想起来的；想不起来的那次也会列出来。', right: h(Btn, { small: true, kind: 'ghost', onClick: () => { bustCache(); load() } }, '刷新') },
         !list ? h(Empty, { icon: '⏳', text: '加载中…' }) : list.length === 0 ? h(Empty, { icon: '🫧', text: '还没有记录（重启后从头记）。' }) :
           h('div', { className: 'ab-list' }, list.slice(0, 10).map((r, i) => h('div', { key: i, className: 'ab-li' },
             h('div', { className: 'meta' }, timeAgo(r.at), h('br'), h('span', { className: 'ab-small' }, String(r.where || '').replace(/^private:/, '私聊 ').replace(/^group:/, '群 '))),
@@ -5308,7 +5323,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const shown = Math.min(50, Math.max(1, Number(draft.imageGen && draft.imageGen.galleryShown) || 20))
       const [data, setData] = useState(null)
       const load = async () => {
-        const r = await get('/image/gallery?limit=' + shown).catch(() => null)
+        const r = await getCached('/image/gallery?limit=' + shown).catch(() => null)
         setData(r && r.ok ? r : { items: [], total: 0, dir: '' })
       }
       useEffect(() => { load() }, [shown])
