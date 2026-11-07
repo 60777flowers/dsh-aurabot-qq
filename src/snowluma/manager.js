@@ -56,8 +56,10 @@ async function oldQqProcesses() {
   const seen = new Set()
   const list = []
   for (const row of parseProcessLines(text)) {
-    if (seen.has(row.pid)) continue
-    seen.add(row.pid)
+    // 同一个 QQ 客户端会开多个进程（主进程/辅助进程），按安装路径只报一条
+    const key = row.path || `version:${row.version}` || `pid:${row.pid}`
+    if (seen.has(key)) continue
+    seen.add(key)
     const info = classifyQqVersion(row.version, row.path)
     if (info.nt !== false) continue // 只报老版；NT 的交给 SnowLuma 列表
     list.push({ pid: row.pid, path: row.path, qqVersion: row.version, nt: false, versionLabel: info.label })
