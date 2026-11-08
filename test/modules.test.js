@@ -229,6 +229,21 @@ test('复制 B 站模块：抽帧 / 截图库文件一起复制，用户模块�
     const shots = (await fake.call('/bili/shots')).json()
     assert.equal(shots.ok, true)
     assert.deepEqual(shots.items, [])
+    // 旧用户模块和内置模块共用同一图库索引；切换来源不能删除旧源码或截图。
+    const shotDir = join(dataDir, 'bili-shots')
+    mkdirSync(shotDir, { recursive: true })
+    const legacyShot = { file: '0123456789ab.jpg', md5: '0123456789ab', at: Date.now(), sec: 12, title: '旧截图', bvid: 'BV1aaaaaaaaa', bytes: 3 }
+    writeFileSync(join(shotDir, legacyShot.file), 'old')
+    writeFileSync(join(shotDir, 'index.json'), JSON.stringify({ items: [legacyShot] }))
+    await fake.call('/save', { modules: { bili: { useBuiltin: true } } })
+    await until(async () => (await mod('bili')).running === 'builtin')
+    assert.equal(existsSync(join(modDir('bili'), 'index.mjs')), true, '旧用户模块保留为回退入口')
+    const migrated = (await fake.call('/bili/shots')).json()
+    assert.equal(migrated.items[0].file, legacyShot.file)
+    assert.equal(readFileSync(join(shotDir, legacyShot.file), 'utf8'), 'old')
+    const preview = await fake.call('/bili/shot/image?file=' + legacyShot.file)
+    assert.equal(preview.status, 200)
+    assert.equal(preview.raw().toString(), 'old')
   } finally {
     await fake.call('/save', { modules: { bili: { enabled: false } } })
   }

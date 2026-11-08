@@ -61,7 +61,7 @@ function setup(t) {
       { uid: ALICE, who: 'bot', t: now - 10 },
     ],
   }
-  const cfg = normalize({ ownerQQ: OWNER, memory: { dailyConsolidate: false } })
+  const cfg = normalize({ ownerQQ: OWNER, allow: { private: [ALICE, BOB, '424242'] }, memory: { dailyConsolidate: false } })
   const make = () => createMemoryStore({ getConfig: () => cfg, hub, log })
   const state = () => readMemoryState(dir)
   t.after(() => {
@@ -233,12 +233,15 @@ test('面板注册人物记忆及四个子页，旧人格页仍可访问', () =>
   const render = () => { hook = 0; return panel.PersonaMemory({ toast() {} }) }
   let tree = render()
   const seg = tree.children[0].children[0]
-  assert.deepEqual(Array.from(seg.props.options, (o) => o.label), ['人物墙', '群印象', '时间轴'])
-  assert.equal(tree.children[1].type.name, 'PersonaWall')
+  assert.deepEqual(Array.from(seg.props.options, (o) => o.label), ['人物墙', '关系星图', '群印象', '时间轴'])
+  assert.equal(tree.children[1].type.name, 'MemoryPlatforms')
+  assert.equal(tree.children[2].type.name, 'PersonaWall')
+  seg.props.onChange('graph')
+  assert.equal(render().children[2].type.name, 'PersonaGraph')
   seg.props.onChange('chats')
-  assert.equal(render().children[1].type.name, 'PersonaChats')
+  assert.equal(render().children[2].type.name, 'PersonaChats')
   seg.props.onChange('timeline')
-  assert.equal(render().children[1].type.name, 'PersonaTimeline')
+  assert.equal(render().children[2].type.name, 'PersonaTimeline')
 
   const text = (node) => (node == null || node === false ? '' : typeof node !== 'object' ? String(node) : Array.isArray(node) ? node.map(text).join('') : text(node.children))
   state.length = 0; hook = 0
