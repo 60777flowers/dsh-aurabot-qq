@@ -601,12 +601,13 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
         t.unref?.()
         return track(() => clearTimeout(t))
       },
-      route: (path, handler) => {
+      route: (path, handler, options = {}) => {
         if (!active()) return () => {}
+        if (options.access != null && options.access !== 'panel') throw new Error('路由 access 只支持 panel')
         const full = '/aurabot/api' + prefix + (String(path).startsWith('/') ? path : '/' + path)
         const cur = routes.get(full)
         if (cur && cur.id !== id && live.has(cur.id)) throw new Error(`接口 ${full} 已经被模块「${cur.id}」占了`)
-        const route = { id, handler: guard(`接口 ${path}`, handler) }
+        const route = { id, handler: guard(`接口 ${path}`, handler), access: options.access || null }
         routes.set(full, route)
         return track(() => { if (routes.get(full) === route) routes.delete(full) })
       },
@@ -1171,6 +1172,7 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
     // 插件核心自己听事件（不属于任何模块，不会被撤掉）
     listen: (event, fn) => { const item = { id: '@core', fn }; listeners.set(event, [...(listeners.get(event) || []), item]); return () => listeners.set(event, (listeners.get(event) || []).filter((x) => x !== item)) }, contextFor, rules, commands, dshTools, builtinOff, handle,
     hasRoute: (path) => routes.has(path),
+    routeAccess: (path) => routes.get(path)?.access || null,
     dir: userDir,
   }
 }
