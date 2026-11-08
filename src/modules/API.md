@@ -147,7 +147,7 @@ export default {
 | `api.command({ name, aliases, desc, run(arg, msg) })` | 主人在 QQ 里发 `/name 参数` 时调用，`run` 返回的文字直接回到**发命令的那个聊天**（群里发就回群里）。名字可以是中文（`name: '天气'`），中文命令后面可以不加空格（`/天气北京`）；`arg` 是命令名后面剩下的全部文字，已经去掉首尾空格。**只认主人**：别人发 `/xxx` 当普通消息处理。和内置命令同名时你的优先 |
 | `api.every(毫秒, fn, 名字?)` | 定时任务（名字用在出错日志里） |
 | `api.later(毫秒, fn)` | 过一会儿做一次 |
-| `api.route('/路径', async (req, res) => 返回值)` | 加一个网页接口：地址是 `/aurabot/api/ext/<id>/路径`；返回对象就当 JSON 回；要自己回（比如图片）就用 `api.core.http.send(res, 200, buf, 'image/png')` |
+| `api.route('/路径', async (req, res) => 返回值, options?)` | 加一个网页接口：地址是 `/aurabot/api/ext/<id>/路径`；返回对象就当 JSON 回；要自己回（比如图片）就用 `api.core.http.send(res, 200, buf, 'image/png')`。1.3.0 起管理接口可传 `{ access: 'panel' }`，复用宿主回环/可信代理、Host 与 CSRF 闸；不传时保持现有行为，由模块验证客户端凭据 |
 | `api.onDispose(fn)` | 模块停下时要做的收尾 |
 
 **别的模块和插件内部**（全开放）
@@ -166,6 +166,7 @@ export default {
 | | |
 |---|---|
 | `hub` | 聊天中枢：`deliver(chatId, text)` `sendText` `sendVoice(chatId, 文字)` `sendVoiceFile(chatId, 音频文件)` `sendImage` `sendSticker(chatId, 名字)` `sendSegments` `runSystemTurn(名字, 标题, 提示词)` `pushToSession(...)` `resetChat(chatId)` `groupName(群号)` `turnHasOwner(sessionId)`（只表示本轮有人是主人，别拿它做权限门，用下面的 `turnSendersAllOwner`） `turnSendersAllOwner(sessionId)` `referenceImage(chat, 'last' 或 'quote')`（取当前聊天最近收到 / 引用的图，返回 Buffer，沿用短期缓存） `chatOfSession(sessionId)` `stats()` `sessions()` `chatLogOf(日期)` `recentMessagesOf(chatId, limit)`（原话档案开启后，当前人物同一聊天的近期消息，默认 32、最多 256 条） `lastChatAt` `lastOwnerChatAt` …… |
+| `media` | 通用媒体读取与转换辅助：`mimeOf(bytes)`、`avatar()`、`sticker(md5)`、`ffmpegPath()`、`parseWav(bytes)`、`toMono16k(bytes)`，详见下文（1.3.0 起） |
 | `onebot` | QQ 网关：`call(action, params, { timeoutMs })`、`state` |
 | `snowluma` | SnowLuma 管理：`running()` `start()` `stop()` `detect()` …… |
 | `local` | 本地接口（「本地接口」页那四项）：`active(slot)` `call(slot, 参数)` |
@@ -179,6 +180,16 @@ export default {
 | `getConfig()` / `setConfig(cfg)` | 同 `api.config` / 整份替换配置 |
 | `logger` | 插件的日志器（`logger.child('名字')` 拿一个分类） |
 | `root` | 插件自己的安装目录 |
+
+### 已有聊天的外部主人入口（1.3.0 起）
+
+`api.core.hub.sessions()` 返回现有聊天映射（含 `sessionId/title`）；`chatLogDays()` 返回已有流水日期，按 `YYYY-MM-DD` 升序排列；`chatLogOf(day)` 返回当天流水。这些查询复用原数据，不创建平台专用的会话或历史副本。流水可能含系统、已忘记的条目；模块展示时必须过滤 `forgottenAt`、系统与记忆提示，不把管理视角给未验证身份的人。
+
+`await api.core.hub.receiveOwnerMessage(chatId, { text?, image?, wav?, via?, originId?, assertAuthorized? })` 用于**模块已经验证为主人**的输入。它不是公开匿名接口；模块必须保护自己的网络边界和设备凭据。只接受 `sessions()` 已存在的 private/group 会话，遵守总开关、聊天白名单和暂停状态；不会新建其他聊天。`image` 为图片 Buffer，`wav` 为 PCM WAV Buffer，沿用本体缩图、模型视觉降级及本地/云端/DSH 转写。来源 `via` 默认 `external`，最多 40 字，用于提示与原流水来源；`originId` 是不透明的来源端标记，仅进入实时事件，不落盘。转写文本仍进入原有即时记忆、流水、原话档案及原会话；群会话保留 social 权限，回复仍经原 QQ 出口。
+
+`assertAuthorized` 是同步函数，凭据被撤销时抛错。在入口、媒体准备完成和模型投递前均会再次检查，同时重新检查主人身份及聊天是否仍然开放。模块停止后应让此函数拒绝仍在途的请求。`pushToSession` 也接受此检查作为可选参数；未提供时保持原行为。输入被其他模块的 `prompt` 拦截时沿用其原语义，不保证模型会回复。
+
+`api.core.media.avatar()` 返回当前自定义头像，缺省用插件默认头像；`sticker(md5)` 从**当前运行**的 `stickers` 模块读取精确匹配素材。返回 `{ bytes: Buffer, type: string }`，缺失或非图片返回 `null`，不暴露数据目录或素材路径。`api.use('stickers')?.library()` 继续提供素材列表与名称。`mimeOf(bytes)` 按文件头识别类型；`ffmpegPath()` 复用现有 ffmpeg 配置和本机探测；`parseWav(bytes)` 返回 `{ rate, channels, data }`，`toMono16k(bytes)` 转为单声道 16 kHz WAV。解码进程、时长与上传限制由调用模块负责。
 
 ## 事件
 
@@ -214,6 +225,7 @@ api.on('reply/items', (items) => [...items, { kind: 'text', value: '—— 大�
 
 | 事件 | 参数 | 说明 |
 |---|---|---|
+| `chat/log` | `{ t, chatId, who, text, uid?, via?, interaction?, forgottenAt?, originId? }` | 1.3.0 起，每条流水成功落盘后的只读快照，包括经 `deliver` 记账的回复 / 模块发送及已确认身份的外部输入。文字沿用原流水的脱敏和 500 字上限；`originId` 只在通知中存在。调试模式不写流水，也不产生通知。监听失败不影响消息与落盘，不是发送前的拦截器 |
 | `activity` | `{ kind: 'in' \| 'out', chatId, userId, nickname, text, reply, direct, owner }` | 收到的消息 / 她发出去的话（只看不拦） |
 | `onebot` | 原始 OneBot 事件 | **所有**事件：消息、加群、退群、撤回、好友申请、戳一戳……（只看不拦；不管白名单） |
 | `onebot/state` | `'connected'` 等 | QQ 网关连上 / 断开 |
@@ -221,6 +233,8 @@ api.on('reply/items', (items) => [...items, { kind: 'text', value: '—— 大�
 | `module/start` / `module/stop` | 模块 id | 有模块启动 / 停下 |
 | `song/sung` | `{ title, chatId }` | 翻唱模块唱完一首 |
 | 你自己 `api.emit` 的 | 随你 | 模块之间互相通知 |
+
+`chat/log` 跟随原流水的记账边界：正常模型回复和 `api.send()` 由 `hub.deliver()` 统一记账；底层 `sendText()` / `sendSegments()` 仅负责发送，不自动新增流水或此事件。分条、语音等出口不另行重复记账。验证回复通知时，应走 `deliver()` 并核对实际发送与落盘记录。
 
 `msg` 长这样（`text` 是纯文字：@ 她的那段去掉了，@ 别人的写成「@昵称」，图片 / 表情 / 文件写成「[图片]」这类占位；引用的那条消息的文字**不在**里面，要的话用 `replyId` 去 `api.onebot('get_msg', { message_id })` 拿）：
 
