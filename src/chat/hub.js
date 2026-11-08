@@ -2463,15 +2463,19 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
   // 轮次兜底：模型或工具卡住时 turn/end 永远不来，running 一直挂着，后面的私聊消息全被当成 steer 塞进那一轮，
   // 看上去就是「不理人」。超过上限就按 key 比对后强制放开，让下一条消息正常开新一轮。
   const runningTimers = new Map() // chatId → timer
+  // 返回兜底时长（毫秒）：0 表示关掉兜底（不设定时器），没配或非法值按默认 30 分钟
   const turnMaxMs = () => {
     const mins = Number(getConfig()?.chat?.turnTimeoutMinutes)
-    return (Number.isFinite(mins) && mins > 0 ? mins : 30) * 60_000
+    if (!Number.isFinite(mins)) return 30 * 60_000
+    if (mins <= 0) return 0
+    return mins * 60_000
   }
   function markRunning(chatId, key) {
     if (key) running.set(chatId, key)
     const old = runningTimers.get(chatId)
-    if (old) clearTimeout(old)
+    if (old) { clearTimeout(old); runningTimers.delete(chatId) }
     const limit = turnMaxMs()
+    if (!limit) return // 0 = 关掉兜底，不设定时器
     const timer = setTimeout(() => {
       // 只放开卡住的那一轮：running 里已经换成别的 key 就说明新轮次在跑，别误伤
       if (!key || running.get(chatId) !== key) return

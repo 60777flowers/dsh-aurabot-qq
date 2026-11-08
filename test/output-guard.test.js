@@ -338,3 +338,17 @@ test('卡住的轮次超过上限会被强制放开', async (t) => {
   await new Promise((r) => setTimeout(r, 3400))
   assert.ok(s.warnings.some((m) => m.includes('强制放开')), '超过上限应强制放开：' + JSON.stringify(s.warnings))
 })
+
+
+test('turnTimeoutMinutes = 0 表示关掉兜底，不会超时放开', async (t) => {
+  let release
+  const stuck = new Promise((resolve) => { release = resolve })
+  t.after(() => release())
+  const s = setup(t, { chat: { turnTimeoutMinutes: 0 }, brain: async () => { await stuck; return '终于回了' } })
+  const chat = { kind: 'private', chatId: 'private:8', userId: '8', nickname: '主人' }
+  void s.hub.pushToSession(chat, [{ type: 'text', text: '卡住试试' }], '1').catch(() => {})
+  await settle()
+  // 对照组：0.05 分钟 = 3 秒。这里等 4 秒，如果 0 被误当成默认值就会冒出「强制放开」
+  await new Promise((r) => setTimeout(r, 4000))
+  assert.ok(!s.warnings.some((m) => m.includes('强制放开')), '0 = 关掉兜底，不该放开：' + JSON.stringify(s.warnings))
+})
