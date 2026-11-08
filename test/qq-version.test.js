@@ -3,11 +3,13 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { classifyQqVersion } from '../src/snowluma/qq-version.js'
 
-test('QQ NT 9.9 及以上判为 NT', () => {
+test('QQ NT 9.9 及以上判为 NT；9.9.33 以下标成过低', () => {
   for (const v of ['9.9.0', '9.9.20.36330', '9.9.36-53644', '10.0.0']) {
     assert.equal(classifyQqVersion(v).nt, true, v)
   }
-  assert.equal(classifyQqVersion('9.9.20.36330').label, 'NT')
+  assert.equal(classifyQqVersion('9.9.20.36330').tooOld, true)
+  assert.equal(classifyQqVersion('9.9.36-53644').tooOld, undefined)
+  assert.equal(classifyQqVersion('9.9.36-53644').label, 'NT')
 })
 
 test('QQ 9.7 / TIM 3.x 判为老版', () => {

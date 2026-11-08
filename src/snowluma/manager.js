@@ -7,7 +7,7 @@
 import { spawn, execFile } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { existsSync, readFileSync, unlinkSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import net from 'node:net'
 import { registerSecret } from '../core/redact.js'
 import { classifyQqVersion } from './qq-version.js'
@@ -40,7 +40,23 @@ async function processDetails(pids) {
 
 async function qqInfoOf(pid) {
   const hit = (await processDetails([pid])).get(Number(pid)) || { path: '', version: '' }
-  return { version: hit.version, path: hit.path, ...classifyQqVersion(hit.version, hit.path) }
+  const version = actualQqVersion(hit.path, hit.version)
+  return { version, path: hit.path, ...classifyQqVersion(version, hit.path) }
+}
+
+// QQ.exe 是启动器，热更新后它的 FileVersion 仍是 baseVersion（例如 9.9.22）；
+// 真实运行版本在 <QQ_NT>\versions\config.json 的 curVersion。面板必须读这个值。
+export function actualQqVersion(path, fallback) {
+  const p = String(path || '')
+  try {
+    if (/[\\/]QQ(?:NT|_NT)[\\/]QQ\.exe$/i.test(p) || /[\\/]versions[\\/][^\\/]+[\\/]QQ\.exe$/i.test(p)) {
+      const root = /[\\/]versions[\\/]/i.test(p) ? p.replace(/[\\/]versions[\\/].*$/i, '') : dirname(p)
+      const cfg = readJsonSafe(join(root, 'versions', 'config.json'))
+      const v = cfg?.curVersion || cfg?.baseVersion
+      if (v) return String(v)
+    }
+  } catch (error) {}
+  return fallback
 }
 
 // SnowLuma 只列出它能接的 QQ NT 进程；老版 QQ（非 NT）不会出现在它的列表里。
@@ -411,9 +427,11 @@ export function createSnowLumaManager({ getConfig, log, savePassword }) {
     for (const row of rows) {
       const hit = details.get(row.pid) || { path: '', version: '' }
       row.path = row.path || hit.path
-      const info = classifyQqVersion(hit.version, row.path)
-      row.qqVersion = hit.version
+      const actualVersion = actualQqVersion(row.path, hit.version)
+      const info = classifyQqVersion(actualVersion, row.path)
+      row.qqVersion = actualVersion
       row.nt = info.nt
+      row.tooOld = Boolean(info.tooOld)
       row.versionLabel = info.label
     }
     return rows
@@ -440,7 +458,11 @@ export function createSnowLumaManager({ getConfig, log, savePassword }) {
     }
     const qq = await qqInfoOf(proc.pid)
     // 老版 QQ 只提示、不拦：仍然尝试注入，失败时把检测到的版本一起说出来
-    const versionNote = qq.nt === false ? `（检测到 QQ ${qq.version || '版本未知'}，${qq.versionLabel}；SnowLuma 只能注入 NT 版）` : ''
+    const versionNote = qq.nt === false
+      ? `（检测到 QQ ${qq.version || '版本未知'}，${qq.versionLabel}；SnowLuma 只能注入 NT 版）`
+      : qq.tooOld
+        ? `（检测到 QQ ${qq.version}，低于 SnowLuma 2.4 要求的 9.9.33，请升级 QQ）`
+        : ''
     if (unverified) pendingVerify = { pid: proc.pid, at: Date.now() }
     const note = unverified ? '（SnowLuma 没报账号，连上后会核对是不是机器人号，不是就立刻断开）' : ''
     if (proc.injected && proc.connected) {
