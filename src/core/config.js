@@ -45,6 +45,9 @@ export const DEFAULTS = {
   // publicHostname：面板经反代对外时的域名（如 panel.example.com），可填多个、逗号分隔；CSRF 同源校验把
   //   这个域名的 Origin 也算同源。留空 = 只有回环 Origin 算同源。
   security: { dangerConfirm: true, ssrfMode: 'strict', panelRemoteAccess: false, trustedProxy: '', publicHostname: '' },
+  // 浏览器（全局）：useDshSidebar = 需要浏览器的模块（逛网页 / 刷抖音 / 小红书 / 小黑盒验证）
+  // 连 DSH 侧边浏览器的共享实例（ego，画面在 DSH 右侧实时可见），不为每个模块各开一个独立窗口。
+  browser: { useDshSidebar: false },
   // DeepSeek 峰谷省钱模式（默认关，现有行为不变）：打开后只把「不着急的后台模型调用」尽量挪到谷时，
   // 聊天回复/工具/审批/定时任务本身不变。offPeakHolidays 是中国法定节假日（北京时间日期 'YYYY-MM-DD'）。
   cost: { offPeak: false, offPeakHolidays: [] },
@@ -457,6 +460,9 @@ export function normalize(raw) {
   c.security.panelRemoteAccess = bool(c.security.panelRemoteAccess, false)
   c.security.trustedProxy = String(c.security.trustedProxy || '').trim()
   c.security.publicHostname = String(c.security.publicHostname || '').trim().toLowerCase()
+  // 浏览器后端开关（老配置没有 browser 段也要补出默认值）
+  if (!isObj(c.browser)) c.browser = {}
+  c.browser.useDshSidebar = bool(c.browser.useDshSidebar, false)
   // DeepSeek 峰谷省钱模式：默认关；节假日列表去重、只留合法的 'YYYY-MM-DD'（北京时间日期）
   if (!isObj(c.cost)) c.cost = {}
   c.cost.offPeak = bool(c.cost.offPeak, false)
