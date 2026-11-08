@@ -1381,18 +1381,35 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
     const prefer = (preferPersonal ?? (getConfig().memory?.preferPersonal !== false)) && !EVENT_QUERY.test(String(query || ''))
     const agreementQuery = AGREEMENT_QUERY.test(String(query || ''))
     // 问「约定/说好」时多取一些候选，避免明确的约定被大量日记/事件挤出候选集
-    const take = prefer ? (agreementQuery ? 500 : Math.max(max, 1) * 4) : max
+    // ⚠️ 给联想留配额：联想条目和直接命中混在一起返回，如果 take 只取 max 条，
+    // 直接命中会把名额占满，联想永远进不来（实测：带向量命中时 hop 恒为 0，
+    // 不带向量命中时反而偶尔能挤进 1 条——正是「候选越多、联想越看不见」的怪现象）。
+    const memCfgNum = getConfig().memory
+    const assocQuota = memCfgNum.assoc?.enabled !== false && memCfgNum.vector?.enabled !== false
+      ? Math.max(0, Number(memCfgNum.assoc?.recall) || 3) : 0
+    const take = prefer ? (agreementQuery ? 500 : Math.max(max, 1) * 4) : max + assocQuota
     const pick = (list) => {
-      if (!prefer) return list.slice(0, max)
-      if (agreementQuery) {
-        const agreements = list.filter((h) => isAgreementMemory(h.it))
-        const personal = list.filter((h) => isPersonalMemory(h.it) && !isAgreementMemory(h.it))
-        const other = list.filter((h) => !isPersonalMemory(h.it))
-        return [...agreements, ...personal, ...other].slice(0, max)
+      // 联想条目在 search() 里是追加到末尾的（分数已经被跳数折扣压低），
+      // 直接命中可能有几十条，单纯 slice 会把联想全部丢掉（实测 hopDist 有 2+1 条，
+      // 但 pick 后一条不剩）。所以分两段取：直接命中取 max 条，联想单独取 assocQuota 条。
+      const order = (arr) => {
+        if (agreementQuery) {
+          const agreements = arr.filter((h) => isAgreementMemory(h.it))
+          const personal = arr.filter((h) => isPersonalMemory(h.it) && !isAgreementMemory(h.it))
+          const other = arr.filter((h) => !isPersonalMemory(h.it))
+          return [...agreements, ...personal, ...other]
+        }
+        const personal = arr.filter((h) => isPersonalMemory(h.it))
+        const other = arr.filter((h) => !isPersonalMemory(h.it))
+        return [...personal, ...other]
       }
-      const personal = list.filter((h) => isPersonalMemory(h.it))
-      const other = list.filter((h) => !isPersonalMemory(h.it))
-      return [...personal, ...other].slice(0, max)
+      const direct = list.filter((h) => !h.assocHop)
+      const assoc = list.filter((h) => h.assocHop)
+      const head = (prefer ? order(direct) : direct).slice(0, max)
+      // 没有直接命中就没有联想起点（联想是从直接命中往外扩散出来的）：
+      // recallCount=0 时交付必须为空，否则会出现「一条都没直接想起，却给了 4 条联想」。
+      const tail = head.length ? assoc.slice(0, assocQuota) : []
+      return [...head, ...tail]
     }
     const id = String(where).split('（')[0]
     const owner = String(getConfig().ownerQQ || '')
@@ -3436,7 +3453,8 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
   function page(q, { limit = 60, offset = 0 } = {}, vectorHits) {
     const { raw, withBy } = prepare(q, vectorHits)
     const start = Math.max(0, Math.trunc(Number(offset) || 0))
-    const take = Math.max(0, Math.min(200, Math.trunc(Number(limit) || 0)))
+    // 上限 1000：面板「翻一翻」一页 300 条，卡在 200 会让「加载更多」永远拿不满
+    const take = Math.max(0, Math.min(1000, Math.trunc(Number(limit) || 0)))
     const slice = take ? raw.slice(start, start + take) : raw
     return { items: slice.map(withBy), total: raw.length, hasMore: start + slice.length < raw.length }
   }
