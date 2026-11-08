@@ -5,6 +5,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { textToSpeech, edgeInstalled, installEdge, voiceConverters, volcanoResourceFor, volcanoSynth } from '../../voice/tts.js'
 import { VOLCANO_VOICES } from '../../voice/volcano-voices.js'
+import { breezeBalance, breezeClaim, breezeSession, autoClaimOnce, breezeVoices } from '../../voice/breeze.js'
 import { createSongVoice } from '../../voice/rvc.js'
 import { toMono16k } from '../../voice/wav.js'
 import { fileOf } from '../../local/local.js'
@@ -160,6 +161,42 @@ export default {
       return { ok: Boolean(heard), said: text, heard, ms: Date.now() - t }
     })
 
-    return { speak, edgeInstalled }
+    // ── Breeze 云端额度：查余额 / 领每日额度 ─────────────────────────────
+  // 只跟 BreezeBlue 的站点接口打交道；本机自建（mode=local）不走这套，也不需要 Key。
+  api.route('/voice/breeze-status', async () => {
+    const b = api.config().voice?.breeze || {}
+    const local = b.mode === 'local'
+    const bal = local ? { ok: true, hasKey: false, balance: null, note: '本地自建不用额度' } : await breezeBalance(b)
+    const s = breezeSession()
+    return {
+      ok: true,
+      mode: local ? 'local' : 'cloud',
+      hasKey: Boolean(String(b.key || '').trim()),
+      online: bal.ok,
+      balance: bal.balance,
+      note: bal.note,
+      emailSet: Boolean(String(b.email || '').trim()),
+      passwordSet: Boolean(b.password),
+      autoClaim: Boolean(b.autoClaim),
+      lastClaimAt: Number(s?.lastClaimAt) || 0,
+      lastTier: s?.lastTier || '',
+    }
+  })
+  // 列出云端音色（面板「列出音色」按钮）
+  api.route('/voice/breeze-voices', async () => {
+    const b = api.config().voice?.breeze || {}
+    if (b.mode === 'local') return { ok: false, message: '本地自建模式不用选云端音色' }
+    return breezeVoices(b)
+  })
+  api.route('/voice/breeze-claim', async () => {
+    const b = api.config().voice?.breeze || {}
+    const r = await breezeClaim(b, { log: api.log })
+    const bal = await breezeBalance(b)
+    return { ok: true, message: r.message, reward: r.reward, tier: r.tier, balance: bal.balance }
+  })
+  // 每小时醒一次：只有「选了 Breeze + 云端 + 开了自动领取 + 填了账号」才真的去领，一天最多一次
+  api.every(3600_000, () => autoClaimOnce(api.config(), { log: api.log }), '领 Breeze 额度')
+
+  return { speak, edgeInstalled }
   },
 }

@@ -20,6 +20,9 @@ function fixture(t, config = {}) {
     config: () => cfg, use: () => song, dataDir: (sub) => join(dir, sub),
     core: { hub: {}, onebot: {}, local: { active: () => false }, http: {} },
     route: (path, fn) => routes.set(path, fn), onDispose: (fn) => disposers.push(fn),
+    // 模块现在还会注册一个「每小时领 Breeze 额度」的定时任务：这里给个不真起 Timer 的空实现，
+    // 免得打乱下面「每个 setup 只有一个 disposer」的断言
+    every: () => () => {},
     log: { info() {}, debug() {}, warn: (...args) => warnings.push(args.join(' ')) },
   }
   t.after(() => {
