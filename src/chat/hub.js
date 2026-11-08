@@ -72,6 +72,8 @@ const sessionKey = (id) => {
  */
 // 模拟测试：这里面发出去的消息只记下来，不真发
 const captureStore = new AsyncLocalStorage()
+// 模拟测试专用：capture 只拦发送还不够，模块自己写流水时也要拦住。
+const simulationStore = new AsyncLocalStorage()
 const failStore = new AsyncLocalStorage() // deliver 这一次里发失败的原因，好让调用方如实告诉她
 /**
  * 一轮结束时该发到 QQ 的文字：只认「这一轮最后一条 assistant 消息」里的 text 块。
@@ -408,6 +410,9 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
   // ---------- 聊天流水（给空间日记、主动搭话、面板用） ----------
   let chatLogRevision = 0
   function logChat(chatId, who, text, uid = '', { via, at, interaction, originId } = {}) {
+    // 模块「模拟测试」的 simulation 上下文：只回放给面板看，不能写真实聊天流水。
+    // 否则 private:10001 这类模拟会话会进短时记忆和人物记忆，删掉又出现。
+    if (simulationStore.getStore()) return false
     // 调试模式：不写聊天流水，只进插件日志。流水是长期记忆的原料，写了就等于把调试对话记进记忆。
     if (getConfig().debug) {
       log.info(`[调试] ${who}${uid ? '（' + uid + '）' : ''} → ${chatId}：${String(text || '').slice(0, 300)}`)
@@ -3144,9 +3149,10 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
   }
 
   /** 模拟测试：fn 里发出去的消息都记下来不真发，返回 { result, sent }。 */
-  async function capture(fn) {
+  async function capture(fn, { simulate = false } = {}) {
     const sent = []
-    const result = await captureStore.run(sent, fn)
+    const run = () => captureStore.run(sent, fn)
+    const result = simulate ? await simulationStore.run(true, run) : await run()
     return { result, sent }
   }
   /** 模拟测试：假装这个会话这一轮是谁在说话（工具里的「主人才能用」靠它判断）。 */
