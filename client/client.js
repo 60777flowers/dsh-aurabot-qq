@@ -5361,8 +5361,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
      * 渲染走 smDraw（原版算法）；这里只负责状态、交互和侧栏清单。
      */
     function StarMap({ toast, onChanged }) {
-      // 默认展开：星图是这一页最直观的东西，一进来就该看见星，而不是先看一堆开关。
-      const [open, setOpen] = useState(true)
+      // 默认展开；收起状态存本地，切页回来不会又弹开。
+      const [open, setOpen] = usePersisted('sm.open', true)
       const [data, setData] = useState(null)
       const [busy, setBusy] = useState(false)
       const [sel, setSel] = useState(null)
