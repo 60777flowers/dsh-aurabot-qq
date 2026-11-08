@@ -2708,6 +2708,10 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     // 「自驱引擎」独立页（少爷定的：不属于主动搭话，单独一页）。
     // P0 只有地基（审计哈希链 + 状态），引擎闭环（立项/做事/做梦）在 P1 之后逐期点亮；
     // 数据走 /autotelic/status，参数就是 ext.autotelic.*（模块 defaults 里全有）。
+    // 自驱引擎的出厂默认（跟 src/modules/autotelic 的 defaults 对齐；滑块控件在草稿没值时兜底显示用）。
+    // 注意必须定义在顶层：Autotelic 是顶层组件，定义放任何函数闭包里它都会 ReferenceError（2026-11-08 真机抓到，
+    // 表现为打开「自驱引擎」页整页报「AUTOTELIC_DEFAULTS is not defined」）。
+    const AUTOTELIC_DEFAULTS = { enabled: false, presetIdOverride: false, minCuriosity: 0.55, evalModel: '', maxCandidates: 3, allowAct: true, actTimeoutMs: 180000, maxSteps: 8, maxTasksActive: 8, budgetActionsPerHour: 12, quietFrom: '23:30', quietTo: '07:30', dailyReviewHour: 23, minBatchForReview: 3, dreamFrom: '03:00', dreamTo: '05:00', allowUserModules: true, allowPython: true, pythonBin: '', scriptTimeoutMs: 120000 }
     function Autotelic({ st, draft, setDraft, toast }) {
       const f = useField(draft, setDraft)
       const [s, setS] = useState(null)
