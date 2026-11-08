@@ -4573,6 +4573,65 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
      * 画一帧星空。参数全是显式的，便于从 React 里调用。
      * 返回值是这一帧的命中表（星 / 星团 / 子星云）。
      */
+    // ═══════════════════════════════════════════════════════════════════════
+    // 记忆星图
+    //
+    // 渲染层（renderStarMap 及其常量）**原样搬自 memory-constellation 0.9.2
+    // 的 panel.js**（draw 函数 + tick 循环），只把 React 闭包改成显式参数。
+    // 那些注释是原作者反复调优留下的（为什么星尘不闪、为什么标签要粘滞、
+    // 为什么辉光只画亮星），照着写不可能达到同样质量，所以整段保留。
+    // ═══════════════════════════════════════════════════════════════════════
+
+    const SM_REGION = {
+      person: { label: '人物', color: '#6ee7ff' },
+      event: { label: '经历', color: '#ff9ecd' },
+      core: { label: '核心', color: '#ffd166' },
+      knowledge: { label: '知识', color: '#a9bcd8' },
+      outdated: { label: '已过时', color: '#5b6678' },
+      archived: { label: '已归档', color: '#8b93a7' },
+    }
+    const SM_TIER_LABEL = { short: '临时', long: '长期', core: '永久' }
+    const SM_EDGE_KINDS = { person: '同一个人', tag: '同标签', similar: '内容相似', conflict: '冲突', assoc: '联想' }
+    const SM_EDGE_WHITE = '220, 230, 245'
+    const SM_CHILD_TINTS = ['255, 159, 200', '127, 212, 255', '255, 209, 102', '167, 139, 250', '134, 239, 172', '240, 166, 202', '159, 182, 216']
+    const SM_GROUP_TINTS = ['255, 209, 102', '134, 239, 172', '127, 212, 255', '255, 159, 200', '167, 139, 250', '255, 160, 122', '159, 182, 216', '248, 113, 113']
+    const smClamp = (n, min, max) => Math.min(max, Math.max(min, n))
+    const smTintIndexOf = (id) => {
+      const text = String(id || '')
+      let hash = 0
+      for (let i = 0; i < text.length; i += 1) hash = (hash * 31 + text.charCodeAt(i)) >>> 0
+      return hash % SM_GROUP_TINTS.length
+    }
+    // 按 id 哈希取色，撞色时顺延到下一个空位，保证这批模块颜色互不相同。
+    const smTintMapOf = (groups = []) => {
+      const map = new Map()
+      const used = new Set()
+      groups.forEach((group) => {
+        let index = smTintIndexOf(group.id)
+        for (let step = 0; step < SM_GROUP_TINTS.length; step += 1) {
+          const candidate = (index + step) % SM_GROUP_TINTS.length
+          if (!used.has(candidate)) { index = candidate; break }
+        }
+        used.add(index)
+        map.set(group.id, SM_GROUP_TINTS[index])
+      })
+      return map
+    }
+    const smShortText = (v, n = 12) => (String(v || '').length > n ? String(v || '').slice(0, n) + '…' : String(v || ''))
+    const SM_DUST = Array.from({ length: 140 }, (_, i) => {
+      const a = Math.imul(i + 3, 1103515245) >>> 0
+      const b = Math.imul(i + 11, 12345) >>> 0
+      return { x: (a % 1000) / 1000, y: (b % 1000) / 1000, size: 0.6 + ((a >>> 8) % 100) / 100 * 1.2 }
+    })
+    // 会缓慢流动的远景星场：不同深度、不同速度，像一片在飘的星空。
+    const SM_FLOW = Array.from({ length: 160 }, (_, i) => {
+      const a = Math.imul(i + 7, 2654435761) >>> 0
+      const b = Math.imul(i + 19, 40503) >>> 0
+      const c = Math.imul(i + 31, 1103515245) >>> 0
+      const z = 0.35 + ((a >>> 8) % 100) / 100 * 0.65
+      return { x: (a % 1000) / 1000, y: (b % 1000) / 1000, z, size: 0.5 + (((c >>> 8) % 100) / 100) * 1.1, speed: 0.006 + z * 0.022, warm: (c % 100) > 78 }
+    })
+
     function smDraw(ctx, { W, H, stars, layout, stats, edges, view, opt, bgCanvas, glowCanvas, hover, labelBoxes, labelSeen, now }) {
       const layoutGroups = (layout && layout.groups) || []
       const boxHit = (x, y, w, h) => labelBoxes.current.some((b) => Math.abs(b.x - x) < (b.w + w) / 2 && Math.abs(b.y - y) < (b.h + h) / 2)
