@@ -2363,7 +2363,7 @@ export function apply(ctx) {
         const items = await hub.deliver(chat.chatId, String(b.reply), { simulate: true })
         steps.push(items ? `她的回复经过模块改写后拆成 ${items.length} 条` : '她的回复被模块拦下了，不发')
       }
-    })
+    }, { simulate: true })
     return { ok: true, steps, sent: sentLines(sent) }
   })
   route('/modules/tools', async (req) => {
@@ -2379,7 +2379,7 @@ export function apply(ctx) {
     const tool = mods.buildTools({ chat, level, sessionId: 'sim' }).find((t) => t.name === b.name)
     if (!tool) return { ok: false, message: `这个场合没有 ${b.name} 这个工具` }
     hub.simulateTurn('sim', [userId])
-    const { result, sent } = await hub.capture(() => tool.execute(b.args && typeof b.args === 'object' ? b.args : {}, {}))
+    const { result, sent } = await hub.capture(() => tool.execute(b.args && typeof b.args === 'object' ? b.args : {}, {}), { simulate: true })
     return { ok: true, result, sent: sentLines(sent) }
   })
   route('/modules/panel', async (req, res) => {
