@@ -40,7 +40,8 @@ function isInsideRoot(p, root) {
   } catch { return false }
 }
 
-/** 本地日期 → 文件名（一天一条链，重启后从当天文件尾恢复链头）。 */
+/** 本地日期 → 文件名（一天一个文件、全目录串成一条链；重启后从当天文件尾恢复链头，
+ *  当天还没有文件时回退到最新旧文件的链尾——见 recoverChainHead ②）。 */
 function dayFile(dir, d) {
   const p = (n) => String(n).padStart(2, '0')
   return join(dir, `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}.jsonl`)
@@ -128,12 +129,27 @@ export function createAuditor({ dir, chatOfSession, isOwnedSession, log, now = (
   const pending = new Map()
 
   async function recoverChainHead(file) {
+    // ① 先按老规矩读「今天」的文件尾；
     try {
       const text = await readFile(file, 'utf8')
       const lines = text.split('\n').filter((l) => l.trim())
       const last = lines.at(-1)
-      if (last) prevHash = JSON.parse(last).hash || ''
-    } catch { prevHash = prevHash || '' }
+      if (last) { prevHash = JSON.parse(last).hash || ''; return }
+    } catch { /* 今天的文件还不存在（跨天第一条）或读不了，往②走 */ }
+    // ② 跨天兜底（2026-11-08 修「重启后跨天首条 prevHash 从空串起新链，面板判『账本断了』」）：
+    //    校验器是按目录里全部 jsonl 串成一条链的，新的一天第一条必须接着最新旧文件的链尾。
+    //    昨天（11-07→11-08）没出事纯属侥幸：那次是同一个长驻进程跨零点，内存链头还在；
+    //    进程在零点后重启过一次，这个兜底缺位就断了。
+    try {
+      const files = (await readdir(dir)).filter((f) => f.endsWith('.jsonl')).sort()
+      const newest = files.at(-1)
+      if (newest && join(dir, newest) !== file) {
+        const text = await readFile(join(dir, newest), 'utf8')
+        const last = text.split('\n').filter((l) => l.trim()).at(-1)
+        if (last) { prevHash = JSON.parse(last).hash || prevHash || ''; return }
+      }
+    } catch { /* 读不了最新文件就按新链起，别拖住落盘 */ }
+    prevHash = prevHash || ''
   }
 
   function schedule() {

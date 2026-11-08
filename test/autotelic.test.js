@@ -242,6 +242,22 @@ test('重启恢复链头：新审计器接旧链能续上', async (t) => {
   assert.equal(chain.total, 2)
 })
 
+test('跨天续链：重启后新一天首条要接昨天文件的链尾（2026-11-08 真机「账本断了」回归）', async (t) => {
+  const dir = tmpDir(t, 'crossday')
+  const opts = { dir, chatOfSession: (sid) => (sid === 'her' ? 'system:autotelic' : ''), isOwnedSession: () => true, flushMs: 1 }
+  // 「昨天」：用固定 now 写出 2026-11-07.jsonl
+  const first = createAuditor({ ...opts, log: { debug: () => {} }, now: () => new Date('2026-11-07T12:00:00') })
+  await first.preExecute({ name: 'fs', arguments: {}, agent: { session: { id: 'her' } } }, async () => ({}))
+  await first.dispose()
+  // 「重启 + 已过零点」：新实例、now 落在新的一天——今天文件还不存在，链头必须从昨天的文件尾接上
+  const second = createAuditor({ ...opts, log: { debug: () => {} }, now: () => new Date('2026-11-08T09:00:00') })
+  await second.preExecute({ name: 'fetch', arguments: {}, agent: { session: { id: 'her' } } }, async () => ({}))
+  await second.dispose()
+  const chain = await verifyAuditChain(dir)
+  assert.equal(chain.ok, true, '跨天首条接昨天链尾，整条链不断')
+  assert.equal(chain.total, 2)
+})
+
 test('模块壳：默认全关、状态路由返回审计链校验，enabled=false 不做任何 IO（场景 1）', async (t) => {
   const root = tmpDir(t, 'module')
   const routes = {}
