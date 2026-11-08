@@ -282,7 +282,9 @@ export const DEFAULTS = {
   // everyStep：一轮里她分几段说就发几条（默认关 = 只发最后一段）。私聊多是闲聊，连着说的几句可能是不同话题，
   //   只发最后一段会让人以为她只回了一个话题；干活时前面多是工具调用前后的过程话，开着会显得啰嗦
   // rescueFromThinking：整轮一段正文都没写时，从思考里捞出她自己定稿的那段（默认关，捞不到就不发）
-  chat: { seedHistory: false, seedHistoryCount: 20, everyStep: false, rescueFromThinking: false },
+  // turnTimeoutMinutes：一轮跑超过这么多分钟就强制放开（模型/工具卡死时 turn/end 永远不来，
+  // 私聊新消息会被一直当成 steer 塞进那一轮，看上去就是「不理人」）。填 0 关掉兜底。
+  chat: { seedHistory: false, seedHistoryCount: 20, everyStep: false, rescueFromThinking: false, turnTimeoutMinutes: 30 },
   // 原话档案独立于摘要记忆；默认关闭，由使用者明确开启并管理保留期限。
   conversationContext: { enabled: false },
   memory: {
@@ -698,6 +700,7 @@ export function normalize(raw) {
   c.chat.seedHistoryCount = num(c.chat.seedHistoryCount, 20, 1, BIG)
   c.chat.everyStep = bool(c.chat.everyStep, false)
   c.chat.rescueFromThinking = bool(c.chat.rescueFromThinking, false)
+  c.chat.turnTimeoutMinutes = num(c.chat.turnTimeoutMinutes, 30, 0, 180)
   c.memory.recallCount = num(c.memory.recallCount, 6, 0, BIG)
   // 总数护栏：0 表示不限制（直接 recallCount + 联想 assoc.recall）；设了就封顶，防止上下文爆掉
   c.memory.recallTotal = Math.round(num(c.memory.recallTotal, 0, 0, BIG))
