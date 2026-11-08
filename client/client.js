@@ -108,6 +108,8 @@ window.__ModuleLoader__.load({
     const getPath = (obj, path) => path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj)
     // 自动记忆原本按来源分别限额；调整总数时按当前比例分配整数名额。
     const MEMORY_CAPACITY_DEFAULT = { auto: 2000, event: 600, diary: 400 }
+    // 「翻一翻」首屏一页 60 条，后面的点「加载更多」再取；不要一次拉 300 条。
+    const MEMORY_PAGE_SIZE = 60
     const memoryCapacity = (value) => Object.fromEntries(Object.entries(MEMORY_CAPACITY_DEFAULT).map(([key, fallback]) => {
       const n = Number(value?.[key])
       return [key, value?.[key] != null && Number.isFinite(n) ? Math.max(0, Math.floor(n)) : fallback]
@@ -3814,20 +3816,19 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const capacity = memoryCapacity(draft.memory.capacity)
       const capacityTotal = Object.values(capacity).reduce((sum, n) => sum + n, 0)
       const [adding, setAdding] = useState({ text: '', aboutName: '', importance: 0.6 })
-      // 分页：以前前端一次只能拿到 300 条，库里超过 300 条之后，
-      // 后面那些在「翻一翻」里是隐形的（搜不到、翻不到）。现在带 offset 增量加载。
+      // 分页：首屏只取一页，点「加载更多」再按 offset 增量加载。
       const [memMore, setMemMore] = useState(false)
       const [memTotal, setMemTotal] = useState(0)
       // 已加载条数单独记：不能拿 mem.length 当 offset——
       // 删掉一条之后列表会变短，offset 就对不上，会重复取回已经看过的条目。
       const [memLoaded, setMemLoaded] = useState(0)
-      const load = (query) => get('/memories?q=' + encodeURIComponent(query ?? q) + '&limit=300&offset=0').then((r) => {
+      const load = (query) => get('/memories?q=' + encodeURIComponent(query ?? q) + '&limit=' + MEMORY_PAGE_SIZE + '&offset=0').then((r) => {
         const items = r.items || []
         setMem(items); setStats(r.stats || null); setMemMore(!!r.hasMore)
         setMemTotal(r.total ?? items.length); setMemLoaded(items.length)
       })
       const loadMore = async () => {
-        const r = await get('/memories?q=' + encodeURIComponent(q) + '&limit=300&offset=' + memLoaded)
+        const r = await get('/memories?q=' + encodeURIComponent(q) + '&limit=' + MEMORY_PAGE_SIZE + '&offset=' + memLoaded)
         if (!r || r.ok === false) return
         const items = r.items || []
         setMem((cur) => [...(cur || []), ...items])
