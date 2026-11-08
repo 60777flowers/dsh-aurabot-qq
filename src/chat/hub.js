@@ -1614,7 +1614,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       slowNoticeSent.delete(key)
       clearSlowNotices(key)
       const turnToken = st.turnToken
-      if (running.get(chatId) === key) running.delete(chatId)
+      clearRunning(chatId, key)
       stopTyping(key)
       const d = event.data || {}
       const completed = d.reason && d.reason.kind === 'completed'
@@ -2460,6 +2460,38 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     if (key && !isCurrentSession(chatId, key)) return false
     return (key && running.get(chatId) === key) || Date.now() - busy.get(chatId) < BUSY_MAX_MS
   }
+  // 轮次兜底：模型或工具卡住时 turn/end 永远不来，running 一直挂着，后面的私聊消息全被当成 steer 塞进那一轮，
+  // 看上去就是「不理人」。超过上限就按 key 比对后强制放开，让下一条消息正常开新一轮。
+  const runningTimers = new Map() // chatId → timer
+  // 返回兜底时长（毫秒）：0 表示关掉兜底（不设定时器），没配或非法值按默认 30 分钟
+  const turnMaxMs = () => {
+    const mins = Number(getConfig()?.chat?.turnTimeoutMinutes)
+    if (!Number.isFinite(mins)) return 30 * 60_000
+    if (mins <= 0) return 0
+    return mins * 60_000
+  }
+  function markRunning(chatId, key) {
+    if (key) running.set(chatId, key)
+    const old = runningTimers.get(chatId)
+    if (old) { clearTimeout(old); runningTimers.delete(chatId) }
+    const limit = turnMaxMs()
+    if (!limit) return // 0 = 关掉兜底，不设定时器
+    const timer = setTimeout(() => {
+      // 只放开卡住的那一轮：running 里已经换成别的 key 就说明新轮次在跑，别误伤
+      if (!key || running.get(chatId) !== key) return
+      running.delete(chatId)
+      runningTimers.delete(chatId)
+      log.warn(`${chatId}：这一轮超过 ${Math.round(limit / 60000)} 分钟没结束，强制放开（后面的消息不会再被塞进卡住的轮次）`)
+    }, limit)
+    timer.unref?.()
+    runningTimers.set(chatId, timer)
+  }
+  function clearRunning(chatId, key) {
+    if (key && running.get(chatId) !== key) return
+    running.delete(chatId)
+    const timer = runningTimers.get(chatId)
+    if (timer) { clearTimeout(timer); runningTimers.delete(chatId) }
+  }
 
   function enqueue(chat, content, senderId, wantVoice, mode = 'must', extra = {}) {
     const m = getConfig().merge
@@ -2577,7 +2609,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     const turnToken = { signature: turnSignature(chatId) }
     busyTurns.set(chatId, turnToken)
     busySessions.delete(chatId)
-    running.delete(chatId)
+    clearRunning(chatId)
     busy.set(chatId, Date.now())
     try {
       const [first, ...rest] = [...p.senders]
@@ -2588,7 +2620,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       if (isSessionBackoff(error)) {
         retainSessionMessages(chatId, p, content)
         busy.delete(chatId)
-        running.delete(chatId)
+        clearRunning(chatId)
         return
       }
       release(chatId, turnToken)
@@ -2606,7 +2638,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     busy.delete(chatId)
     busySessions.delete(chatId)
     busyTurns.delete(chatId)
-    running.delete(chatId)
+    clearRunning(chatId)
     const p = pending.get(chatId)
     if (p && p.waiting) {
       p.waiting = false
@@ -2826,7 +2858,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     } else {
       st.turnToken = turnToken
       busySessions.set(chat.chatId, key)
-      running.set(chat.chatId, key)
+      markRunning(chat.chatId, key)
       await withPromptCapture(sources, () => agent.followup(message))
     }
     try {
