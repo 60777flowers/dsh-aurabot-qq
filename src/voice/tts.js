@@ -199,6 +199,90 @@ async function gptsovitsSynth(text, c) {
   return saveAudio(await fetchAudio(`${base}/tts?${q}`, { method: 'GET' }), 32000)
 }
 
+/**
+ * Breeze 语音（BreezeBlue / 本机自建）。两种模式：
+ *   cloud（默认）：`POST {url}/v1/text-to-speech/{音色id}?output_format=…&delivery=sync`
+ *                   带 `xi-api-key`，body `{ text, model_id, language_code?, instructions?, voice_settings? }`
+ *   local        ：`POST {url}/v1/audio/speech`（say-model/breeze_infer 那套）multipart 表单：
+ *                   text / instruction / cfg_scale / seed，返回音频字节
+ */
+export async function breezeSynth(text, c = {}) {
+  const base = String(c.url || 'https://api.breeze.blue').replace(/\/+$/, '')
+  if (c.mode === 'local') return breezeLocal(text, c, base)
+  const key = String(c.key || '').trim()
+  const voiceId = String(c.voiceId || '').trim()
+  if (!key) throw new Error('Breeze 没填 API Key（brz_ 开头）')
+  if (!voiceId) throw new Error('Breeze 没填音色 id（voc_ 开头）')
+  const format = String(c.outputFormat || 'mp3_24000_128')
+  const url = `${base}/v1/text-to-speech/${encodeURIComponent(voiceId)}`
+    + `?output_format=${encodeURIComponent(format)}&delivery=sync`
+  // 云端只用「硬音色 id」：不发 instructions、也不发 voice_settings。
+  // 理由：描述一开就是按描述生成，音色会往描述漂（官方还规定 guidance>1 时 speaker boost 被忽略）。
+  // 想要别的音色就去 breezeblue.ai 做好、把新的 voc_ id 填进来，比在本地写描述稳得多。
+  // 语气/描述只在本地自建（breeze_infer 的 voice design）里用。
+  const body = { text, model_id: String(c.model || 'breeze-tts-2') }
+  if (c.languageCode) body.language_code = String(c.languageCode)
+  const timeout = Number(c.timeoutMs) || 60000
+  let r
+  try {
+    r = await fetch(url, {
+      method: 'POST',
+      headers: { 'xi-api-key': key, accept: 'application/json, audio/*', 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeout),
+    })
+  } catch (error) {
+    throw new Error(`Breeze 连不上（${base}）：${error.message}`)
+  }
+  if (!r.ok) {
+    const detail = (await r.text().catch(() => '')).slice(0, 160)
+    const hint = r.status === 401 ? '：Key 不对或已撤销' : r.status === 402 ? '：额度不够' : r.status === 429 ? '：撞频率限制了' : ''
+    throw new Error(`Breeze HTTP ${r.status}${hint}：${detail}`)
+  }
+  const type = r.headers.get('content-type') || ''
+  if (!/^audio\//i.test(type)) {
+    const detail = (await r.text().catch(() => '')).slice(0, 160)
+    throw new Error(`Breeze 没返回音频（content-type=${type || '空'}）：${detail}`)
+  }
+  const buf = Buffer.from(await r.arrayBuffer())
+  if (buf.length < 400) throw new Error('Breeze 返回的音频太短：' + buf.length + ' 字节')
+  // mp3_24000_128 / mp3_44100_128 这种格式名里带采样率
+  const rate = Number((/mp3_(\d+)/.exec(format) || [])[1]) || 24000
+  return saveAudio(buf, rate)
+}
+
+/** 本机 breeze_infer 那套：multipart 表单（text / instruction / cfg_scale / seed），返回音频字节。 */
+async function breezeLocal(text, c, base) {
+  if (!base) throw new Error('没填 Breeze 本地服务地址')
+  const form = new FormData()
+  form.set('text', text)
+  if (c.instructions) form.set('instruction', String(c.instructions))
+  const cfgScale = Number(c.guidanceScale)
+  if (Number.isFinite(cfgScale) && cfgScale > 0) form.set('cfg_scale', String(cfgScale))
+  const timeout = Number(c.timeoutMs) || 60000
+  let r
+  try {
+    r = await fetch(`${base}/v1/audio/speech`, { method: 'POST', body: form, signal: AbortSignal.timeout(timeout) })
+  } catch (error) {
+    throw new Error(`Breeze 本地服务连不上（${base}）：${error.message}`)
+  }
+  if (!r.ok) {
+    const detail = (await r.text().catch(() => '')).slice(0, 160)
+    // 本地服务一次只跑一个请求，撞上就有 409
+    const hint = r.status === 409 ? '：本地正在合成上一句，等它说完再试' : ''
+    throw new Error(`Breeze 本地 HTTP ${r.status}${hint}：${detail}`)
+  }
+  const type = r.headers.get('content-type') || ''
+  if (type && !/^(audio\/|application\/octet-stream)/i.test(type)) {
+    const detail = (await r.text().catch(() => '')).slice(0, 160)
+    throw new Error(`Breeze 本地没返回音频（content-type=${type}）：${detail}`)
+  }
+  const buf = Buffer.from(await r.arrayBuffer())
+  if (buf.length < 400) throw new Error('Breeze 本地返回的音频太短：' + buf.length + ' 字节')
+  const rate = Number(c.sampleRate) || 24000
+  return saveAudio(buf, rate)
+}
+
 /** 请求头文本 → 对象。一行一个「Key: Value」，空行和 # 开头的行忽略。 */
 function parseHeaderText(raw) {
   const out = {}
@@ -399,7 +483,7 @@ export async function textToSpeech(text, opt = {}, log) {
   if (!clean) throw new Error('没有要念的文字')
   let file = ''
   let engine = ''
-  const local = { cosyvoice: cosyvoiceSynth, gptsovits: gptsovitsSynth, http: httpSynth, volcano: volcanoSynth }[opt.engine]
+  const local = { cosyvoice: cosyvoiceSynth, gptsovits: gptsovitsSynth, http: httpSynth, volcano: volcanoSynth, breeze: breezeSynth }[opt.engine]
   if (local) {
     try {
       file = await local(clean, opt[opt.engine] || {})

@@ -2070,6 +2070,60 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     }
 
     /** 豆包语音（火山）：地址 / 请求头 / 请求体都内置好了，这里只挑音色、填 Key。 */
+    /** Breeze 云端音色：点一下拉列表，选中即填 voice id（不用去官网抄）。 */
+    function BreezeVoices({ b, draft, setDraft }) {
+      const [list, setList] = useState(null)
+      const [err, setErr] = useState('')
+      const [busy, setBusy] = useState(false)
+      const load = async () => {
+        setBusy(true); setErr('')
+        try {
+          const r = await get('/voice/breeze-voices')
+          if (r && r.ok) setList(r.voices || [])
+          else setErr(r?.message || '拉不到音色列表')
+        } catch (e) { setErr(e.message) } finally { setBusy(false) }
+      }
+      const cur = String(b?.voiceId || '')
+      const opts = (list || []).map((v) => ({ value: v.id, label: v.name || v.id, desc: [v.origin === 'cloned' ? '克隆' : v.origin, v.desc].filter(Boolean).join(' · ') || undefined }))
+      if (list && cur && !opts.some((o) => o.value === cur)) opts.unshift({ value: cur, label: cur, desc: '当前配置里的音色（不在列表里）' })
+      return h('div', null,
+        h(Row, { label: 'Breeze 音色', hint: list ? '共 ' + list.length + ' 个，选一个就填进上面的音色 id' : '点「列出音色」从 Breeze 拉列表，选中自动填 id，不用去官网抄' },
+          h('div', { className: 'ab-flex' },
+            list ? h(Select, { width: 340, value: cur, options: opts, onChange: (v) => setDraft(setPath(draft, 'voice.breeze.voiceId', v)) }) : null,
+            h(Btn, { small: true, kind: 'ghost', disabled: busy, onClick: load }, busy ? '拉取中…' : (list ? '刷新' : '列出音色')))),
+        err ? h('div', { className: 'ab-note warn', style: { marginTop: 6 } }, err) : null,
+      )
+    }
+    /** Breeze 云端额度：查余额、显示上次领取、手动领一次。 */
+    function BreezeQuota({ b }) {
+      const [st, setSt] = useState(null)
+      const [busy, setBusy] = useState('')
+      const load = () => get('/voice/breeze-status').then((r) => setSt(r && r.ok !== false ? r : null)).catch(() => setSt(null))
+      useEffect(() => { load() }, [b?.mode, b?.keySet, b?.emailSet, b?.autoClaim])
+      const claim = async () => {
+        setBusy('claim')
+        try {
+          const r = await post('/voice/breeze-claim', {})
+          toast(r.message || (r.ok ? '领完了' : '没领到'), r.ok ? 'ok' : 'err')
+          load()
+        } catch (e) { toast(e.message, 'err') } finally { setBusy('') }
+      }
+      if (b?.mode === 'local') return h('div', { className: 'ab-muted ab-small' }, '本地自建模式：不查额度，也不用登录。')
+      const when = st?.lastClaimAt ? new Date(st.lastClaimAt).toLocaleString() : ''
+      return h('div', { className: 'ab-note', style: { marginTop: 8 } },
+        st
+          ? [
+            h('div', { key: 'a' }, st.online
+              ? '云端在线' + (st.balance == null ? '' : '（额度 ' + st.balance + '）')
+              : '云端离线' + (st.note ? '：' + st.note : '')),
+            when ? h('div', { key: 'b', className: 'ab-muted ab-small' }, '上次领取：' + when + (st.lastTier ? '（' + st.lastTier + '）' : '')) : null,
+            !st.emailSet ? h('div', { key: 'c', className: 'ab-muted ab-small' }, '填了邮箱密码才能自动领每日额度。') : null,
+          ]
+          : h('div', { className: 'ab-muted ab-small' }, '正在查额度…'),
+        h('div', { key: 'btn', style: { marginTop: 8 } },
+          h(Btn, { small: true, disabled: busy === 'claim' || !st?.emailSet, onClick: claim }, busy === 'claim' ? '领取中…' : '领取今日额度')),
+      )
+    }
     function VolcanoVoice({ draft, setDraft }) {
       const f = useField(draft, setDraft)
       const [list, setList] = useState(null)
@@ -2149,6 +2203,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             { value: 'cosyvoice', label: '本地 CosyVoice', desc: '自己部署的 CosyVoice 服务，可克隆音色' },
             { value: 'gptsovits', label: '本地 GPT-SoVITS', desc: 'GPT-SoVITS api_v2，用参考音频定音色' },
             { value: 'volcano', label: '豆包语音（火山）', desc: '只填 API Key，选个音色就行' },
+            { value: 'breeze', label: 'Breeze 语音', desc: 'BreezeBlue 云端或自建，填 Key + 音色 id' },
             { value: 'http', label: '其他 HTTP 接口', desc: '任意返回音频的地址' },
             { value: 'windows', label: 'Windows 自带', desc: '离线可用，机械感重一些' },
           ])),
@@ -2183,6 +2238,48 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             h(Row, { key: 'p', label: '参考音频的文字' }, f.text('voice.gptsovits.promptText', { size: 'wide' })),
           ] : null,
           draft.voice.engine === 'volcano' ? h(VolcanoVoice, { key: 'volcano', draft, setDraft }) : null,
+          draft.voice.engine === 'breeze' ? [
+            (() => {
+              // 缺东西时先提示（不拦保存）：不然只有点「试听」才报错，还看不懂缺哪个
+              const b = draft.voice.breeze || {}
+              const miss = b.mode === 'local'
+                ? (!String(b.url || '').trim() ? ['服务地址'] : [])
+                : [
+                  !String(b.key || '').trim() && !b.keySet ? 'API Key' : '',
+                  !String(b.voiceId || '').trim() ? '音色 id' : '',
+                ].filter(Boolean)
+              const localDown = b.mode === 'local' && !String(b.url || '').trim()
+              return miss.length
+                ? h('div', { className: 'ab-note warn', style: { marginBottom: 8 } },
+                  '还差：' + miss.join('、') + '。不填的话说话会退回 Windows 语音（照常发声，只是不是 Breeze 的音色）。',
+                  localDown ? '本地模式要先把 breeze_infer 跑起来，地址填它的 /v1 前缀（例如 http://127.0.0.1:7860）。' : '')
+                : null
+            })(),
+            h(Row, { key: 'mode', label: '模式', hint: '云端走 BreezeBlue 官方接口；本地走自己跑的 breeze_infer' }, h(Select, {
+              width: 240,
+              value: draft.voice.breeze?.mode || 'cloud',
+              options: [{ value: 'cloud', label: '云端（BreezeBlue）' }, { value: 'local', label: '本地自建（breeze_infer）' }],
+              // 切模式时顺手把服务地址换成对应的默认值（自己填过的自定义地址不动）
+              onChange: (v) => {
+                const cur = String(draft.voice.breeze?.url || '').trim()
+                const defaults = ['', 'https://api.breeze.blue', 'http://127.0.0.1:7860']
+                const url = defaults.includes(cur) ? (v === 'local' ? 'http://127.0.0.1:7860' : 'https://api.breeze.blue') : cur
+                setDraft(setPath(setPath(draft, 'voice.breeze.mode', v), 'voice.breeze.url', url))
+              },
+            })),
+            h(Row, { key: 'u', label: '服务地址', hint: '云端填 https://api.breeze.blue；自建就填自己的地址' }, f.text('voice.breeze.url', { size: 'wide', placeholder: 'https://api.breeze.blue' })),
+            draft.voice.breeze?.mode === 'local' ? null : h(Row, { key: 'k', label: 'API Key', hint: 'Breeze 控制台 → API Keys 生成，brz_ 开头；已保存就不回显' }, f.text('voice.breeze.key', { type: 'password', placeholder: draft.voice.breeze?.keySet ? '已保存' : 'brz_…', size: 'wide' })),
+            draft.voice.breeze?.mode === 'local' ? null : h(Row, { key: 'v', label: '音色 id', hint: '云端只用这个 id（不发描述，音色最稳）；也可以点下面的「列出音色」直接挑' }, f.text('voice.breeze.voiceId', { size: 'wide', placeholder: 'voc_…' })),
+            draft.voice.breeze?.mode === 'local' ? null : h(BreezeVoices, { key: 'voices', b: draft.voice.breeze, draft, setDraft }),
+            h(Row, { key: 'm', label: '模型', hint: '默认 breeze-tts-2' }, f.text('voice.breeze.model', { placeholder: 'breeze-tts-2' })),
+            h(Row, { key: 'l', label: '语种' }, f.text('voice.breeze.languageCode', { placeholder: 'zh' })),
+            draft.voice.breeze?.mode === 'local' ? h(Row, { key: 'i', label: '语气说明', hint: '本地模式用：这段描述就是音色设计（voice design），不填就用模型默认声音' }, f.text('voice.breeze.instructions', { size: 'wide', placeholder: '清亮柔软、略带奶气的普通话少女音' })) : null,
+            draft.voice.breeze?.mode === 'local' ? h(Row, { key: 'g', label: '指令遵循强度', hint: '本地模式的 cfg_scale，越大越贴着描述走（默认 4）' }, f.range('voice.breeze.guidanceScale', 0, 10, 0.5, (v) => (String(v || '4')))) : null,
+            draft.voice.breeze?.mode === 'local' ? null : h(Row, { key: 'em', label: '账号邮箱', hint: '填了才能自动领每日额度（免费额度约 250 句短话）' }, f.text('voice.breeze.email', { size: 'wide', placeholder: 'you@example.com' })),
+            draft.voice.breeze?.mode === 'local' ? null : h(Row, { key: 'pw', label: '账号密码', hint: '存在本机 config.json（和别的密钥一样，面板里不回显）；留空 = 用已保存的' }, f.text('voice.breeze.password', { type: 'password', placeholder: draft.voice.breeze?.passwordSet ? '已保存' : '不填就不自动领额度' })),
+            draft.voice.breeze?.mode === 'local' ? null : h(Row, { key: 'ac', label: '自动领每日额度', hint: '每小时醒一次，一天最多领一次；失败只记日志' }, f.sw('voice.breeze.autoClaim')),
+            draft.voice.breeze?.mode === 'local' ? null : h(BreezeQuota, { key: 'quota', b: draft.voice.breeze }),
+          ] : null,
           draft.voice.engine === 'http' ? [
             h(Row, { key: 'u', label: '接口地址', hint: 'GET：地址里带 {text}；POST：填接口地址就行' }, f.text('voice.http.urlTemplate', { size: 'wide', placeholder: 'https://openspeech.bytedance.com/api/v1/tts' })),
             h(Row, { key: 'm', label: '请求方式' }, f.select('voice.http.method', [{ value: 'GET', label: 'GET' }, { value: 'POST', label: 'POST' }], { width: 140 })),

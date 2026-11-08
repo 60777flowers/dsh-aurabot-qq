@@ -100,6 +100,26 @@ export const DEFAULTS = {
     // 豆包语音（火山引擎）预设：地址、请求头、请求体全内置，只留 API Key + 音色给人填
     // resourceId 留空 = 按音色自动配（1.0 音色配 seed-tts-1.0，2.0 音色配 seed-tts-2.0）
     volcano: { apiKey: '', resourceId: '', voiceType: 'zh_female_vv_uranus_bigtts', speedRatio: 1 },
+    // Breeze 语音：cloud 走 BreezeBlue（`POST {url}/v1/text-to-speech/{音色id}` + xi-api-key），
+    // local 走本机自建 breeze_infer（`POST {url}/v1/audio/speech` 的 multipart 表单）；语气写在 instructions 里（中文）。
+    breeze: {
+      mode: 'cloud',
+      url: 'https://api.breeze.blue',
+      // 站点：登录 / 领每日额度走这里（跟合成接口不是同一个域名）
+      siteUrl: 'https://breezeblue.ai',
+      key: '',
+      // 云端额度：填了邮箱密码 + 打开自动领取，就每小时醒一次去领（一天最多一次）
+      email: '',
+      password: '',
+      autoClaim: true,
+      voiceId: '',
+      model: 'breeze-tts-2',
+      languageCode: 'zh',
+      instructions: '',
+      outputFormat: 'mp3_24000_128',
+      guidanceScale: 0,
+      timeoutMs: 60000,
+    },
     voice: 'zh-CN-XiaoyiNeural',
     rate: '+0%',
     pitch: '+0Hz',
@@ -492,6 +512,23 @@ export function normalize(raw) {
     ? String(c.voice.volcano.resourceId)
     : ''
   c.voice.volcano.speedRatio = num(c.voice.volcano.speedRatio, 1, 0.5, 2)
+  // Breeze 语音：地址 / 音色 id / 语气说明；Key 不回显（publicConfig 里换成 keySet）
+  if (!isObj(c.voice.breeze)) c.voice.breeze = structuredClone(DEFAULTS.voice.breeze)
+  const bz = c.voice.breeze
+  bz.mode = ['cloud', 'local'].includes(String(bz.mode)) ? String(bz.mode) : 'cloud'
+  bz.url = String(bz.url ?? '').trim().slice(0, 400) || DEFAULTS.voice.breeze.url
+  bz.key = String(bz.key ?? '').trim().slice(0, 400)
+  bz.voiceId = String(bz.voiceId ?? '').trim().slice(0, 200)
+  bz.siteUrl = String(bz.siteUrl ?? '').trim().slice(0, 400) || DEFAULTS.voice.breeze.siteUrl
+  bz.email = String(bz.email ?? '').trim().slice(0, 200)
+  bz.password = String(bz.password ?? '').slice(0, 400)
+  bz.autoClaim = bz.autoClaim !== false
+  bz.model = String(bz.model ?? '').trim().slice(0, 100) || DEFAULTS.voice.breeze.model
+  bz.languageCode = String(bz.languageCode ?? '').trim().slice(0, 20) || DEFAULTS.voice.breeze.languageCode
+  bz.instructions = String(bz.instructions ?? '').trim().slice(0, 500)
+  bz.outputFormat = String(bz.outputFormat ?? '').trim().slice(0, 60) || DEFAULTS.voice.breeze.outputFormat
+  bz.guidanceScale = num(bz.guidanceScale, 0, 0, 20)
+  bz.timeoutMs = num(bz.timeoutMs, 60000, 5000, 600000)
   // 云端语音识别：provider 只认内置两项和 custom；地址/模型留空时由 asr.js 用预置默认值
   if (!isObj(c.voice.asrApi)) c.voice.asrApi = structuredClone(DEFAULTS.voice.asrApi)
   const asrApi = c.voice.asrApi
@@ -711,7 +748,7 @@ export function normalize(raw) {
   g.burstMax = num(g.burstMax, 8, 1, BIG)
   g.engagedMax = num(g.engagedMax, 6, 0, BIG)
   g.burstWindowSec = num(g.burstWindowSec, 120, 1, BIG)
-  if (!['auto', 'edge', 'windows', 'cosyvoice', 'gptsovits', 'http', 'volcano'].includes(c.voice.engine)) c.voice.engine = 'auto'
+  if (!['auto', 'edge', 'windows', 'cosyvoice', 'gptsovits', 'http', 'volcano', 'breeze'].includes(c.voice.engine)) c.voice.engine = 'auto'
   c.voice.songVoice = String(c.voice.songVoice || '').slice(0, 120)
   c.voice.songPitch = Math.max(-24, Math.min(24, Math.round(Number(c.voice.songPitch) || 0)))
   c.voice.cosyvoice.sampleRate = num(c.voice.cosyvoice.sampleRate, 22050, 8000, 48000)
@@ -796,7 +833,7 @@ export function normalize(raw) {
 }
 
 // 面板里不回传原文的字段：路径（几层都行）
-const SECRETS = [['snowluma', 'webuiPassword'], ['snowluma', 'httpToken'], ['snowluma', 'wsToken'], ['imageGen', 'apiKey'], ['voice', 'asrApi', 'apiKey'], ['memory', 'vector', 'apiKey'], ['memory', 'rerank', 'apiKey'], ['song', 'neteaseCookie'], ['bili', 'cookie'], ['bili', 'sessdata'], ['bili', 'biliJct'], ['heybox', 'cookie'], ['bridge', 'token'], ['voice', 'volcano', 'apiKey'], ['backup', 'remote', 'token'], ['backup', 'remote', 'webdav', 'password']]
+const SECRETS = [['snowluma', 'webuiPassword'], ['snowluma', 'httpToken'], ['snowluma', 'wsToken'], ['imageGen', 'apiKey'], ['voice', 'asrApi', 'apiKey'], ['memory', 'vector', 'apiKey'], ['memory', 'rerank', 'apiKey'], ['song', 'neteaseCookie'], ['bili', 'cookie'], ['bili', 'sessdata'], ['bili', 'biliJct'], ['heybox', 'cookie'], ['bridge', 'token'], ['voice', 'volcano', 'apiKey'], ['voice', 'breeze', 'key'], ['voice', 'breeze', 'password'], ['backup', 'remote', 'token'], ['backup', 'remote', 'webdav', 'password']]
 // 扩展模块设置里的密码类字段（模块加载时登记）：['ext', 模块id, 字段]
 const extraSecrets = new Map()
 export function registerSecretField(path) { extraSecrets.set(path.join('\u0000'), path) }
