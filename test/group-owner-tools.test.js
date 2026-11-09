@@ -82,6 +82,8 @@ test('接线契约：preset、人格变量、闸门、面板开关都在', () =>
   assert.ok(hub.includes('const GROUP_GUEST_SAFE'), '非主人那一轮要有能力白名单')
   assert.ok(hub.includes('restrict({ allow })'), '闸门要用 allow 白名单收工具')
   assert.ok(hub.includes('knownGlobalNames(agent)'), '要按宿主真实工具名裁剪白名单')
+  // 宿主抛的原文是「…; known global tools: a, b」，tools 与冒号之间没有空格，正则要吃得下
+  assert.ok(hub.includes('known global tools?\\s*[:：]'), '探测正则要匹配宿主原文格式')
   assert.ok(hub.includes("return null"), '问不出工具名时要能降级')
   assert.ok(!hub.includes('GROUP_TOOL_DENY'), 'deny 名单已废弃，别再引回来')
   const safeLine = /GROUP_GUEST_SAFE = \[([\s\S]*?)\]\n/.exec(hub)

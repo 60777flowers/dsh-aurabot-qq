@@ -131,7 +131,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       if (typeof off === 'function') off()
       return null
     } catch (error) {
-      const m = /known global tools? [:：]\s*(.+)$/.exec(String((error && error.message) || ''))
+      const m = /known global tools?\s*[:：]\s*([^]*)$/.exec(String((error && error.message) || ''))
       if (!m) return null
       return m[1].split(',').map((n) => n.trim().replace(/^"|"$/g, '')).filter((n) => n && n !== '(none)')
     }
