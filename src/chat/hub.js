@@ -118,7 +118,30 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
   // 用 allow: [] 而不是 deny 名单：deny 只认 DSH 的全局工具名，改装了哪些 MCP / 团队工具随时会漏，
   // 而那些工具同样能读写本机（fastctx 的 replace / run、spawn_teammate 之类）。空 allow 集 = 全局工具全部不可见。
   // 插件自己的工具（qq_* 等）不在全局层，不归 restrict 管。
+  // 非主人那一轮留下哪些全局工具：按能力挑，只留动不了本机的读与聊天类（含资料库那套 MCP）。
+  // 用 allow 白名单而不是 deny 名单：deny 只认固定名字，宿主要是装了新的能跑命令/写盘的
+  // MCP（fastctx 的 run / replace 就是），名单里没有就漏出去。
+  const GROUP_GUEST_SAFE = [/^ask_user_question$/, /^present$/, /^skill$/, /^todo_write$/, /^recall_memory$/,
+    /^unlag_refresh$/, /^mcp_probe$/, /^list_mcp_resource/, /^read_mcp_resource$/, /^mcp__Akasha/]
   const groupGates = new Map() // sessionKey → { agent, off }
+  // 宿主认哪些全局工具名：拿一个肯定不存在的名字去问，restrict 会在校验阶段就抛错并列出全表。
+  function knownGlobalNames(agent) {
+    try {
+      const off = agent.ctx.tools.restrict({ deny: ['aurabot__probe__'] })
+      if (typeof off === 'function') off()
+      return null
+    } catch (error) {
+      const m = /known global tools? [:：]\s*(.+)$/.exec(String((error && error.message) || ''))
+      if (!m) return null
+      return m[1].split(',').map((n) => n.trim().replace(/^"|"$/g, '')).filter((n) => n && n !== '(none)')
+    }
+  }
+  function restrictGuest(agent) {
+    const known = knownGlobalNames(agent)
+    // 问不出宿主有哪些工具时，宁可一个都不给，也不能漏
+    const allow = known ? known.filter((name) => GROUP_GUEST_SAFE.some((re) => re.test(name))) : []
+    return agent.ctx.tools.restrict({ allow })
+  }
   function applyGroupGate(key, allow) {
     const g = groupGates.get(key)
     if (!g) return
@@ -126,7 +149,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       if (allow) {
         if (g.off) { g.off(); g.off = null; log.info(`${key.slice(-8)}：本机工具放开（这一轮是主人）`) }
       } else if (!g.off) {
-        g.off = g.agent.ctx.tools.restrict({ allow: [] })
+        g.off = restrictGuest(g.agent)
         log.info(`${key.slice(-8)}：本机工具收起（这一轮不是主人）`)
       }
     } catch (error) {
