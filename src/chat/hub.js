@@ -121,8 +121,10 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
   // 非主人那一轮留下哪些全局工具：按能力挑，只留动不了本机的读与聊天类（含资料库那套 MCP）。
   // 用 allow 白名单而不是 deny 名单：deny 只认固定名字，宿主要是装了新的能跑命令/写盘的
   // MCP（fastctx 的 run / replace 就是），名单里没有就漏出去。
+  // web_search 只把查询词发出去，动不了这台机器，留下；web_fetch 能访问内网地址、也能读 file://
+  // 把本地文件内容带出去，所以收着。
   const GROUP_GUEST_SAFE = [/^ask_user_question$/, /^present$/, /^skill$/, /^todo_write$/, /^recall_memory$/,
-    /^unlag_refresh$/, /^mcp_probe$/, /^list_mcp_resource/, /^read_mcp_resource$/, /^mcp__Akasha/]
+    /^unlag_refresh$/, /^mcp_probe$/, /^list_mcp_resource/, /^read_mcp_resource$/, /^web_search$/, /^mcp__Akasha/]
   const groupGates = new Map() // sessionKey → { agent, off }
   // 宿主认哪些全局工具名：拿一个肯定不存在的名字去问，restrict 会在校验阶段就抛错并列出全表。
   function knownGlobalNames(agent) {

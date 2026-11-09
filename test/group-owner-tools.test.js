@@ -90,13 +90,13 @@ test('接线契约：preset、人格变量、闸门、面板开关都在', () =>
   assert.ok(safeLine, '没找到 GROUP_GUEST_SAFE 定义')
   const patterns = [...safeLine[1].matchAll(/\/((?:\\.|[^/\\])+)\//g)].map((m) => new RegExp(m[1]))
   assert.ok(patterns.length >= 5, '白名单正则没解析出来')
-  const dangerous = ['bash', 'read', 'write', 'edit', 'glob', 'grep', 'read_image', 'web_fetch', 'web_search',
+  const dangerous = ['bash', 'read', 'write', 'edit', 'glob', 'grep', 'read_image', 'web_fetch',
     'spawn_teammate', 'team_task_create', 'team_task_update', 'create_skill', 'working_directory',
     'remote_upload_file', 'remote_read_session', 'job_kill', 'schedule_create',
     'mcp__fastctx__run', 'mcp__fastctx__run_background', 'mcp__fastctx__replace', 'mcp__fastctx__inspect_local_file']
   for (const bad of dangerous) assert.ok(!patterns.some((re) => re.test(bad)), `白名单不能匹配 ${bad}`)
   // 该留的还在
-  for (const ok of ['todo_write', 'ask_user_question', 'recall_memory', 'mcp__AkashaTerminal_mihoyoAll__akasha_search']) {
+  for (const ok of ['todo_write', 'ask_user_question', 'recall_memory', 'web_search', 'mcp__AkashaTerminal_mihoyoAll__akasha_search']) {
     assert.ok(patterns.some((re) => re.test(ok)), `白名单应当留下 ${ok}`)
   }
   assert.ok(hub.includes("level === 'group-full'"), 'mount 没给 group-full 登记闸门')
