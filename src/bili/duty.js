@@ -42,7 +42,7 @@ export function digestOf(v, { subtitle = '', comments = [], vision = '' } = {}) 
   ].filter(Boolean).join('\n')
 }
 
-export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vision: see = lookWithVision, afterBrowse }) {
+export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vision: see = lookWithVision, afterBrowse, groupShare }) {
   const cfg = () => getConfig().bili
   const api = injected || createBiliApi({ getCookie: () => cfg().cookie, log })
   const shots = createShotStore({ max: () => getConfig().bili.shotLibrary })
@@ -227,12 +227,18 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
       s.seen = [...seen].slice(-500)
       if (!looked.length) return { ok: false, message: '视频都打不开' }
       const commentLeft = c.comment && canPost(s) ? Math.max(0, c.maxCommentsPerDay - s.comments) : 0
+      // 群分享开着才让她想群里的话（关着就不往提示词里塞，省 token）
+      const groupShareOn = Boolean(groupShare && c.groupShare && c.groupShare.enabled && c.groupShare.groupId && !getConfig().dryRun)
       const out = await think(`你在 B 站刷到了这几个视频：\n\n${looked.map((x, i) => `【${i + 1}】${x.digest}`).join('\n\n')}\n\n` +
-        `看完说说你的想法。对每个视频给一个对象：{"i":序号, "feeling":"一句你的真实感受", "comment":"想在视频下发的评论（像普通观众，一两句、别打广告，不想评就空字符串）", "share":"想私聊分享给${owner()}的话（觉得${owner()}会喜欢才写，不然空字符串）", "remember":"值得记住的一件事（没有就空字符串）"}。` +
+        `看完说说你的想法。对每个视频给一个对象：{"i":序号, "feeling":"一句你的真实感受", "comment":"想在视频下发的评论（像普通观众，一两句、别打广告，不想评就空字符串）", "share":"想私聊分享给${owner()}的话（觉得${owner()}会喜欢才写，不然空字符串）"` +
+        (groupShareOn ? `, "shareGroup":"想发到群里跟群友一起看的话（群里说话的口吻，一两句；没什么值得说就空字符串）"` : '') +
+        `, "remember":"值得记住的一件事（没有就空字符串）"}。` +
         `这次最多评论 ${commentLeft} 个。只输出 JSON 数组。`)
       const decisions = pickJson(out, [])
       let commented = 0
       let shared = 0
+      let awaiting = 0
+      const groupWanted = [] // 想发到群里的：先攒着问主人，批准了才真发
       const felt = new Map() // bvid → 她自己的一句感受，发截图时配着用
       for (const d of Array.isArray(decisions) ? decisions : []) {
         const x = looked[(Number(d.i) || 0) - 1]
@@ -264,7 +270,17 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
           shared++
           record(s, { kind: 'share', title: v.title, bvid: v.bvid, text: share })
         }
+        if (groupShareOn) {
+          const toGroup = cleanOutboundText(d.shareGroup, { warn: (message) => log.warn(`B 站群分享：${message}`) }).trim()
+          if (toGroup && !isSilence(toGroup)) groupWanted.push({ bvid: v.bvid, title: v.title, text: toGroup })
+        }
         record(s, { kind: 'watch', title: v.title, bvid: v.bvid, text: feeling })
+      }
+      // 想发进群的先攒成待批，问主人一次；没批准一条都不发（试运行下连攒都不攒）
+      if (groupWanted.length) {
+        const asked = await groupShare.submit(groupWanted)
+        if (asked.ok) awaiting = asked.n
+        log.info(`B 站群分享：${asked.ok ? `${asked.n} 条等主人批准` : `没攒（${asked.why}）`}`)
       }
       // 刷完按概率顺手甩一张截图给主人：默认概率和发一张表情包一样，0 = 从不
       let shotSent = 0
@@ -294,8 +310,8 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
         try { await afterBrowse(looked.map(({ info }) => ({ bvid: info.bvid, title: info.title, text: felt.get(info.bvid) || '' }))) }
         catch (error) { log.debug('本轮弹幕未完成：', error.message) }
       }
-      log.info(`刷了一轮 B 站：看了 ${looked.length} 个，评论 ${commented} 条，分享 ${shared} 个，截图 ${shotSent} 张`)
-      return { ok: true, message: `看了 ${looked.length} 个视频，评论 ${commented} 条，分享给你 ${shared} 个${shotSent ? '，还发了张截图' : ''}`, watched: looked.length, commented, shared, shots: shotSent }
+      log.info(`刷了一轮 B 站：看了 ${looked.length} 个，评论 ${commented} 条，分享 ${shared} 个，截图 ${shotSent} 张${awaiting ? `，群分享待批 ${awaiting} 条` : ''}`)
+      return { ok: true, message: `看了 ${looked.length} 个视频，评论 ${commented} 条，分享给你 ${shared} 个${awaiting ? `，${awaiting} 条等你批准发群` : ''}${shotSent ? '，还发了张截图' : ''}`, watched: looked.length, commented, shared, shots: shotSent, awaitingGroup: awaiting }
     } catch (error) {
       if (isSessionBackoff(error)) return { ok: false, skipped: true, retryAt: error.retryAt, message: error.message }
       log.warn('刷 B 站出错：', error.message)
@@ -426,8 +442,9 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
     return small && small.length <= FACE_MAX ? small : null
   }
 
-  /** 每分钟调一次：醒着的时候按间隔刷、看回复。 */
+  /** 每分钟调一次：醒着的时候按间隔刷、看回复；顺手清掉过期的群分享待批。 */
   async function tick() {
+    try { groupShare?.expire?.() } catch (error) { log.debug('清理群分享待批失败：', error.message) }
     const g = getConfig()
     const c = g.bili
     if (!g.enabled || !c.enabled || hub.systemSessionCooldown?.('bili')) return
