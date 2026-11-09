@@ -12,7 +12,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dataDir, readJson, writeJson } from '../core/store.js'
 import { isDefiniteFailure } from '../onebot/client.js'
 import { parseMessageEvent, gifFrames, segmentsOf } from './inbound.js'
-import { parseReply, bubbleDelay, wantsVoice, cleanOutboundText, cleanOutboundSegments } from './reply.js'
+import { parseReply, bubbleDelay, wantsVoice, cleanOutboundText, cleanOutboundSegments, clockLabel } from './reply.js'
 import { decideGroupReply, engagedHint, pickAutoReply, policyFor, sameNameNote, topicRelevance } from './group-policy.js'
 import { checkAllowed, levelFor, presetFor, isOwner, groupOwnerTools } from './access.js'
 import { fetchImage, segmentBytes } from '../core/net.js'
@@ -2330,7 +2330,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     const quoted = msg.kind === 'private' && msg.replyId ? await quotedInfo(msg.replyId, msg) : null
     if (disposed) return
     // 群聊：不在这里拼文案。等这段消息攒齐了（或她回完上一段），flush 时把群里新来的话一次性交给她
-    const content = msg.kind === 'group' ? [] : [{ type: 'text', text: `【私聊】${msg.nickname}(${msg.userId})：` + (text || '（没有文字）') + (quoted ? '\n' + quoteInline(quoted) : '') }]
+    const content = msg.kind === 'group' ? [] : [{ type: 'text', text: `【私聊】[${clockLabel(now)}] ${msg.nickname}(${msg.userId})：` + (text || '（没有文字）') + (quoted ? '\n' + quoteInline(quoted) : '') }]
     const imgs = await imagesOf(msg)
     if (disposed) return
     if (imgs.length && groupEntry) groupEntry.mediaPending = true // 这些图已经进 pending.images，groupPrompt 不用再带
@@ -2486,7 +2486,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       const infos = await Promise.all(need.map((x) => quotedInfo(x.replyId, chat)))
       need.forEach((x, i) => { x.quote = infos[i] })
     }
-    const line = (x) => `${x.nick}(${x.uid})${x.at ? '@了你' : ''}：${x.text || '（图片/表情）'}${x.quote ? ' ' + quoteInline(x.quote) : ''}`
+    const line = (x) => `[${clockLabel(x.t)}] ${x.nick}(${x.uid})${x.at ? '@了你' : ''}：${x.text || '（图片/表情）'}${x.quote ? ' ' + quoteInline(x.quote) : ''}`
     // 新消息带编号，她想专门回某一条时可以引用；编号 → QQ 消息 ID 记下来，发的时候换成引用
     const refs = {}
     const numbered = fresh.map((x, i) => {
@@ -2810,7 +2810,10 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       else if (Array.isArray(seg)) text = seg.map((s) => (s?.type === 'text' ? (s.data?.text || '') : s?.type === 'image' ? '[图片]' : s?.type === 'face' ? '[表情]' : '')).join('')
       text = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 120)
       if (!who && !text) continue
-      out.push(`${who}：${text}`)
+      // OneBot 的历史消息带秒级 time；补看历史最容易跨天，所以这里挂带日期的时间标签，
+      // 缺失时退回不带前缀，宁可少信息也不要显示错时间。
+      const at = Number(m?.time) > 0 ? Number(m.time) * 1000 : 0
+      out.push(`${at ? clockLabel(at) + ' ' : ''}${who}：${text}`)
     }
     return out
   }
@@ -2914,7 +2917,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       saidElsewhere.delete(chat.chatId)
       // 记下游标：这一批已经交给过她了，下一轮别再从流水里捞一遍（重启后的回捞只在内存空时发生）
       proactiveLogAt.set(chat.chatId, Math.max(proactiveLogAt.get(chat.chatId) || 0, ...earlier.map((x) => Number(x.at) || 0)))
-      const lines = earlier.map((x) => `${new Date(x.at).toTimeString().slice(0, 5)} 你：${x.text}`)
+      const lines = earlier.map((x) => `${clockLabel(x.at)} 你：${x.text}`)
       content = [{ type: 'text', text: `【你之前在这个聊天里主动说过（是在别处安排下发的，这里的人都看到了）】\n${lines.join('\n')}\n` }, ...content]
     }
     // 群聊、私聊、图片、主动搭话和插话都从这里经过；时间只进本轮内容。
