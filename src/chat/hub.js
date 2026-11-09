@@ -14,7 +14,7 @@ import { isDefiniteFailure } from '../onebot/client.js'
 import { parseMessageEvent, gifFrames, segmentsOf } from './inbound.js'
 import { parseReply, bubbleDelay, wantsVoice, cleanOutboundText, cleanOutboundSegments } from './reply.js'
 import { decideGroupReply, engagedHint, pickAutoReply, policyFor, sameNameNote, topicRelevance } from './group-policy.js'
-import { checkAllowed, levelFor, presetFor, isOwner } from './access.js'
+import { checkAllowed, levelFor, presetFor, isOwner, groupOwnerTools } from './access.js'
 import { fetchImage, segmentBytes } from '../core/net.js'
 import { toMono16k } from '../voice/wav.js'
 import { asrConfigured, transcribeAudio } from '../voice/asr.js'
@@ -113,6 +113,25 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
   const saveMap = (m) => writeJson(mapFile(), m)
 
   const mounted = new Map() // sessionKey → { agent, offs, chatId, toolsKey }  按会话记，agent 对象换了也能清掉旧工具（#90）
+
+  // 群聊「主人本机工具」的闸：level 是 group-full 的会话先收起核心工具，等主人开口那一轮再放开。
+  // deny 只能写 DSH 的全局工具名，插件自己的工具（qq_* 等）不归 restrict 管，也不能写进来。
+  const GROUP_TOOL_DENY = ['bash', 'read', 'write', 'edit', 'glob', 'grep', 'read_image', 'web_fetch', 'web_search']
+  const groupGates = new Map() // sessionKey → { agent, deny, off }
+  function applyGroupGate(key, allow) {
+    const g = groupGates.get(key)
+    if (!g) return
+    try {
+      if (allow) {
+        if (g.off) { g.off(); g.off = null; log.info(`${key.slice(-8)}：本机工具放开（这一轮是主人）`) }
+      } else if (!g.off) {
+        g.off = g.agent.ctx.tools.restrict({ deny: g.deny })
+        log.info(`${key.slice(-8)}：本机工具收起（这一轮不是主人）`)
+      }
+    } catch (error) {
+      log.warn('群聊工具闸切换失败：', error.message)
+    }
+  }
   const mounts = new Set() // 可遍历的挂载记录：插件卸载时要撤掉仍存活会话里的注册
   const toolDisposers = new Map() // `${sessionKey}|${工具名}` → disposer，防注册表里残留同名工具时挂不上（#90）
   const sessionToChat = new Map() // sessionKey → chatId
@@ -562,7 +581,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
   function presetForChat(chat, level) {
     const cfg = getConfig()
     const wanted = chat.noTools ? '' : String(chat.presetId || '').trim()
-    return wanted && cfg.ext?.autotelic?.presetIdOverride ? wanted : presetFor(level, cfg)
+    return wanted && cfg.ext?.autotelic?.presetIdOverride ? wanted : presetFor(level, cfg, chat)
   }
 
   const systemChatId = (name, scope = '') => {
@@ -839,6 +858,11 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
 
   function unmount(rec) {
     mounts.delete(rec)
+    for (const [k, g] of groupGates) {
+      if (g.agent !== rec.agent) continue
+      try { if (typeof g.off === 'function') g.off() } catch (error) {}
+      groupGates.delete(k)
+    }
     for (const off of rec.offs.splice(0).reverse()) {
       try { if (typeof off === 'function') off() } catch (error) { log.warn('注销会话挂载失败：', error.message) }
     }
@@ -931,6 +955,10 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       }))
     } catch (error) {
       log.debug('挂上下文失败：', error.message)
+    }
+    if (chat.kind === 'group' && level === 'group-full') {
+      groupGates.set(sid, { agent, deny: GROUP_TOOL_DENY, off: null })
+      applyGroupGate(sid, groupOwnerTools(getConfig(), chat) === 'all')
     }
     const rec = { agent, chat, level, chatId: chat.chatId, offs, toolsKey }
     mounted.set(sid, rec)
@@ -2840,6 +2868,8 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     }
     if (senderId) addSender(senderId)
     for (const s of opts.extraSenders || []) addSender(s)
+    // 群聊本机工具按「这一轮说话的人」开合：全是主人就放开，掺了别人就收回去
+    if (chat.kind === 'group') applyGroupGate(key, turnSendersAllOwner(sessionId))
     if (st.lastText) st.prevText = st.lastText
     st.lastText = userText.slice(-600)
     st.speakers = opts.speakers || (senderId ? [String(senderId), ...(opts.extraSenders || []).map(String)] : [])
