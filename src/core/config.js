@@ -211,7 +211,7 @@ export const DEFAULTS = {
     // 想发到群里的时候不直接发：先攒成待批，私聊问主人「发几号」。默认关，开了才考虑。
     groupShare: {
       enabled: false, // 默认关：开了才会把想发群的攒起来问主人
-      groupId: '', // 目标群号；空 = 不生效
+      groupId: '', // 目标群号；空 = 不生效。生产群号留在部署侧 config.json，不进默认值（上游开源）
       dailyLimit: 3, // 每天最多真发几条到群
       pendingTtlHours: 24, // 待批多久没回就当不发
       queueLimit: 5, // 一次最多攒几条待批（避免一次问一长串）
@@ -654,6 +654,7 @@ export function normalize(raw) {
   if (!isObj(b.groupShare)) b.groupShare = {}
   b.groupShare.enabled = bool(b.groupShare.enabled, false)
   b.groupShare.groupId = qq(b.groupShare.groupId)
+  b.groupShare.groups = [...new Set((Array.isArray(b.groupShare.groups) ? b.groupShare.groups : []).map(qq).filter(Boolean))].slice(0, 20)
   b.groupShare.dailyLimit = Math.round(num(b.groupShare.dailyLimit, 3, 0, BIG))
   b.groupShare.pendingTtlHours = Math.round(num(b.groupShare.pendingTtlHours, 24, 1, 24 * 30))
   b.groupShare.queueLimit = Math.round(num(b.groupShare.queueLimit, 5, 1, 20))

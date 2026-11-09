@@ -23,7 +23,14 @@ export default {
     const { hub } = api.core
     const lastImage = new Map() // chatId → 最近一张图的网址（给 bili_set_avatar 的 last 用）
     // 想发到群里的视频先攒成待批，主人在私聊里回「发 1」才真发
-    const groupShare = createGroupShare({ getConfig: api.config, hub, log: api.log })
+    const groupShare = createGroupShare({
+      getConfig: api.config, hub, log: api.log,
+      // 截图库和「补一张」都在 createBili 里：用闭包延迟取，建完之后才真的被调用
+      shotPathOf: (name) => bili.shotFileOf(name),
+      captureShot: (bvid) => bili.captureShot(bvid),
+      // 群名：缓存命中直接用，没命中由 hub 走一次 get_group_info（拿不到就退回群号）
+      groupNameOf: (gid) => hub.groupName(gid),
+    })
     api.on('message', (msg) => {
       const url = (msg.images || []).slice(-1)[0]?.data?.url
       if (url && /^https?:\/\//i.test(url)) lastImage.set(msg.chatId, url)
