@@ -87,6 +87,14 @@ export function assistantReplyText (message) {
   return message.content.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n').trim()
 }
 
+/**
+ * 网关真给了 message_id 才算「真发出去」：模拟返回（sim-*）和排进补发队列都不算。
+ * 主动分享记账、群分享额度都按这个判，别各写一份。
+ */
+export function reallySent (r) {
+  return Boolean(r) && r.message_id !== undefined && !String(r.message_id).startsWith('sim-')
+}
+
 export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, buildTools, contextProviders, onActivity, memoryScore, onMemoryCommand, onCommand, isMuted, dislikes, random = Math.random, moodEffects, localApi, hooks, availableModels, toolsGeneration, capabilitiesOf }) {
   const archives = new Map()
   let forgottenRules = null
@@ -326,6 +334,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
   const groupMembers = new Map() // groupId → { at, list }  群成员（真 @ 时按名字找人，缓存 10 分钟）
   const noticesFor = new Map() // chatId → [一句话]  下次交给她时带上的群事件（撤回、禁言、进群……）
   const saidElsewhere = new Map() // chatId → [{ at, text }]  别处安排她在这里发的话，下次这个聊天交给她时补进去
+  const proactiveLogAt = new Map() // chatId → 已从流水补进过一次的最大时间戳（重启后回捞用，避免同一批重复注入）
   const outputSources = new Map() // 只保存本聊天实际渲染/注入的这一轮原文
   const outputScope = new AsyncLocalStorage() // 投递期间固定快照，下一轮渲染不能改掉它
   function sourcesFor(chatId) {
@@ -454,7 +463,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
 
   // ---------- 聊天流水（给空间日记、主动搭话、面板用） ----------
   let chatLogRevision = 0
-  function logChat(chatId, who, text, uid = '', { via, at, interaction, originId } = {}) {
+  function logChat(chatId, who, text, uid = '', { via, at, interaction, originId, proactive } = {}) {
     // 模块「模拟测试」的 simulation 上下文：只回放给面板看，不能写真实聊天流水。
     // 否则 private:10001 这类模拟会话会进短时记忆和人物记忆，删掉又出现。
     if (simulationStore.getStore()) return false
@@ -475,7 +484,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       const dir = dataDir('chatlog')
       mkdirSync(dir, { recursive: true })
       const forgotten = String(chatId).startsWith('private:') && getConfig().memory?.enabled && getConfig().memory?.instantCommands !== false && parseMemoryCommand(text)?.action === 'forget'
-      const row = { t: timestamp, chatId, who, ...(uid ? { uid: String(uid) } : {}), text: redact(String(text).slice(0, 500)), ...(via ? { via } : {}), ...(interaction?.length ? { interaction: [...new Set(interaction.map(String))] } : {}), ...(forgotten ? { forgottenAt: Date.now() } : {}) }
+      const row = { t: timestamp, chatId, who, ...(uid ? { uid: String(uid) } : {}), text: redact(String(text).slice(0, 500)), ...(via ? { via } : {}), ...(proactive ? { proactive } : {}), ...(interaction?.length ? { interaction: [...new Set(interaction.map(String))] } : {}), ...(forgotten ? { forgottenAt: Date.now() } : {}) }
       appendFileSync(join(dir, `${day}.jsonl`), JSON.stringify(row) + '\n', 'utf8')
       chatLogRevision++
       try { hooks?.journal?.({ ...row, ...(originId ? { originId } : {}) }) } catch (error) { log.warn('流水通知失败：', error.message) }
@@ -488,6 +497,32 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
   function noteSaid(chatId, text) {
     logChat(chatId, 'bot', text)
     saidElsewhere.set(chatId, [...(saidElsewhere.get(chatId) || []), { at: Date.now(), text: String(text).slice(0, 300) }].slice(-5))
+  }
+
+  /**
+   * 主动发出的话（刷B站分享、群分享、私聊问询……）也要在目标聊天留痕：
+   * 写一条聊天流水 + 记进「别处说过」桥接，主人下次在这个聊天里接话时她才知道自己刚发过什么。
+   * 只在该条消息真发出去之后调用（sendSegments 的真实成功分支）；试运行、补发队列、失败都不记。
+   * 调用方通过 sendText/sendImage 的 opts.proactive=true 触发，proactiveCause 标明来路（bili / bili-groupshare）；
+   * 不叫 cause：outbound-policy 的 cause 是门闸的因果治理字段，两套别混。
+   */
+  function noteProactive(chatId, message, opts = {}) {
+    const said = (Array.isArray(message) ? message : [])
+      .map((s) => {
+        const type = s && s.type
+        if (type === 'text') return String(s.data?.text || '')
+        if (type === 'image') return '[图片]'
+        if (type === 'file') return '[文件]'
+        if (type === 'record') return '[语音]'
+        return ''
+      })
+      .filter(Boolean)
+      .join(' ')
+      .trim()
+    if (!said) return
+    // 用独立字段 proactive 标记，不占 via —— via 在记忆模块里是「来自哪个平台」的语义（features/memory.js）
+    logChat(chatId, 'bot', said, '', { proactive: String(opts.proactiveCause || 'proactive') })
+    saidElsewhere.set(chatId, [...(saidElsewhere.get(chatId) || []), { at: Date.now(), text: said.slice(0, 300) }].slice(-5))
   }
 
   /** QQ 通知：不让她马上回话，记进流水，下一轮带给她。只管白名单里的聊天。 */
@@ -529,6 +564,28 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     } catch (error) {
       return []
     }
+  }
+
+  // saidElsewhere 是内存 Map，重启就空。这里从聊天流水里把「主动发出过」（带 proactive 标记）的 bot 行捞回来，
+  // 不然重启一次她又忘了自己刚发过什么。窗口是最近 24 小时；跨日所以要读今天和昨天两份文件，再按时间戳过滤。
+  // 按 chatId 记一个时间游标，同一批只补一次，不会每次聊天都重放。
+  // 每个聊天只读一次盘（proactiveQueried）：流水文件是整份 JSON.parse，每条群消息都读两天会白白卡住出站。
+  const proactiveQueried = new Set()
+  function proactiveFromChatLog(chatId) {
+    if (proactiveQueried.has(chatId)) return []
+    proactiveQueried.add(chatId)
+    const since = Math.max(Date.now() - 24 * 3600_000, proactiveLogAt.get(chatId) || 0)
+    const days = [0, 1].map((n) => {
+      const d = new Date(Date.now() - n * 86400_000)
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    })
+    const rows = [...new Set(days)].flatMap((day) => chatLogOf(day))
+      .filter((r) => r && r.chatId === chatId && r.who === 'bot' && r.proactive && Number(r.t) > since)
+      .sort((a, b) => Number(a.t) - Number(b.t))
+      .slice(-5)
+    if (!rows.length) return []
+    proactiveLogAt.set(chatId, Number(rows[rows.length - 1].t))
+    return rows.map((r) => ({ at: Number(r.t), text: String(r.text || '') }))
   }
 
   function forgetChatLog(qq, query = '') {
@@ -745,7 +802,8 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     const failure = sessionFailure(chat.chatId)
     if (failure && Date.now() < failure.until) throw backoffError(chat.chatId, failure)
     const cfg = getConfig()
-    const level = chat.kind === 'system' ? (chat.noTools ? 'chat' : 'social') : levelFor(cfg, chat)
+    // 后台会话默认 social（没工具）；要「主人私聊」那档（完整权限 + 她本人预设）时显式传 level: 'full'
+    const level = chat.kind === 'system' ? (chat.level || (chat.noTools ? 'chat' : 'social')) : levelFor(cfg, chat)
     // 复用键是 entry.preset（resolved 后的值）：presetId 变了 preset 就变，自然触发一次重建（预期行为）
     const preset = presetForChat(chat, level)
     const entry = map().chats[chat.chatId]
@@ -1067,6 +1125,9 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       bump('sent')
       if (outputScope.getStore()?.chatId === chatId) outputScope.getStore().sent++
       settleOutbound(verdict, 'sent')
+      // 主动发出的话（模块/后台会话直接调 sendText）要在目标聊天留痕，不然下次接话会断片。
+      // 聊天回合自己的回复不带 proactive（deliver 已经记过），这里一字不动。
+      if (opts.proactive) noteProactive(chatId, message, opts)
       return r
     } catch (error) {
       // 网关预热/短暂不可达：确定没发出去的消息放进补发队列，连上后按 TTL 补发。
@@ -1349,7 +1410,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       // Windows 上 'file://' + 'C:\...' 不是合法 URL，网关读不到；pathToFileURL 会给出 file:///C:/... 这种正确形态
       const file = local.startsWith('file://') ? local : pathToFileURL(local).href
       try {
-        const r = await sendSegments(chatId, [...head, { type: 'image', data: { file } }], `[图片·路径] ${local.slice(-40)}`, { throwOnError: true })
+        const r = await sendSegments(chatId, [...head, { type: 'image', data: { file } }], `[图片·路径] ${local.slice(-40)}`, { throwOnError: true, ...opts })
         if (r) {
           log.debug(`${chatId}：按路径发图「${local.slice(-40)}」`)
           return r
@@ -1368,7 +1429,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     }
     try {
       const buf = await fetchImage(s, { maxBytes: MAX_IMAGE_BYTES })
-      return sendSegments(chatId, [...head, { type: 'image', data: { file: 'base64://' + buf.toString('base64') } }], `[图片] ${s.slice(-40)}`)
+      return sendSegments(chatId, [...head, { type: 'image', data: { file: 'base64://' + buf.toString('base64') } }], `[图片] ${s.slice(-40)}`, opts)
     } catch (error) {
       log.warn('图片发不出去：', error.message)
       return null
@@ -2848,9 +2909,11 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       noticesFor.delete(chat.chatId)
       content = [{ type: 'text', text: `【这个聊天刚才发生的事，只是记录，不用逐条回应】\n${happened.join('\n')}\n` }, ...content]
     }
-    const earlier = saidElsewhere.get(chat.chatId)
+    const earlier = saidElsewhere.get(chat.chatId) || proactiveFromChatLog(chat.chatId)
     if (earlier?.length) {
       saidElsewhere.delete(chat.chatId)
+      // 记下游标：这一批已经交给过她了，下一轮别再从流水里捞一遍（重启后的回捞只在内存空时发生）
+      proactiveLogAt.set(chat.chatId, Math.max(proactiveLogAt.get(chat.chatId) || 0, ...earlier.map((x) => Number(x.at) || 0)))
       const lines = earlier.map((x) => `${new Date(x.at).toTimeString().slice(0, 5)} 你：${x.text}`)
       content = [{ type: 'text', text: `【你之前在这个聊天里主动说过（是在别处安排下发的，这里的人都看到了）】\n${lines.join('\n')}\n` }, ...content]
     }
@@ -3069,10 +3132,10 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
    *  是否真生效由 presetForChat 决定（noTools 压过它 + 主人的 ext.autotelic.presetIdOverride 开关）。
    *  model：可选 { provider, model, reasoningEffort? }。给了就这个 system 会话从本轮起用指定模型
    *  （只动这个后台会话，不改 DSH 全局默认；轻活想用便宜模型的模块走这个口）。 */
-  async function runSystemTurn(name, title, prompt, { timeoutMs = 180000, noTools = false, key: scope = '', presetId = '', model = null } = {}) {
+  async function runSystemTurn(name, title, prompt, { timeoutMs = 180000, noTools = false, key: scope = '', presetId = '', level: levelName = '', model = null } = {}) {
     // presetId（P0.4）：后台会话点名用哪个 preset（如 aurabot-autotelic）。默认 undefined 行为完全不变；
     // 是否真生效由 presetForChat 决定（noTools 压过它 + 主人的 ext.autotelic.presetIdOverride 开关）。
-    const chat = { chatId: systemChatId(name, scope), kind: 'system', title, noTools: !!noTools, presetId: String(presetId || '') }
+    const chat = { chatId: systemChatId(name, scope), kind: 'system', title, noTools: !!noTools, presetId: String(presetId || ''), level: String(levelName || '') }
     assertActive()
     if (systemStarting.has(chat.chatId)) throw new Error('这个后台会话的上一轮还没结束')
     systemStarting.add(chat.chatId)
@@ -3490,6 +3553,8 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     lastPrivateAt: (qq) => lastPrivateAt.get(String(qq)) || 0,
     // 「别处说过」桥接的只读快照（测试/诊断用）：这个聊天待补进上下文的原话列表
     saidElsewhereOf: (chatId) => (saidElsewhere.get(String(chatId)) || []).map((x) => x.text),
+    // 重启兜底的只读快照：从聊天流水里回捞「主动发出过」的最近几条（同进程内补过一次就空）
+    proactiveHistoryOf: (chatId) => proactiveFromChatLog(String(chatId)).map((x) => x.text),
     get lastBotToOwner() { return lastBotToOwner },
     get selfId() { return selfId },
     groupNames,
