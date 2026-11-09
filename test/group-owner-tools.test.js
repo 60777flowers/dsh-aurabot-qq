@@ -16,7 +16,7 @@ const cfgWith = (group) => normalize({ ownerQQ: '10001', allow: { groups: ['1002
 test('groupOwnerTools：默认关，群聊才有效，私聊一律 off', () => {
   assert.equal(groupOwnerTools(normalize({}), GROUP), 'off')
   assert.equal(groupOwnerTools(cfgWith({ ownerTools: 'owner' }), GROUP), 'owner')
-  assert.equal(groupOwnerTools(cfgWith({ ownerTools: 'all' }), GROUP), 'all')
+  assert.equal(groupOwnerTools(cfgWith({ ownerTools: 'all' }), GROUP), 'off', 'all 模式已移除，写 all 一律按 off')
   assert.equal(groupOwnerTools(cfgWith({ ownerTools: 'owner' }), { kind: 'private', userId: '10001' }), 'off')
   assert.equal(groupOwnerTools(cfgWith({ ownerTools: 'owner' }), { kind: 'system', system: 'autotelic' }), 'off')
 })
@@ -26,12 +26,12 @@ test('groupOwnerTools：ownerToolsGroups 非空时只对列出的群生效', () 
   assert.equal(groupOwnerTools(cfg, GROUP), 'owner')
   assert.equal(groupOwnerTools(cfg, OTHER_GROUP), 'off')
   const all = cfgWith({ ownerTools: 'all', ownerToolsGroups: [] })
-  assert.equal(groupOwnerTools(all, OTHER_GROUP), 'all')
+  assert.equal(groupOwnerTools(all, OTHER_GROUP), 'off', 'all 模式已移除')
 })
 
 test('levelFor：开了本机工具的群给 group-full，其余群仍旧 social', () => {
   assert.equal(levelFor(cfgWith({ ownerTools: 'owner' }), GROUP), 'group-full')
-  assert.equal(levelFor(cfgWith({ ownerTools: 'all' }), GROUP), 'group-full')
+  assert.equal(levelFor(cfgWith({ ownerTools: 'all' }), GROUP), 'social', 'all 不再抬档')
   assert.equal(levelFor(normalize({ ownerQQ: '10001' }), GROUP), 'social')
   assert.equal(levelFor(normalize({ ownerQQ: '10001', ownerLevel: 'full' }), { kind: 'private', userId: '10001' }), 'full')
   assert.equal(levelFor(normalize({ ownerQQ: '10001', ownerLevel: 'full' }), { kind: 'private', userId: '20002' }), 'social')
@@ -51,6 +51,7 @@ test('配置归一化：默认 off，非法值回落 off，群号列表收成数
   assert.equal(normalize({ group: { ownerTools: 'owner' } }).group.ownerTools, 'owner')
   assert.equal(normalize({ group: { ownerTools: 'yes' } }).group.ownerTools, 'off')
   assert.equal(normalize({ group: { ownerTools: true } }).group.ownerTools, 'off')
+  assert.equal(normalize({ group: { ownerTools: 'all' } }).group.ownerTools, 'off', 'all 模式必须归一到 off')
   assert.deepEqual(normalize({ group: { ownerToolsGroups: '100200300, 200300400' } }).group.ownerToolsGroups, ['100200300', '200300400'])
 })
 
@@ -85,5 +86,41 @@ test('接线契约：preset、人格变量、闸门、面板开关都在', () =>
 
   const client = read('client/client.js')
   assert.ok(client.includes("f.choices('group.ownerTools'"), '面板缺 group.ownerTools 选择')
+  assert.ok(!/group\.ownerTools'[^)]*value: 'all'/.test(client), '面板不得再提供 all 档')
   assert.ok(client.includes("f.list('group.ownerToolsGroups'"), '面板缺 ownerToolsGroups 列表')
+})
+
+test('闸门：群里非主人说话时本机工具被收走', async () => {
+  const { mkdtempSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  process.env.AURABOT_WORKSPACE = mkdtempSync(join(tmpdir(), 'aurabot-group-gate-'))
+  const { createFakeDsh } = await import('./helpers/fake-dsh.js')
+  const { createHub } = await import('../src/chat/hub.js')
+
+  const OWNER = '10001'
+  const OTHER = '20002'
+  const G = '100200300'
+  const cfg = normalize({ ownerQQ: OWNER, allow: { groups: [G] }, longTasks: false, group: { ownerTools: 'owner' } })
+  const fake = createFakeDsh({ brain: () => '好' })
+  const log = { info () {}, warn () {}, debug () {}, error () {} }
+  const hub = createHub({ dsh: fake.ctx, getConfig: () => cfg, log, onebot: { call: async () => ({}) }, buildTools: () => [] })
+  const chat = { kind: 'group', chatId: `group:${G}`, groupId: G, userId: OTHER, nickname: '别人' }
+
+  // 真实消息管线：别人的消息进来，装上去的本机工具必须被 restrict 收走
+  await hub.pushToSession(chat, [{ type: 'text', text: '跑个 pwd' }], OTHER, { queryText: '跑个 pwd' })
+  const agent = fake.agents.get([...fake.agents.keys()].pop())
+  assert.ok(agent, '群会话没建起来')
+  assert.ok(agent.denied.has('bash'), '非主人那一轮必须把 bash 收走')
+  assert.ok(agent.denied.has('write'), '非主人那一轮必须把 write 收走')
+  assert.ok(agent.denied.has('web_fetch'), '非主人那一轮必须把 web_fetch 收走')
+
+  // 开合规则：说话的全是主人才放开，掺一个人就收紧
+  const sid = [...fake.agents.keys()].pop()
+  hub.simulateTurn(sid, [OWNER])
+  assert.equal(hub.turnSendersAllOwner(sid), true, '全是主人时应当放开')
+  hub.simulateTurn(sid, [OWNER, OTHER])
+  assert.equal(hub.turnSendersAllOwner(sid), false, '掺了别人就要收紧')
+  hub.simulateTurn(sid, [OTHER])
+  assert.equal(hub.turnSendersAllOwner(sid), false, '只有别人时收紧')
 })

@@ -23,17 +23,18 @@ export function checkAllowed(cfg, msg) {
     : { allowed: false, reason: '不在群白名单' }
 }
 
-/** 群聊里给不给本机工具：off = 不给；owner = 只有主人说话那一轮给；all = 谁问都给。 */
-export const GROUP_OWNER_TOOLS = ['off', 'owner', 'all']
+/** 群聊里给不给本机工具：off = 不给；owner = 只有主人说话那一轮给。
+ * 没有「谁问都给」这一档——群里任何人都能驱动本机读写，权限面太大，明确不做。 */
+export const GROUP_OWNER_TOOLS = ['off', 'owner']
 
 /**
  * 这个群当前该给哪一档。ownerToolsGroups 非空时只在列出的群里生效（留空 = 所有群）。
- * @returns {'off'|'owner'|'all'}
+ * @returns {'off'|'owner'}
  */
 export function groupOwnerTools(cfg, chat) {
   if (!chat || chat.kind !== 'group') return 'off'
   const mode = cfg?.group?.ownerTools
-  if (mode !== 'owner' && mode !== 'all') return 'off'
+  if (mode !== 'owner') return 'off'
   const list = (cfg?.group?.ownerToolsGroups || []).map(String).filter(Boolean)
   if (list.length && !list.includes(String(chat.groupId || ''))) return 'off'
   return mode
