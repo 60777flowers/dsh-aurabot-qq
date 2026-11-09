@@ -114,10 +114,11 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
 
   const mounted = new Map() // sessionKey → { agent, offs, chatId, toolsKey }  按会话记，agent 对象换了也能清掉旧工具（#90）
 
-  // 群聊「主人本机工具」的闸：level 是 group-full 的会话先收起核心工具，等主人开口那一轮再放开。
-  // deny 只能写 DSH 的全局工具名，插件自己的工具（qq_* 等）不归 restrict 管，也不能写进来。
-  const GROUP_TOOL_DENY = ['bash', 'read', 'write', 'edit', 'glob', 'grep', 'read_image', 'web_fetch', 'web_search']
-  const groupGates = new Map() // sessionKey → { agent, deny, off }
+  // 群聊「主人本机工具」的闸：level 是 group-full 的会话先收起全局工具，等主人开口那一轮再放开。
+  // 用 allow: [] 而不是 deny 名单：deny 只认 DSH 的全局工具名，改装了哪些 MCP / 团队工具随时会漏，
+  // 而那些工具同样能读写本机（fastctx 的 replace / run、spawn_teammate 之类）。空 allow 集 = 全局工具全部不可见。
+  // 插件自己的工具（qq_* 等）不在全局层，不归 restrict 管。
+  const groupGates = new Map() // sessionKey → { agent, off }
   function applyGroupGate(key, allow) {
     const g = groupGates.get(key)
     if (!g) return
@@ -125,7 +126,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       if (allow) {
         if (g.off) { g.off(); g.off = null; log.info(`${key.slice(-8)}：本机工具放开（这一轮是主人）`) }
       } else if (!g.off) {
-        g.off = g.agent.ctx.tools.restrict({ deny: g.deny })
+        g.off = g.agent.ctx.tools.restrict({ allow: [] })
         log.info(`${key.slice(-8)}：本机工具收起（这一轮不是主人）`)
       }
     } catch (error) {
@@ -957,8 +958,8 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       log.debug('挂上下文失败：', error.message)
     }
     if (chat.kind === 'group' && level === 'group-full') {
-      groupGates.set(sid, { agent, deny: GROUP_TOOL_DENY, off: null })
-      applyGroupGate(sid, groupOwnerTools(getConfig(), chat) === 'all')
+      groupGates.set(sid, { agent, off: null })
+      applyGroupGate(sid, false)
     }
     const rec = { agent, chat, level, chatId: chat.chatId, offs, toolsKey }
     mounted.set(sid, rec)

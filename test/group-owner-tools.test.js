@@ -78,11 +78,10 @@ test('接线契约：preset、人格变量、闸门、面板开关都在', () =>
   assert.ok(host.includes("rulesText('group-owner'"), 'host 没把 group-owner 传给 rulesText')
 
   const hub = read('src/chat/hub.js')
-  assert.ok(hub.includes('const GROUP_TOOL_DENY'), 'hub 缺 GROUP_TOOL_DENY')
-  assert.ok(/GROUP_TOOL_DENY = \[[^\]]*'bash'[^\]]*'write'/.test(hub), 'deny 里要有 bash / write')
   assert.ok(hub.includes('applyGroupGate(key, turnSendersAllOwner(sessionId))'), 'pushToSession 没按发言人开合')
+  assert.ok(hub.includes('tools.restrict({ allow: [] })'), '收工具要用空 allow 集（deny 名单会漏 MCP / 团队工具）')
+  assert.ok(!hub.includes('GROUP_TOOL_DENY'), 'deny 名单已废弃，别再引回来')
   assert.ok(hub.includes("level === 'group-full'"), 'mount 没给 group-full 登记闸门')
-  assert.ok(hub.includes('tools.restrict({ deny: g.deny })'), '闸门要用 tools.restrict 收工具')
 
   const client = read('client/client.js')
   assert.ok(client.includes("f.choices('group.ownerTools'"), '面板缺 group.ownerTools 选择')
@@ -111,9 +110,7 @@ test('闸门：群里非主人说话时本机工具被收走', async () => {
   await hub.pushToSession(chat, [{ type: 'text', text: '跑个 pwd' }], OTHER, { queryText: '跑个 pwd' })
   const agent = fake.agents.get([...fake.agents.keys()].pop())
   assert.ok(agent, '群会话没建起来')
-  assert.ok(agent.denied.has('bash'), '非主人那一轮必须把 bash 收走')
-  assert.ok(agent.denied.has('write'), '非主人那一轮必须把 write 收走')
-  assert.ok(agent.denied.has('web_fetch'), '非主人那一轮必须把 web_fetch 收走')
+  assert.ok(agent.guestLocked > 0, '非主人那一轮必须把全局工具整层收走（allow: []）')
 
   // 开合规则：说话的全是主人才放开，掺一个人就收紧
   const sid = [...fake.agents.keys()].pop()
