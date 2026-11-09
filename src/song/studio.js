@@ -842,7 +842,7 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, onSu
       const why = explainSongError(error.message)
       history.unshift({ at: Date.now(), title: job.title || job.query, ok: false, message: why })
       log.warn(`翻唱失败：「${job.query}」：`, error.message)
-      sendText?.(job.chatId, `唱不了「${job.title || job.query}」：${why}`).catch(() => {})
+      sendText?.(job.chatId, `「${job.title || job.query}」还在休息中，以后再唱～`).catch(() => {})
     } finally {
       history = history.slice(0, 20)
       current = null
