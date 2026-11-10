@@ -510,6 +510,12 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-deep:#9cc4f5;--ab-sea:#6
 .ab-choice.on{border-color:var(--ab-sea);box-shadow:0 0 0 3px var(--ab-foam);background:linear-gradient(var(--ab-foam),var(--ab-foam)),var(--ab-card)}
 .ab-choice b{display:flex;align-items:center;gap:6px;font-weight:600}
 .ab-choice small{display:block;color:var(--ab-dim);font-size:11.5px;margin-top:3px;line-height:1.45}
+.ab-choice-pin{position:absolute;right:8px;top:8px;display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:7px;color:var(--ab-dim);opacity:.55;cursor:pointer;transition:opacity .12s,color .12s,background .12s}
+.ab-choice-pin:hover{opacity:1;background:var(--ab-hover)}
+.ab-choice-pin.on{opacity:1;color:var(--ab-sea);background:var(--ab-foam)}
+.ab-choice-more{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;min-height:78px}
+.ab-choice-more b{justify-content:center}
+.ab-choice-more small{text-align:center}
 .ab-tab .dirty{width:6px;height:6px;border-radius:50%;background:var(--ab-warn)}
 .ab-toast.ok{background:var(--ab-ok);color:#fff}.ab-toast.err{background:var(--ab-err);color:#fff}
 .ab-kbd{font-family:var(--dsh-font-family-code,monospace);font-size:11px;padding:0 5px;border:1px solid var(--ab-line-2);border-radius:5px;color:var(--ab-dim)}
@@ -2200,25 +2206,122 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       ]
     }
 
+    function PinIcon({ filled }) {
+      return h('svg', {
+        width: 13, height: 13, viewBox: '0 0 24 24', fill: filled ? 'currentColor' : 'none',
+        stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': 'true',
+      },
+        h('path', { d: 'M12 17v5' }),
+        h('path', { d: 'M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z' }))
+    }
+
+    /**
+     * 语音接口选择：默认只露前 4 个；常用接口可置顶（最多 4 个），
+     * 其余接口点「更多」再显示。置顶状态存本地，不跟设置草稿走。
+     */
+    function VoiceEngineChoices({ options, value, active, onChange, toast }) {
+      const [pinned, setPinned] = usePersisted('voice.pinnedEngines', [])
+      const [more, setMore] = useState(false)
+      const raw = Array.isArray(pinned) ? pinned : []
+      // 自动置顶看「已保存」的接口，不跟当前草稿选择走。
+      const current = String(active || '')
+      const validRaw = raw.filter((id) => options.some((o) => o.value === id))
+      // 保存后，正在使用的接口永远排第一；它也算一个置顶。超过 4 个时从末尾淘汰。
+      const activePins = (current && options.some((o) => o.value === current)
+        ? [current, ...validRaw.filter((id) => id !== current)]
+        : validRaw).slice(0, 4)
+      const activeKey = activePins.join('|')
+      const rawKey = validRaw.join('|')
+      useEffect(() => {
+        if (activeKey !== rawKey) setPinned(activePins)
+      }, [activeKey, rawKey])
+      const ordered = [...activePins.map((id) => options.find((o) => o.value === id)).filter(Boolean), ...options.filter((o) => !activePins.includes(o.value))]
+      // 当前接口已经由 activePins 保证在第一张；折叠时固定显示前 4 张 + 更多卡片。
+      const visible = more ? ordered : ordered.slice(0, 4)
+      const togglePin = (id) => {
+        if (id === current) {
+          if (toast) toast('正在使用的接口默认置顶')
+          return
+        }
+        if (activePins.includes(id)) {
+          setPinned(activePins.filter((x) => x !== id))
+          return
+        }
+        // 新置顶插到当前接口之后；超过 4 个就淘汰原来的末尾。
+        const next = (current ? [current, id, ...activePins.filter((x) => x !== current)] : [id, ...activePins]).slice(0, 4)
+        setPinned(next)
+      }
+      return h('div', null,
+        h('div', { className: 'ab-choices', role: 'radiogroup' }, [
+          ...visible.map((o) => {
+            const on = o.value === value
+            const pinnedNow = activePins.includes(o.value)
+            return h('div', {
+              key: o.value,
+              role: 'radio',
+              'aria-checked': on,
+              tabIndex: 0,
+              className: cx('ab-choice', on && 'on'),
+              style: { position: 'relative', paddingRight: 36 },
+              onClick: () => onChange(o.value),
+              onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onChange(o.value) } },
+            },
+              h('b', null, o.icon || null, o.label), o.desc ? h('small', null, o.desc) : null,
+              h('span', {
+                className: cx('ab-choice-pin', pinnedNow && 'on'),
+                role: 'button',
+                tabIndex: 0,
+                title: pinnedNow ? '取消置顶' : '置顶这个接口',
+                'aria-label': (pinnedNow ? '取消置顶 ' : '置顶 ') + o.label,
+                'aria-pressed': pinnedNow,
+                style: { position: 'absolute', right: 8, top: 8, zIndex: 2 },
+                onClick: (e) => { e.stopPropagation(); togglePin(o.value) },
+                onKeyDown: (e) => {
+                  if (e.key !== 'Enter' && e.key !== ' ') return
+                  e.preventDefault(); e.stopPropagation(); togglePin(o.value)
+                },
+              }, h(PinIcon, { filled: pinnedNow })))
+          }),
+          h('div', {
+            key: '__more',
+            className: 'ab-choice ab-choice-more',
+            role: 'button',
+            tabIndex: 0,
+            onClick: () => setMore((v) => !v),
+            onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setMore((v) => !v) } },
+          },
+            h('b', null, more ? '收起' : '更多'),
+            h('small', null, more ? '只看常用接口' : '还有 ' + Math.max(0, options.length - visible.length) + ' 个接口')),
+        ]),
+        h('div', { className: 'ab-muted ab-small', style: { marginTop: 8 } }, '保存设置后，正在使用的接口自动排第一；最多置顶 4 个，超出会取消末尾的置顶。'))
+    }
+
     function Voice({ st, draft, setDraft, toast, reload }) {
       const f = useField(draft, setDraft)
       const voiceDirty = Boolean(st && st.config) && JSON.stringify(draft.voice) !== JSON.stringify(st.config.voice)
       const [txt, setTxt] = useState('晚安啦，今天也辛苦了，明天见～')
       const [src, setSrc] = useState('')
+      const engineOptions = [
+        { value: 'auto', label: '自动', desc: 'edge-tts 优先，不行用 Windows 语音' },
+        { value: 'edge', label: '微软 edge-tts', desc: st.voice.edgeInstalled ? '在线，音色自然（已装好）' : '在线，音色自然（还没装）' },
+        { value: 'cosyvoice', label: '本地 CosyVoice', desc: '自己部署的 CosyVoice 服务，可克隆音色' },
+        { value: 'gptsovits', label: '本地 GPT-SoVITS', desc: 'GPT-SoVITS api_v2，用参考音频定音色' },
+        { value: 'volcano', label: '豆包语音（火山）', desc: '只填 API Key，选个音色就行' },
+        { value: 'breeze', label: 'Breeze 语音', desc: 'BreezeBlue 云端或自建，填 Key + 音色 id' },
+        { value: 'minimax', label: 'MiniMax 语音', desc: '在线，音色多，支持自定义音色和情绪' },
+        { value: 'http', label: '其他 HTTP 接口', desc: '任意返回音频的地址' },
+        { value: 'windows', label: 'Windows 自带', desc: '离线可用，机械感重一些' },
+      ]
       return h('div', { className: 'ab-grid' },
         h(Card, { title: '说话（文字转语音）', right: f.sw('voice.enabled'), desc: '回复里写了 <voice>…</voice> 的部分会变成 QQ 语音条；对方明确要语音时一定发语音；短回复也有一定概率整条变语音。' },
           voiceDirty ? h('div', { className: 'ab-note' }, '语音设置有未保存的改动：点「生成」试听会直接用当前设置；真正聊天要等点底部「保存设置」后生效。') : null,
-          h('div', { style: { margin: '4px 0 12px' } }, f.choices('voice.engine', [
-            { value: 'auto', label: '自动', desc: 'edge-tts 优先，不行用 Windows 语音' },
-            { value: 'edge', label: '微软 edge-tts', desc: st.voice.edgeInstalled ? '在线，音色自然（已装好）' : '在线，音色自然（还没装）' },
-            { value: 'cosyvoice', label: '本地 CosyVoice', desc: '自己部署的 CosyVoice 服务，可克隆音色' },
-            { value: 'gptsovits', label: '本地 GPT-SoVITS', desc: 'GPT-SoVITS api_v2，用参考音频定音色' },
-            { value: 'volcano', label: '豆包语音（火山）', desc: '只填 API Key，选个音色就行' },
-            { value: 'breeze', label: 'Breeze 语音', desc: 'BreezeBlue 云端或自建，填 Key + 音色 id' },
-            { value: 'minimax', label: 'MiniMax 语音', desc: '在线，音色多，支持自定义音色和情绪' },
-            { value: 'http', label: '其他 HTTP 接口', desc: '任意返回音频的地址' },
-            { value: 'windows', label: 'Windows 自带', desc: '离线可用，机械感重一些' },
-          ])),
+          h('div', { style: { margin: '4px 0 12px' } }, h(VoiceEngineChoices, {
+            options: engineOptions,
+            value: draft.voice.engine,
+            active: st && st.config && st.config.voice ? st.config.voice.engine : '',
+            onChange: (v) => setDraft(setPath(draft, 'voice.engine', v)),
+            toast,
+          })),
           ['auto', 'edge'].includes(draft.voice.engine) ? [
             !st.voice.edgeInstalled ? h(Row, { key: 'i', label: 'edge-tts', hint: '装在插件自己的 Python 环境里，不影响系统' }, h(Btn, { small: true, onClick: async () => { toast('正在安装，可能要一两分钟…'); const r = await post('/voice/install'); toast(r.message); reload() } }, '安装 edge-tts')) : null,
             h(Row, { key: 'v', label: '音色' }, f.select('voice.voice', [
