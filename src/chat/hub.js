@@ -13,7 +13,7 @@ import { dataDir, readJson, writeJson } from '../core/store.js'
 import { isDefiniteFailure } from '../onebot/client.js'
 import { parseMessageEvent, gifFrames, segmentsOf } from './inbound.js'
 import { parseReply, bubbleDelay, wantsVoice, itemsToLine, cleanOutboundText, cleanOutboundSegments, clockLabel } from './reply.js'
-import { decideGroupReply, engagedHint, pickAutoReply, policyFor, sameNameNote, topicRelevance } from './group-policy.js'
+import { decideGroupReply, engagedHint, pickAutoReply, pickDirectRequester, policyFor, sameNameNote, topicRelevance } from './group-policy.js'
 import { checkAllowed, levelFor, presetFor, isOwner, groupOwnerTools } from './access.js'
 import { fetchImage, segmentBytes } from '../core/net.js'
 import { toMono16k } from '../voice/wav.js'
@@ -1763,6 +1763,8 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       // 上一轮还在跑时新消息已经排队给「下一轮」：这一轮 turn/end 不能把下一轮的说话人清掉（#90）
       st.senders = st.pendingSenders || new Set()
       st.pendingSenders = new Set()
+      st.directRequester = st.pendingDirectRequester || null
+      st.pendingDirectRequester = null
       st.directOwner = false
       st.system = null
       st.turnToken = null
@@ -2531,7 +2533,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     }
     const archiveMessages = fresh.filter(x => x.text).map(x => ({ role: 'user', text: x.text,
       speakerId: String(x.uid || ''), at: x.t, id: x.mid && x.mid !== '0' ? 'qq:' + chat.groupId + ':' + x.mid : randomUUID() }))
-    return { text: text + mediaNote, query, speakers, autoReply: pickAutoReply(fresh), images: [...quotedImages, ...extraImages], archiveMessages, freshCount: fresh.length }
+    return { text: text + mediaNote, query, speakers, autoReply: pickAutoReply(fresh), directRequester: pickDirectRequester(fresh), images: [...quotedImages, ...extraImages], archiveMessages, freshCount: fresh.length }
   }
 
   // ---------- 连发合并：人常常一口气发好几句，等对方说完再一起交给她，别一句一回 ----------
@@ -2718,6 +2720,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       p.speakers = [...new Set([...(p.retrySpeakers || []), ...gp.speakers])]
       p.autoReply = gp.autoReply
       p.archiveMessages = [...(p.retryArchiveMessages || []), ...gp.archiveMessages.filter((message) => !retainedIds.has(message.id))]
+      p.directRequester = gp.directRequester
     } else {
       content = [{ type: 'text', text: p.texts.join('\n') + hint }, ...p.images]
     }
@@ -2730,7 +2733,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       const [first, ...rest] = [...p.senders]
       // 私聊：检索记忆时去掉「【私聊】某某(QQ)：」这个头
       const query = p.query ?? p.texts.map((t) => t.replace(/^【私聊】[^：]*：/, '')).join('\n')
-      await pushToSession(p.chat, content, first, { wantVoice: p.wantVoice, extraSenders: rest, queryText: query, speakers: p.speakers, autoReply: p.autoReply, turnToken, archiveMessages: p.archiveMessages })
+      await pushToSession(p.chat, content, first, { wantVoice: p.wantVoice, extraSenders: rest, queryText: query, speakers: p.speakers, autoReply: p.autoReply, turnToken, archiveMessages: p.archiveMessages, directRequester: p.directRequester })
     } catch (error) {
       if (isSessionBackoff(error)) {
         retainSessionMessages(chatId, p, content)
@@ -2962,6 +2965,12 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     for (const s of opts.extraSenders || []) addSender(s)
     // 群聊本机工具按「这一轮说话的人」开合：全是主人就放开，掺了别人就收回去
     if (chat.kind === 'group') applyGroupGate(key, turnSendersAllOwner(sessionId))
+    // 排队消息的直接请求者不能给正在执行的上一轮借权。
+    if (!opts.steer) {
+      if (queuedNextTurn) st.pendingDirectRequester = opts.directRequester || null
+      else st.directRequester = opts.directRequester || null
+    }
+    // 上一句也留着：这一句太短（「嗯嗯」「然后呢」）时一起拿去想起相关的事
     if (st.lastText) st.prevText = st.lastText
     st.lastText = userText.slice(-600)
     st.speakers = opts.speakers || (senderId ? [String(senderId), ...(opts.extraSenders || []).map(String)] : [])
@@ -3226,6 +3235,13 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     if (st && st.directOwner) return true // 主人在 DSH 面板里直接打字
     if (!st || !st.senders.size) return ownerPrivateChat(sessionId)
     return [...st.senders].every((u) => isOwner(getConfig(), u))
+  }
+
+  /** 生图的群聊例外：主人是本轮唯一明确 @ / 引用回复的请求者。 */
+  function turnDirectFromOwner(sessionId) {
+    const st = turnState.get(sessionKey(sessionId))
+    const uid = String(st?.directRequester?.uid || '')
+    return Boolean(uid && st?.senders.has(uid) && isOwner(getConfig(), uid))
   }
 
   function chatOfSession(sessionId) {
@@ -3526,6 +3542,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     runSubagentTurn,
     subagentFor,
     turnSendersAllOwner,
+    turnDirectFromOwner,
     onNotice,
     turnHasOwner,
     turnSenders,

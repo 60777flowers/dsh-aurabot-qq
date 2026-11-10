@@ -75,7 +75,8 @@ export default {
       render: drawResultBlocks,
       execute: async ({ prompt, shape, image }) => {
         const cfg = api.config()
-        if (cfg.imageGen.ownerOnly && !hub.turnSendersAllOwner(sessionId)) return { ok: false, message: '画图只给主人画哦' }
+        const ownerRequest = hub.turnSendersAllOwner(sessionId) || (chat.kind === 'group' && hub.turnDirectFromOwner?.(sessionId))
+        if (cfg.imageGen.ownerOnly && !ownerRequest) return { ok: false, message: '画图只给主人画哦；群里请主人单独 @ 我或引用回复我提出请求，多人同时提出请求时请分开发送。' }
         // 工具常驻，真正能不能画在执行时判断（Codex 登录状态可能刚变过）
         if (!gen.enabled()) return { ok: false, message: gen.notReadyReason() || '生图还没配置好' }
         if (image && cfg.imageGen.img2img === false) return { ok: false, message: '参考图功能已关闭' }
