@@ -11,7 +11,7 @@ import { createCodexImage } from './codex-image.js'
 import { mimeOf } from '../chat/inbound.js'
 import { imageToolBlock } from '../core/img.js'
 import { canSeeImages } from '../core/llm.js'
-import { imageSizeFor } from './image-shape.js'
+import { imageSizeFor, normalizeRequestedSize } from './image-shape.js'
 export { imageToolBlock }
 
 /** 把模板里的 {占位符} 替换掉；不认识的占位符原样留着。 */
@@ -137,9 +137,11 @@ export function createImageGen({ getConfig, log, local, dsh, fetchImpl, codexAut
   const fetch = fetchImpl || ((...args) => globalThis.fetch(...args))
   const auth = codexAuth || createCodexAuth({ log, fetchImpl: fetch })
   const viaCodex = createCodexImage({ auth, fetchImpl: fetch, log })
-  async function generate(prompt, { shape, image } = {}) {
+  async function generate(prompt, { shape, image, size } = {}) {
     const config = getConfig().imageGen
-    const c = { ...config, size: imageSizeFor(shape, config) }
+    const requestedSize = size == null || size === '' ? '' : normalizeRequestedSize(size)
+    if (size != null && size !== '' && !requestedSize) throw new Error('图片尺寸格式不对，应为 1024x1024 或 2048x2048 这类格式')
+    const c = { ...config, size: requestedSize || imageSizeFor(shape, config) }
     if (image != null && (!Buffer.isBuffer(image) || !String(mimeOf(image)).startsWith('image/'))) throw new Error('参考图不是可用的图片')
     if (image && c.img2img === false) throw new Error('参考图功能已关闭')
     // 本地接口接管：用用户自己电脑上的画图服务
