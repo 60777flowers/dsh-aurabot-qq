@@ -9,6 +9,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync, renameSync, exi
 import { basename, isAbsolute, join, relative, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { ownerAuthorizationRevision } from '../core/config.js'
 import { dataDir, readJson, writeJson } from '../core/store.js'
 import { isDefiniteFailure } from '../onebot/client.js'
 import { parseMessageEvent, gifFrames, segmentsOf } from './inbound.js'
@@ -1058,7 +1059,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
   // quiet：这一条是额外的（比如语音后面补发的表情），失败了不算到这一轮头上（deliver 按 failStore 里的条数判断整条有没有发出去）。
   // queueKind / queueTtlMs：网关短暂不可达时，确定没发出去的消息进入本地补发队列。
   async function sendSegments(chatId, message, note, opts = {}) {
-    const { force = false, isCurrent = null, throwOnError = false, timeoutMs, quiet = false, queueKind = 'reply', queueTtlMs } = opts
+    const { force = false, isCurrent = null, throwOnError = false, timeoutMs, quiet = false, queueKind = 'reply', queueTtlMs, sensitive = false } = opts
     if (disposed) return null
     // 出口层第二道保险：模块直接调 scopedHub.sendSegments/sendImage/sendFile/sendFile 时也要过门闸。
     // 只认带 sourceModule（模块发起）或 enginePolicy（引擎路径）的请求；hub 内部发送不带这两个标记，行为不变。
@@ -1091,7 +1092,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
         }
         if (Array.isArray(next)) message = next
       } catch (error) {
-        log.warn('扩展模块改写发送内容出错：', error.message)
+        log.warn('扩展模块改写发送内容出错：', sensitive ? '敏感命令回执' : error.message)
       }
     }
     // 钩子可能重新写入工具标记；最终网关出口仍使用同一份清洗。
@@ -1132,7 +1133,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     } catch (error) {
       // 网关预热/短暂不可达：确定没发出去的消息放进补发队列，连上后按 TTL 补发。
       // 超时（uncertain）不入队，避免同一条消息发两次。
-      if (outbox && isDefiniteFailure(error)) {
+      if (!sensitive && outbox && isDefiniteFailure(error)) {
         const q = outbox.add({ action, params, chatId, note, kind: queueKind, ttlMs: queueTtlMs })
         if (q.ok) {
           log.warn(`发到 ${chatId} 时网关还没就绪，已排队补发：${note || error.message}`)
@@ -1141,11 +1142,12 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
         log.warn(`发到 ${chatId} 失败，且无法入队（${q.message}）：`, error.message)
       }
       bump('errors')
-      log.warn(`发到 ${chatId} 失败：`, error.message)
+      const detail = sensitive ? '敏感命令回执发送失败' : error.message
+      log.warn(`发到 ${chatId} 失败：`, detail)
       // 结果不确定（超时 / 断线）时按 uncertain 结算：可能已经发出去了，不能当没发去退款重发
       settleOutbound(verdict, isDefiniteFailure(error) ? 'failed' : 'uncertain')
       if (throwOnError) throw error
-      if (!quiet) failStore.getStore()?.push(error.message)
+      if (!quiet) failStore.getStore()?.push(detail)
       return null
     }
   }
@@ -2094,6 +2096,8 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     const cfg = getConfig()
     const msg = parseMessageEvent(event, selfId, { faceName: faces.nameOf })
     if (msg.userId === selfId) return
+    const fromOwner = onCommand && isOwner(cfg, msg.userId)
+    const ownerRevision = fromOwner ? ownerAuthorizationRevision(cfg) : ''
     // 按群头衔过滤：这条当没看见（不进群聊上下文、不触发回复，@ 她、主人命令也一样）
     if (msg.kind === 'group' && await titleFilter.shouldIgnore(event)) return
     if (disposed) return
@@ -2170,19 +2174,34 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       recentMedia.remember(msg.chatId, segmentsOf(event).filter((seg) => msg.images.includes(seg) || msg.stickers.includes(seg)).map((seg) => ({ seg, userId: msg.userId, sticker: msg.stickers.includes(seg) })))
     }
     // 主人命令（/silent /active …）：总开关关着也处理，回复直接发
-    if (onCommand && isOwner(cfg, msg.userId) && /^\s*[/／]/.test(msg.text)) {
+    if (fromOwner && /^\s*[/／]/.test(msg.text)) {
+      let sensitiveCommand = ''
+      const ownerStillCurrent = () => {
+        const current = getConfig()
+        return isOwner(current, msg.userId) && ownerAuthorizationRevision(current) === ownerRevision
+      }
       try {
-        const reply = await onCommand(msg)
-        if (disposed) return
+        const reply = await onCommand(msg, (name) => {
+          sensitiveCommand = '主人命令 /' + name
+          return ownerStillCurrent()
+        })
+        if (disposed || (sensitiveCommand && !ownerStillCurrent())) return
         if (reply) {
-          log.info(`主人命令 ${msg.text.trim().slice(0, 30)} → ${reply.split('\n')[0]}`)
-          await sendSegments(msg.chatId, [{ type: 'text', data: { text: reply } }], reply.slice(0, 60), { force: true })
+          log.info(sensitiveCommand || `主人命令 ${msg.text.trim().slice(0, 30)} → ${reply.split('\n')[0]}`)
+          await sendSegments(msg.chatId, [{ type: 'text', data: { text: reply } }], sensitiveCommand || reply.slice(0, 60), {
+            force: true, sensitive: Boolean(sensitiveCommand), isCurrent: sensitiveCommand ? ownerStillCurrent : null,
+          })
           return
         }
+        if (sensitiveCommand) return
       } catch (error) {
-        if (disposed) return
-        log.warn('执行命令出错：', error.message)
-        await sendSegments(msg.chatId, [{ type: 'text', data: { text: '命令没执行成功：' + error.message } }], '命令出错', { force: true })
+        if (disposed || (sensitiveCommand && !ownerStillCurrent())) return
+        const detail = sensitiveCommand || error.message
+        log.warn('执行命令出错：', detail)
+        const text = sensitiveCommand ? '命令没执行成功' : '命令没执行成功：' + detail
+        await sendSegments(msg.chatId, [{ type: 'text', data: { text } }], '命令出错', {
+          force: true, sensitive: Boolean(sensitiveCommand), isCurrent: sensitiveCommand ? ownerStillCurrent : null,
+        })
         return
       }
     }

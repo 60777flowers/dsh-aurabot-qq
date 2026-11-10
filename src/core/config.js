@@ -1,5 +1,6 @@
 // 插件配置：默认值 + 归一化 + 读写。配置文件 ~/.dsh/plugins-data/aurabot/config.json
 
+import { randomUUID } from 'node:crypto'
 import { dataDir, readJson, writeJson } from './store.js'
 import { DEFAULT_GROUP_POLICY } from '../chat/group-policy.js'
 import { LEVELS, PROFILE_PERM_KEYS, PROFILE_PERM_LEVELS, profilePermDefault } from '../chat/access.js'
@@ -1033,8 +1034,19 @@ export function loadConfig() {
   return normalize(raw)
 }
 
-export function saveConfig(cfg) {
+export function ownerAuthorizationRevision(cfg) {
+  const binding = cfg.ownerAuthorization
+  return cfg.ownerQQ && binding?.owner === cfg.ownerQQ && typeof binding.revision === 'string'
+    && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u.test(binding.revision) ? binding.revision : ''
+}
+
+export function saveConfig(cfg, previous = loadConfig()) {
   const c = normalize(cfg)
+  // Only the previous authoritative configuration can carry an authorization forward.
+  if (c.ownerQQ) {
+    const revision = c.ownerQQ === previous.ownerQQ ? ownerAuthorizationRevision(previous) : ''
+    c.ownerAuthorization = { owner: c.ownerQQ, revision: revision || randomUUID() }
+  } else delete c.ownerAuthorization
   writeJson(FILE(), c)
   return c
 }
@@ -1042,6 +1054,7 @@ export function saveConfig(cfg) {
 /** 给面板看的版本：密码 / token 不回传原文，只告诉有没有填。 */
 export function publicConfig(cfg) {
   const c = structuredClone(cfg)
+  delete c.ownerAuthorization
   // 面板上的「试运行」只表示「试运行但不调试」：调试开着时它显示为关
   c.dryRun = Boolean(c.dryRun && !c.debug)
   for (const [g, k] of HINTED) c[g][`${k}Hint`] = c[g][k] ? '…' + String(c[g][k]).slice(-4) : ''
