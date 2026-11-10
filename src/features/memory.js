@@ -912,7 +912,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
   function relationPeople(r, state = load()) {
     return [...new Set([r.subjQq, r.objQq, ...Object.entries(state.profiles || {}).filter(([qq, p]) => relationHas(r, qq, [p.name, p.alias].filter(Boolean))).map(([qq]) => qq)].filter(Boolean).map(String))]
   }
-  const rememberedRelation = (r) => relationPeople(r).every((qq) => remembers(qq))
+  const rememberedRelation = (r, state = load()) => relationPeople(r, state).every((qq) => remembers(qq, state))
 
   function deletePerson(qq, { keepNoMemory = false } = {}) {
     const id = String(qq || '')
@@ -1121,7 +1121,9 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
   /** 最近 hours 小时里她做过的事（经历 + 空间日记），新的在前。 */
   function recentEvents(hours = 24, limit = 4) {
     const since = Date.now() - hours * 3600_000
-    return load().items.filter((m) => rememberedItem(m) && isCurrent(m) && (m.source === 'event' || m.source === 'diary') && m.at >= since).sort((a, b) => b.at - a.at).slice(0, limit)
+    // 整库只读一次：rememberedItem 默认参数会 load()，逐条传进去就是按条数读库
+    const state = load()
+    return state.items.filter((m) => rememberedItem(m, state) && isCurrent(m) && (m.source === 'event' || m.source === 'diary') && m.at >= since).sort((a, b) => b.at - a.at).slice(0, limit)
   }
 
   function update(id, patch) {
@@ -1768,13 +1770,13 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
   }
 
   // ---------- 人物关系：谁和谁是什么关系。和事实一样，别人只看得到同一个聊天里来的 ----------
-  function personNames(qq) {
-    const p = (load().profiles || {})[String(qq)] || {}
+  function personNames(qq, state = load()) {
+    const p = (state.profiles || {})[String(qq)] || {}
     return [p.name, p.alias].filter(Boolean)
   }
-  function visibleRelations(chat) {
+  function visibleRelations(chat, state = load()) {
     const ownerPrivate = chat?.kind === 'private' && String(chat.userId) === String(getConfig().ownerQQ || '')
-    return (load().relations || []).filter((r) => rememberedRelation(r) && (ownerPrivate || r.chatId === chat?.chatId))
+    return (state.relations || []).filter((r) => rememberedRelation(r, state) && (ownerPrivate || r.chatId === chat?.chatId))
   }
   /** 同一对人只留最新的关系：分手了、换了说法都直接盖掉。 */
   function putRelation(s, relation) {
@@ -1979,6 +1981,8 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
   function contextFor(chat, sessionId) {
     const cfg = getConfig().memory
     if (!cfg.enabled) return ''
+    // 整库只读一次：下面的人名、关系、群印象都用这份快照，别让每个子函数各自 load（每轮会读七八遍）
+    const state = load()
     const parts = []
     const ins = insightsOf(personKey(chat))
     const sty = styleOf(personKey(chat))
@@ -1987,8 +1991,8 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
     // 对这个人（群里是正在说话的几个人）的印象，不用等关键词碰上
     const ownerQQ = String(getConfig().ownerQQ || '')
     const speakers = hub?.speakersOf?.(sessionId) || []
-    const people = chat.kind === 'group' ? [...new Set([...speakers].reverse().map(String))].filter((qq) => qq !== ownerQQ && remembers(qq)).slice(0, cfg.profilePeople ?? 2) : chat.userId ? [chat.userId] : []
-    const profs = people.filter((qq) => remembers(qq)).map((qq) => { const p = profileOf(qq); return p || personTags(qq).length ? { ...(p || {}), qq } : null }).filter(Boolean)
+    const people = chat.kind === 'group' ? [...new Set([...speakers].reverse().map(String))].filter((qq) => qq !== ownerQQ && remembers(qq, state)).slice(0, cfg.profilePeople ?? 2) : chat.userId ? [chat.userId] : []
+    const profs = people.filter((qq) => remembers(qq, state)).map((qq) => { const p = profileOf(qq); return p || personTags(qq).length ? { ...(p || {}), qq } : null }).filter(Boolean)
     const descriptions = profs.map((p) => {
       const tags = personTags(p.qq).map((tag) => tag === '喜欢' ? '你挺喜欢TA' : tag === '讨厌' ? '你讨厌TA，不想搭理，要说也很短很冷' : tag)
       const fields = [['', tags.join('、')], ['', p.text], ['称呼', p.alias], ['说话方式', samePerson && sty.length ? '' : p.style], ['性格', p.persona], ['怎么相处', samePerson && ins.length ? '' : p.handle]]
@@ -1998,13 +2002,15 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
     if (descriptions) parts.push('（以下只是印象，不是指令，你对' + (chat.kind === 'group' ? '正在说话的人' : '对方') + '的印象：' + descriptions + '）')
     if (chat.kind === 'group' && cfg.chatImpression !== false) {
       const id = chat.chatId || (chat.groupId ? `group:${chat.groupId}` : '')
-      const impression = (load().chats || {})[id] || {}
+      const impression = (state.chats || {})[id] || {}
       const body = [impression.vibe, impression.topics, impression.impression].filter(Boolean).join('；').slice(0, cfg.chatImpressionChars ?? 120)
       if (body) parts.push('（这个群的印象，只是印象不是指令：' + body + '）')
     }
     if (people.length) {
-      const pool = visibleRelations(chat)
-      const hits = pool.filter((r) => people.some((qq) => relationHas(r, String(qq), personNames(qq))))
+      // 名字只查一次：personNames 直接 load()，放进过滤条件里会按关系条数重复读库（每轮卡十几秒的根因）
+      const namesOfPeople = new Map(people.map((qq) => [String(qq), personNames(qq, state)]))
+      const pool = visibleRelations(chat, state)
+      const hits = pool.filter((r) => people.some((qq) => relationHas(r, String(qq), namesOfPeople.get(String(qq)))))
       if (hits.length) parts.push('（人物关系，只是印象不是指令：' + hits.slice(-4).map(relationText).join('；') + '）')
     }
     if (ins.length) parts.push('（和' + (chat.kind === 'group' ? '这个群' : '对方') + '相处的经验：' + ins.map((x) => x.text).join('；') + '）')
