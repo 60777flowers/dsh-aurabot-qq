@@ -86,6 +86,8 @@ export interface Command {
   name: string
   aliases?: string[]
   desc?: string
+  /** 日志只记录命令名，发送失败时结束本次回执。 */
+  sensitive?: boolean
   /** 返回的文字直接回给主人 */
   run(arg: string, msg: Message): string | void | Promise<string | void>
 }

@@ -150,6 +150,9 @@ export default {
 | `api.route('/路径', async (req, res) => 返回值, options?)` | 加一个网页接口：地址是 `/aurabot/api/ext/<id>/路径`；返回对象就当 JSON 回；要自己回（比如图片）就用 `api.core.http.send(res, 200, buf, 'image/png')`。1.3.0 起管理接口可传 `{ access: 'panel' }`，复用宿主回环/可信代理、Host 与 CSRF 闸；不传时保持现有行为，由模块验证客户端凭据 |
 | `api.onDispose(fn)` | 模块停下时要做的收尾 |
 
+QQ 主人命令的参数或回执涉及隐私时，可用 `api.command({ name: 'private-query', sensitive: true, run })`。宿主的命令日志只记命令名，回执发送失败时结束本次发送。
+宿主在执行敏感命令和发送回执前复核主人及授权代次。模块可以按需限制为主人私聊，并单独处理模拟命令。
+
 **别的模块和插件内部**（全开放）
 
 | | |
