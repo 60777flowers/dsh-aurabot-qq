@@ -31,6 +31,8 @@ import { cleanContent, cleanText } from '../core/text.js'
 import { createRecentMedia } from './recent-media.js'
 import { createTitleFilter } from './title-filter.js'
 import { takeInterim, reasoningOf, rescueFromThinking } from './steps.js'
+import { guardOutgoing, codeFenceInstruction } from './guard.js'
+import { markerInstruction, extractMarkedReply, stripMarkers } from './reply-marker.js'
 import { grantOwner } from '../core/workspace-move.js'
 import { withPromptCapture, currentPromptSources, memoryPromptRanges } from '../security/leak-guard.js'
 import { noticeText } from './notices.js'
@@ -1024,6 +1026,12 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
         order: 905,
         text: () => {
           const parts = []
+          // 正文标记：代码注入，不改人格文件。模型必须用 ⟦REPLY⟧ 包住要发的话。
+          try {
+            if (getConfig().chat?.replyMarker?.enabled === true) parts.push(markerInstruction())
+            // 贴代码要加围栏：guard 对 ``` 整段豁免，模型得知道包起来才不会被当成超长思考。
+            if (getConfig().chat?.thinkingGuard?.enabled !== false) parts.push(codeFenceInstruction())
+          } catch (error) {}
           for (const p of contextProviders || []) {
             try {
               const t = p({ chat, sessionId: sid })
@@ -1541,6 +1549,17 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     }
     if (disposed) return
     text = cleanOutboundText(text, { ...cleaningFor(chatId), onPromptDecision: (allow) => { outputScope.getStore().allowPromptEcho = allow } })
+    // 出站污染闸：模型偶尔会把思考直接写进正文（英文判断 + 中文真话），或者思考塌缩成复读。
+    // 这里切掉思考前缀、拦住退化内容；拦下就当她这轮没说话，宁可沉默也不发半句思考。
+    if (cfg.chat?.thinkingGuard?.enabled !== false) {
+      const guarded = guardOutgoing(text, { source: opts.fromThinking ? 'reasoning' : (opts.interim ? 'interim' : 'message') })
+      if (!guarded.ok) {
+        log.info(`${chatId}：这条没发出去（${guarded.reason}）`)
+        if (!opts.interim) silenceTurn(chatId)
+        return
+      }
+      text = guarded.text
+    }
     const r = parseReply(text, cleaningFor(chatId))
     if (r.silent) return silenceTurn(chatId)
     let items = r.items
@@ -1736,13 +1755,55 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       const d = event.data || {}
       const completed = d.reason && d.reason.kind === 'completed'
       let text = st.lastTurn === d.turn ? st.text : ''
+      let fromThinking = false
       // 整轮一段正文都没有：她可能把话全写在思考里了（Reply: 起草 → Careful: 自检 → N lines: 定稿），
       // 正文块是空的。chat.rescueFromThinking 打开时从最后一步的思考里捞回定稿；捞不到就照旧不发。
       if (!text && completed && getConfig().chat?.rescueFromThinking && st.thinking && st.thinking.turn === d.turn) {
         const rescued = rescueFromThinking(st.thinking.text)
         if (rescued) {
           text = rescued
+          fromThinking = true
           log.info(`${chatId}：整轮没有正文，从思考里捞回一段（${rescued.length} 字）`)
+        }
+      }
+      // 正文标记：代码注入的格式要求。模型必须用 ⟦REPLY⟧ 包住要发的话。
+      // 没有标记就要求重写一次；重写后仍然没有，这轮不发（宁可沉默也不发思考）。
+      if (text && completed && getConfig().chat?.replyMarker?.enabled === true) {
+        const marked = extractMarkedReply(text)
+        if (marked.found) {
+          text = stripMarkers(marked.text)
+          fromThinking = false
+        } else if (!st.markerRetried) {
+          st.markerRetried = true
+          const rec = mounted.get(key)
+          const agent = rec && rec.agent
+          if (agent && typeof agent.followup === 'function') {
+            log.info(`${chatId}：输出里没有正文标记，要求重写一次`)
+            try {
+              markRunning(chatId)
+              const msg = {
+                id: randomUUID(),
+                role: 'user',
+                content: [{ type: 'text', text: '（系统提醒，不是对方说的话）你刚才的输出没有正文标记，这条发不出去。现在重新输出：只写 ⟦REPLY⟧你要说的话⟦/REPLY⟧，标记外面不要有任何内容。' }],
+                source: { kind: SOURCE_KIND, speaker: { role: 'system', chat: String(chatId).startsWith('group:') ? 'group' : 'private' } },
+              }
+              // 重写请求发不出去时必须放开这一轮：否则 running/busy 一直挂着，
+              // 后面来的消息全被当成 steer 塞进一个永远不会结束的轮次。
+              agent.followup(msg).catch((error) => {
+                log.warn('重写请求失败：', error.message)
+                release(chatId)
+              })
+            } catch (error) {
+              log.warn('重写请求发不出去：', error.message)
+              release(chatId)
+            }
+          } else {
+            release(chatId)
+          }
+          return
+        } else {
+          log.info(`${chatId}：重写后仍然没有正文标记，这轮不发`)
+          text = ''
         }
       }
       st.thinking = null
@@ -1762,6 +1823,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       st.pendingOnDelivered = null
       st.autoReply = null
       st.text = ''
+      st.markerRetried = false
       // 上一轮还在跑时新消息已经排队给「下一轮」：这一轮 turn/end 不能把下一轮的说话人清掉（#90）
       st.senders = st.pendingSenders || new Set()
       st.pendingSenders = new Set()
@@ -1787,7 +1849,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       // 发完再放开：发送期间来的消息也攒到下一段。
       // 没有中间段在发的时候就走原来的路径（同步开始、release 跟着这一条走），时序和以前一模一样；
       // 只有前面真有中间段没发完时才排队，保证最后一段一定是最后一条（#214 review）。
-      const sendLast = () => deliver(chatId, text, { wantVoice, autoReply, userText: st.lastText || '', own: true, onDelivered })
+      const sendLast = () => deliver(chatId, text, { wantVoice, autoReply, userText: st.lastText || '', own: true, onDelivered, fromThinking })
         .catch((error) => log.warn('发送出错：', error.message))
         .finally(() => release(chatId, turnToken))
       const pending = sendChain.get(chatId)
