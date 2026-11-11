@@ -1787,10 +1787,18 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
                 content: [{ type: 'text', text: '（系统提醒，不是对方说的话）你刚才的输出没有正文标记，这条发不出去。现在重新输出：只写 ⟦REPLY⟧你要说的话⟦/REPLY⟧，标记外面不要有任何内容。' }],
                 source: { kind: SOURCE_KIND, speaker: { role: 'system', chat: String(chatId).startsWith('group:') ? 'group' : 'private' } },
               }
-              agent.followup(msg).catch((error) => log.warn('重写请求失败：', error.message))
+              // 重写请求发不出去时必须放开这一轮：否则 running/busy 一直挂着，
+              // 后面来的消息全被当成 steer 塞进一个永远不会结束的轮次。
+              agent.followup(msg).catch((error) => {
+                log.warn('重写请求失败：', error.message)
+                release(chatId)
+              })
             } catch (error) {
               log.warn('重写请求发不出去：', error.message)
+              release(chatId)
             }
+          } else {
+            release(chatId)
           }
           return
         } else {
