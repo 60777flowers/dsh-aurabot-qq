@@ -106,8 +106,9 @@ export default {
         const reference = await resolveDrawImage(image, { hub, chat })
         const text = typeof notice === 'string' ? notice.trim().slice(0, 200) : ''
         let acknowledged = text ? await hub.sendText(chat.chatId, text) : null
-        if (!acknowledged) acknowledged = await hub.sendText(chat.chatId, '好，我来画。')
-        if (!acknowledged) return { ok: false, message: '没能发送画图回复，请检查 QQ 网关' }
+        const simulatedNotice = () => acknowledged === null && Boolean(cfg.debug || cfg.dryRun)
+        if (!acknowledged && !simulatedNotice()) acknowledged = await hub.sendText(chat.chatId, '好，我来画。')
+        if (!acknowledged && !simulatedNotice()) return { ok: false, message: '没能发送画图回复，请检查 QQ 网关' }
         const progress = async (error, retrying) => {
           const issue = reason(error); const facts = retrying ? '刚才失败，正在尝试下一个备用模型，结果尚未确定' : '生图最终失败，没有图片'
           const fallback = retrying ? '刚才没画出来，我换个模型再试试。' : '这次没画出来，我先停下了。'
