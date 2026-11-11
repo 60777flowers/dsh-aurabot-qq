@@ -158,7 +158,7 @@ export function apply(ctx) {
   const enginePolicies = new Map()
   const getConfig = () => cfg
   setSsrpMode(() => (getConfig().security && getConfig().security.ssrfMode === 'loose' ? 'loose' : 'strict'))
-  const secrets = () => { for (const k of ['webuiPassword', 'httpToken', 'wsToken']) registerSecret(cfg.snowluma[k]); registerSecret(cfg.imageGen.apiKey); registerSecret(cfg.bridge.token); registerSecret(cfg.backup?.remote?.token); registerSecret(cfg.backup?.remote?.webdav?.password) } // backup 令牌/WebDAV 密码也按密钥脱敏（云备份）
+  const secrets = () => { for (const k of ['webuiPassword', 'httpToken', 'wsToken']) registerSecret(cfg.snowluma[k]); registerSecret(cfg.imageGen.apiKey); for (const e of cfg.imageGen.fallbacks || []) registerSecret(e.apiKey); registerSecret(cfg.bridge.token); registerSecret(cfg.backup?.remote?.token); registerSecret(cfg.backup?.remote?.webdav?.password) } // backup 令牌/WebDAV 密码也按密钥脱敏（云备份）
   const setConfig = (next) => {
     const before = cfg
     cfg = saveConfig(next, before)

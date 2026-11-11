@@ -80,7 +80,9 @@ const UNSUPPORTED_REFERENCE = '这个生图服务不支持参考图'
 function serviceError(status, message, image) {
   const unsupported = [404, 405, 415, 501].includes(status)
     || ([400, 422].includes(status) && /(?:(?:unsupported|not support|does not support|not available|unknown|unrecognized).*(?:image|edit|model)|(?:image|edit|model).*(?:unsupported|not support|does not support|not available)|不支持.*(?:图|编辑|模型)|(?:图|编辑|模型).*不支持)/i.test(message))
-  return new Error(image && unsupported ? UNSUPPORTED_REFERENCE : message)
+  const error = new Error(image && unsupported ? UNSUPPORTED_REFERENCE : message)
+  error.imageRequestFailed = true; error.imageStatus = status
+  return error
 }
 
 /**
@@ -99,7 +101,7 @@ export function customRequest (imageGen, prompt, image) {
 
   // URL 的 fragment 不会发给服务端；重复参数按最终实际发送的值判断。
   const sentParams = method === 'POST' ? Object.values(Object.fromEntries(params.map((p) => [p.key, p.value]))) : params.map((p) => p.value)
-  if (image && ![String(cp.url || '').split('#')[0], ...sentParams].some((v) => String(v || '').includes('{image}'))) throw new Error(UNSUPPORTED_REFERENCE)
+  if (image && ![String(cp.url || '').split('#')[0], ...sentParams].some((v) => String(v || '').includes('{image}'))) throw serviceError(415, UNSUPPORTED_REFERENCE, image)
   let url = fill(cp.url, enc)
   if (method === 'GET' && params.length) {
     const q = params.map((p) => `${encodeURIComponent(p.key)}=${encodeURIComponent(fill(p.value, raw))}`).join('&')
@@ -137,7 +139,7 @@ export function createImageGen({ getConfig, log, local, dsh, fetchImpl, codexAut
   const fetch = fetchImpl || ((...args) => globalThis.fetch(...args))
   const auth = codexAuth || createCodexAuth({ log, fetchImpl: fetch })
   const viaCodex = createCodexImage({ auth, fetchImpl: fetch, log })
-  async function generate(prompt, { shape, image, size } = {}) {
+  async function generate(prompt, { shape, image, size, onRetry } = {}) {
     const config = getConfig().imageGen
     const requestedSize = size == null || size === '' ? '' : normalizeRequestedSize(size)
     if (size != null && size !== '' && !requestedSize) throw new Error('图片尺寸格式不对，应为 1024x1024 或 2048x2048 这类格式')
@@ -155,7 +157,19 @@ export function createImageGen({ getConfig, log, local, dsh, fetchImpl, codexAut
     if (!c.enabled) throw new Error('生图还没开启')
     const full = [c.stylePrompt, prompt].filter(Boolean).join('，')
     const t = Date.now()
-    const buf = c.provider === 'codex' ? await viaCodex(c, full, { shape, image }) : c.provider === 'custom' ? await viaCustom(c, full, image) : await viaOpenAI(c, full, image)
+    let buf
+    try { buf = c.provider === 'codex' ? await viaCodex(c, full, { shape, image }) : c.provider === 'custom' ? await viaCustom(c, full, image) : await viaOpenAI(c, full, image) }
+    catch (error) {
+      if (!c.fallbackEnabled || !error.imageRequestFailed) throw error
+      let last = error
+      for (const endpoint of c.fallbacks || []) {
+        if (!endpoint.model || (endpoint.provider !== 'codex' && !endpoint.baseUrl)) continue
+        if (onRetry) await onRetry({ error: last })
+        try { buf = endpoint.provider === 'codex' ? await viaCodex({ ...c, codex: { ...c.codex, model: endpoint.model } }, full, { shape, image }) : await viaOpenAI({ ...c, ...endpoint }, full, image); break }
+        catch (next) { last = next; if (!next.imageRequestFailed) throw next }
+      }
+      if (!buf) throw last
+    }
     if (!buf || !buf.length) throw new Error('生图接口没有返回图片')
     if (!String(mimeOf(buf)).startsWith('image/')) throw new Error('生图接口返回的不是图片')
     log.info(`画好了一张图（${Math.round(buf.length / 1024)}KB，${Math.round((Date.now() - t) / 1000)}s）：${prompt.slice(0, 40)}`)
@@ -178,7 +192,7 @@ export function createImageGen({ getConfig, log, local, dsh, fetchImpl, codexAut
     }
     let r, j
     for (;;) {
-      r = await fetch(`${base}/images/${image ? 'edits' : 'generations'}`, { method: 'POST', headers, body: requestBody || JSON.stringify(body), signal: AbortSignal.timeout(180000) })
+      try { r = await fetch(`${base}/images/${image ? 'edits' : 'generations'}`, { method: 'POST', headers, body: requestBody || JSON.stringify(body), signal: AbortSignal.timeout(180000) }) } catch (error) { error.imageRequestFailed = true; error.imageNetworkFailure = true; throw error }
       j = await r.json().catch(() => ({}))
       if (r.ok) break
       const message = j?.error?.message || j?.message || `HTTP ${r.status}`
@@ -201,12 +215,13 @@ export function createImageGen({ getConfig, log, local, dsh, fetchImpl, codexAut
     if (!cp.url) throw new Error('还没填自定义生图接口地址')
     const req = customRequest(c, prompt, image)
     log.info(`生图请求：${req.method} ${image ? '（含参考图）' : req.url.slice(0, 160)}`)
-    const r = await fetch(req.url, {
+    let r
+    try { r = await fetch(req.url, {
       method: req.method,
       headers: req.headers,
       body: req.body,
       signal: AbortSignal.timeout(180000),
-    })
+    }) } catch (error) { error.imageRequestFailed = true; error.imageNetworkFailure = true; throw error }
     const type = String(r.headers.get('content-type') || '')
     // 直接返回图片字节（pollinations 这类）
     if (type.startsWith('image/')) {

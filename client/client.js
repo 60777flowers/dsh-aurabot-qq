@@ -7693,6 +7693,21 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     function ImageGen({ draft, setDraft, toast }) {
       const f = useField(draft, setDraft)
       const c = draft.imageGen
+      const [testing, setTesting] = useState('')
+      const [results, setResults] = useState({})
+      const snapshot = JSON.stringify(c); const current = useRef(snapshot); current.current = snapshot
+      useEffect(() => { setResults({}) }, [snapshot])
+      const test = async (id) => {
+        const key = id || 'primary'; const version = snapshot
+        setTesting(key); setResults(old => ({ ...old, [key]: { pending: true, message: '正在测试，生图可能需要几分钟…' } }))
+        try { const r = await post('/image/test', { id, imageGen: c }); const result = current.current !== version ? { ok: false, message: '测试期间配置已更改，请重新测试。' } : { ok: r.ok === true, message: r.message || (r.ok ? '生图成功' : '测试失败') }; setResults(old => ({ ...old, [key]: result })); toast(result.message, result.ok ? 'ok' : 'err') }
+        finally { setTesting('') }
+      }
+      const testButton = (id) => { const key = id || 'primary'; const r = results[key]; return h('div', { className: 'ab-flex', style: { gap: 8, marginTop: 6, flexWrap: 'wrap' } }, h(Btn, { small: true, disabled: Boolean(testing), onClick: () => test(id) }, testing === key ? '测试中…' : '测试生图'), r ? h('span', { className: 'ab-small', role: 'status', style: { color: r.pending ? 'var(--ab-warn)' : r.ok ? 'var(--ab-ok)' : 'var(--ab-err)', fontWeight: 600 } }, r.pending ? r.message : (r.ok ? '✓ 测试成功：' : '✗ ') + r.message) : null) }
+      const fallbacks = Array.isArray(c.fallbacks) ? c.fallbacks : []
+      const setFallbacks = next => setDraft(setPath(draft, 'imageGen.fallbacks', next))
+      const setFallback = (i, k, value) => setFallbacks(fallbacks.map((e, j) => j === i ? { ...e, [k]: value } : e))
+      const moveFallback = (i, step) => { const next = fallbacks.slice(); const j = i + step; if (j < 0 || j >= next.length) return; [next[i], next[j]] = [next[j], next[i]]; setFallbacks(next) }
       const custom = c.custom || {}
       const [tab, setTab] = useState(() => c.provider === 'codex' ? 'codex' : c.provider === 'custom' ? 'custom' : c.baseUrl === SPONSOR_BASE ? 'sponsor' : 'openai')
       const isCustom = tab === 'custom'
@@ -7772,6 +7787,17 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             h(Row, { label: 'API Key', hint: '只存在本机，不会显示出来' }, f.text('imageGen.apiKey', { type: 'password', placeholder: c.apiKeySet ? '已保存（不改就留空）' : '没有就留空' })),
             h(Row, { label: '模型' }, f.text('imageGen.model', { size: 'wide', placeholder: '例如 Kwai-Kolors/Kolors' })),
           ),
+          h('div', { className: 'ab-muted ab-small' }, '测试会实际生成图片，可能消耗额度；使用当前页面配置，不自动切换或发送到 QQ。'),
+          testButton(''),
+          h(Row, { label: '生图失败自动切换', hint: '连接失败或接口返回错误时按顺序尝试；备用服务会收到画图描述及参考图，图片下载失败不会重发' }, f.sw('imageGen.fallbackEnabled')),
+          h('div', { className: 'ab-label', style: { marginTop: 12 } }, h('b', null, '备用接口与模型（从上到下为优先级）')),
+          fallbacks.map((e, i) => h('div', { key: e.id, className: 'ab-note', style: { marginBottom: 8 } },
+            h('div', { className: 'ab-flex', style: { gap: 6, marginBottom: 6 } }, h('b', null, '备用 ' + (i + 1)), h(Btn, { small: true, disabled: i === 0, onClick: () => moveFallback(i, -1) }, '上移'), h(Btn, { small: true, disabled: i === fallbacks.length - 1, onClick: () => moveFallback(i, 1) }, '下移'), h(Btn, { small: true, onClick: () => setFallbacks(fallbacks.filter((_, j) => j !== i)) }, '删除')),
+            h(Row, { label: '接法' }, h(Seg, { value: e.provider || 'openai', onChange: value => setFallback(i, 'provider', value), options: [{ value: 'openai', label: 'OpenAI 格式' }, { value: 'codex', label: 'Codex 订阅' }] })),
+            e.provider !== 'codex' ? h(Row, { label: '服务地址' }, h('input', { className: 'ab-input', value: e.baseUrl || '', placeholder: 'https://example.com/v1', onChange: event => setFallback(i, 'baseUrl', event.target.value) })) : h('div', { className: 'ab-muted ab-small' }, '使用已登录的 ChatGPT 账号及订阅质量、背景设置。'),
+            e.provider !== 'codex' ? h(Row, { label: 'API Key' }, h('input', { className: 'ab-input', type: 'password', value: e.apiKey || '', placeholder: e.apiKeySet ? '已保存（不改就留空）' : '没有就留空', onChange: event => setFallback(i, 'apiKey', event.target.value) })) : null,
+            h(Row, { label: '模型' }, h('input', { className: 'ab-input', value: e.model || '', placeholder: '模型名称', onChange: event => setFallback(i, 'model', event.target.value) })), testButton(e.id))),
+          h(Btn, { small: true, onClick: () => setFallbacks([...fallbacks, { id: crypto.randomUUID(), provider: 'openai', baseUrl: '', apiKey: '', model: '' }]) }, '＋ 添加备用接口 / 模型'),
           h(Row, { label: '默认构图', hint: isCodex ? '通过构图提示引导，实际尺寸由服务端选择，不保证严格比例' : '聊天工具可指定本次构图。服务不支持所选尺寸时会报告失败，请换一种构图；自定义接口需使用尺寸占位符' },
             f.select('imageGen.shape', [
               { value: 'her', label: '让ta选择', desc: isCodex ? '未指定时由服务端选择' : '未指定时沿用图片尺寸' },
