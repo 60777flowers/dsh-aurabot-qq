@@ -304,7 +304,9 @@ export const DEFAULTS = {
   // 私聊新消息会被一直当成 steer 塞进那一轮，看上去就是「不理人」）。填 0 关掉兜底。
   // thinkingGuard：出站前的正文污染闸。模型偶尔把思考直接写进正文（英文判断 + 中文真话），
   //   或者思考塌缩成「做。做。做。…」。开着就切掉思考前缀、拦住退化内容；拦下就当她这轮没说话（默认开）。
-  chat: { seedHistory: false, seedHistoryCount: 20, everyStep: false, rescueFromThinking: false, turnTimeoutMinutes: 30, thinkingGuard: { enabled: true } },
+  // replyMarker：代码注入格式要求，模型必须用 ⟦REPLY⟧ 包住要发的话；没有标记就要求重写一次，
+  //   重写后仍然没有就不发。默认关：打开会改变所有会话的输出格式，先在面板/配置里手动开。
+  chat: { seedHistory: false, seedHistoryCount: 20, everyStep: false, rescueFromThinking: false, turnTimeoutMinutes: 30, thinkingGuard: { enabled: true }, replyMarker: { enabled: false } },
   // 原话档案独立于摘要记忆；默认关闭，由使用者明确开启并管理保留期限。
   conversationContext: { enabled: false },
   memory: {
@@ -744,6 +746,7 @@ export function normalize(raw) {
   c.chat.everyStep = bool(c.chat.everyStep, false)
   c.chat.rescueFromThinking = bool(c.chat.rescueFromThinking, false)
   c.chat.thinkingGuard = { enabled: bool(c.chat.thinkingGuard?.enabled, true) }
+  c.chat.replyMarker = { enabled: bool(c.chat.replyMarker?.enabled, false) }
   c.chat.turnTimeoutMinutes = num(c.chat.turnTimeoutMinutes, 30, 0, 180)
   c.memory.recallCount = num(c.memory.recallCount, 6, 0, BIG)
   // 总数护栏：0 表示不限制（直接 recallCount + 联想 assoc.recall）；设了就封顶，防止上下文爆掉

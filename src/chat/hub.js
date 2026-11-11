@@ -32,6 +32,7 @@ import { createRecentMedia } from './recent-media.js'
 import { createTitleFilter } from './title-filter.js'
 import { takeInterim, reasoningOf, rescueFromThinking } from './steps.js'
 import { guardOutgoing } from './guard.js'
+import { markerInstruction, extractMarkedReply, stripMarkers } from './reply-marker.js'
 import { grantOwner } from '../core/workspace-move.js'
 import { withPromptCapture, currentPromptSources, memoryPromptRanges } from '../security/leak-guard.js'
 import { noticeText } from './notices.js'
@@ -1025,6 +1026,10 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
         order: 905,
         text: () => {
           const parts = []
+          // 正文标记：代码注入，不改人格文件。模型必须用 ⟦REPLY⟧ 包住要发的话。
+          try {
+            if (getConfig().chat?.replyMarker?.enabled === true) parts.push(markerInstruction())
+          } catch (error) {}
           for (const p of contextProviders || []) {
             try {
               const t = p({ chat, sessionId: sid })
@@ -1759,6 +1764,38 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
           log.info(`${chatId}：整轮没有正文，从思考里捞回一段（${rescued.length} 字）`)
         }
       }
+      // 正文标记：代码注入的格式要求。模型必须用 ⟦REPLY⟧ 包住要发的话。
+      // 没有标记就要求重写一次；重写后仍然没有，这轮不发（宁可沉默也不发思考）。
+      if (text && completed && getConfig().chat?.replyMarker?.enabled === true) {
+        const marked = extractMarkedReply(text)
+        if (marked.found) {
+          text = stripMarkers(marked.text)
+          fromThinking = false
+        } else if (!st.markerRetried) {
+          st.markerRetried = true
+          const rec = mounted.get(key)
+          const agent = rec && rec.agent
+          if (agent && typeof agent.followup === 'function') {
+            log.info(`${chatId}：输出里没有正文标记，要求重写一次`)
+            try {
+              markRunning(chatId)
+              const msg = {
+                id: randomUUID(),
+                role: 'user',
+                content: [{ type: 'text', text: '（系统提醒，不是对方说的话）你刚才的输出没有正文标记，这条发不出去。现在重新输出：只写 ⟦REPLY⟧你要说的话⟦/REPLY⟧，标记外面不要有任何内容。' }],
+                source: { kind: SOURCE_KIND, speaker: { role: 'system', chat: String(chatId).startsWith('group:') ? 'group' : 'private' } },
+              }
+              agent.followup(msg).catch((error) => log.warn('重写请求失败：', error.message))
+            } catch (error) {
+              log.warn('重写请求发不出去：', error.message)
+            }
+          }
+          return
+        } else {
+          log.info(`${chatId}：重写后仍然没有正文标记，这轮不发`)
+          text = ''
+        }
+      }
       st.thinking = null
       if (completed && text && st.archiveNamespace && !chatId.startsWith('system:') && getConfig().conversationContext?.enabled === true) {
         try { conversationArchive(st.archiveNamespace).append(chatId, { role: 'assistant', text, id: key + ':turn:' + d.turn, contextAt: st.archiveContextAt, speakerId: getConfig().botQQ || '' }) }
@@ -1776,6 +1813,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       st.pendingOnDelivered = null
       st.autoReply = null
       st.text = ''
+      st.markerRetried = false
       // 上一轮还在跑时新消息已经排队给「下一轮」：这一轮 turn/end 不能把下一轮的说话人清掉（#90）
       st.senders = st.pendingSenders || new Set()
       st.pendingSenders = new Set()
