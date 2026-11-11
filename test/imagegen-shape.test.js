@@ -87,7 +87,7 @@ test('qq_draw_image 的构图可选，传到生成器；原主人权限在取图
   imagegenModule.setup({
     config: () => c, log, dsh: {}, lazy: () => ({}), route() {}, tool: (fn) => { build = fn },
     core: { local: { active: () => true, call: async (_kind, args) => { seen.push(args); return PNG } },
-      hub: { turnSendersAllOwner: () => owner, sendSegments: async () => ({ message_id: 1 }), canSeeImages: async () => false } },
+      hub: { turnSendersAllOwner: () => owner, sendText: async () => ({ message_id: 1 }), sendSegments: async () => ({ message_id: 1 }), canSeeImages: async () => false } },
   })
   const tool = build({ chat: { kind: 'private', chatId: 'private:10001', userId: '10001' }, sessionId: 'shape-test' })
   assert.ok(!tool.parameters.required.includes('shape'))
@@ -120,7 +120,7 @@ test('qq_draw_image 的 size 参数暴露 2K/4K，传给生成器', async () => 
   imagegenModule.setup({
     config: () => c, log, dsh: {}, lazy: () => ({}), route() {}, tool: (fn) => { build = fn },
     core: { local: { active: () => true, call: async (_kind, args) => { seen.push(args); return PNG } },
-      hub: { turnSendersAllOwner: () => true, sendSegments: async () => ({ message_id: 1 }), canSeeImages: async () => false } },
+      hub: { turnSendersAllOwner: () => true, sendText: async () => true, sendSegments: async () => ({ message_id: 1 }), canSeeImages: async () => false } },
   })
   const tool = build({ chat: { kind: 'private', chatId: 'private:10001', userId: '10001' }, sessionId: 'size-test' })
   assert.ok(tool.parameters.properties.size.enum.includes('2048x2048'))

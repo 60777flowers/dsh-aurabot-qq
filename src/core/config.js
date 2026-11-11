@@ -77,6 +77,8 @@ export const DEFAULTS = {
     baseUrlOptions: [], // 面板「服务地址」下拉里用户自己添加的常用地址（官方推荐的赞助商地址固定第一项，不存这里）
     apiKey: '',
     model: '',
+    fallbackEnabled: false,
+    fallbacks: [],
     size: '1024x1024',
     shape: 'her', // 工具可选构图；her 时未指定就沿用 size
     stylePrompt: '', // 每次生图自动加在前面的风格描述
@@ -864,6 +866,8 @@ export function normalize(raw) {
   c.voice.rate = signed(pct ? Math.max(-50, Math.min(50, Number(pct[1]))) : 0, '%')
   const hz = /^([+-]?\d{1,3})\s*Hz$/i.exec(String(c.voice.pitch || '').trim())
   c.voice.pitch = signed(hz ? Math.max(-80, Math.min(80, Number(hz[1]))) : 0, 'Hz')
+  c.imageGen.fallbackEnabled = bool(c.imageGen.fallbackEnabled, false)
+  c.imageGen.fallbacks = (Array.isArray(c.imageGen.fallbacks) ? c.imageGen.fallbacks : []).map(e => ({ id: String(e?.id || '').slice(0, 100), provider: e?.provider === 'codex' ? 'codex' : 'openai', baseUrl: String(e?.baseUrl || '').trim(), apiKey: String(e?.apiKey || ''), model: String(e?.model || '').trim() })).filter(e => e.id)
   c.imageGen.enabled = bool(c.imageGen.enabled, false)
   c.imageGen.ownerOnly = bool(c.imageGen.ownerOnly, true)
   c.imageGen.seeOwn = bool(c.imageGen.seeOwn, true)
@@ -1065,6 +1069,7 @@ export function publicConfig(cfg) {
     p[`${k}Set`] = Boolean(p[k])
     p[k] = ''
   }
+  for (const e of c.imageGen.fallbacks || []) { e.apiKeySet = Boolean(e.apiKey); e.apiKey = '' }
   return c
 }
 
@@ -1080,6 +1085,10 @@ export function mergeFromPanel(current, incoming) {
     else if (v === undefined || v === '') p[k] = getAt(current, path) ?? ''
     delete p[`${k}Set`]
     delete p[`${k}Hint`]
+  }
+  if (Array.isArray(incoming?.imageGen?.fallbacks)) {
+    const old = new Map((current.imageGen?.fallbacks || []).map(e => [e.id, e]))
+    next.imageGen.fallbacks = incoming.imageGen.fallbacks.map(e => ({ ...e, apiKey: e.apiKey === null ? '' : (e.apiKey || old.get(e.id)?.apiKey || '') }))
   }
   // 主人的抖音 secUid / uid / 昵称只能由「核对」写入，面板存配置时保留原值
   next.douyin.owner = { ...next.douyin.owner, ...Object.fromEntries(['secUid', 'uid', 'nickname', 'confirmedInput'].map((k) => [k, current.douyin?.owner?.[k] ?? ''])) }

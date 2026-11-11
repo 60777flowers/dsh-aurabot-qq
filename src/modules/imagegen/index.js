@@ -7,6 +7,10 @@ import { defineTool, str } from '../../tools/tools.js'
 import { SIZE_OPTIONS } from '../../features/image-shape.js'
 import { dataDir } from '../../core/store.js'
 import { mimeOf } from '../../chat/inbound.js'
+import { mergeFromPanel } from '../../core/config.js'
+import { redact } from '../../core/redact.js'
+
+function reason(error) { if (error?.imageStatus) return `接口返回 HTTP ${error.imageStatus}`; if (error?.imageNetworkFailure) return error.name === 'TimeoutError' ? '连接超时' : '连接失败'; const m = String(error?.message || ''); if (m.includes('不支持参考图')) return '该模型不支持参考图'; if (m.includes('登录')) return '订阅登录不可用'; return '生图请求失败' }
 
 export default {
   id: 'imagegen',
@@ -25,6 +29,22 @@ export default {
       if (req?.method !== 'POST' || !/^application\/json(?:\s*;|$)/i.test(String(req.headers?.['content-type'] || ''))) return { ok: false, message: '账号操作需要 POST JSON 请求' }
       return fn(req)
     }
+    api.route('/image/test', accountAction(async (req) => {
+      const body = await api.core.http.body(req)
+      if (!body?.imageGen || typeof body.imageGen !== 'object') return { ok: false, message: '缺少生图配置' }
+      const config = mergeFromPanel(api.config(), { imageGen: body.imageGen }); const c = config.imageGen
+      if (body.id) {
+        const e = c.fallbacks.find(e => e.id === body.id)
+        if (!e || !e.model) return { ok: false, message: '请填写备用模型' }
+        c.provider = e.provider
+        if (e.provider === 'codex') c.codex.model = e.model
+        else Object.assign(c, { baseUrl: e.baseUrl, apiKey: e.apiKey, model: e.model })
+      }
+      c.enabled = true; c.fallbackEnabled = false
+      const test = createImageGen({ getConfig: () => config, log: api.log, codexAuth: auth }); const start = Date.now()
+      try { await test.generate('一只蓝色小鱼的简洁插画'); return { ok: true, message: `生图成功，耗时 ${((Date.now() - start) / 1000).toFixed(1)} 秒` } }
+      catch (error) { let message = redact(error?.message || String(error)); for (const key of [c.apiKey, ...c.fallbacks.map(e => e.apiKey)]) if (key) message = message.split(key).join('***'); return { ok: false, message: `测试失败：${message}` } }
+    }))
     api.route('/image/codex/status', async () => ({ ok: true, ...auth.status(), login: auth.loginStatus(), callback: { port: auth.callbackPort?.() || 1455, available: await auth.callbackPortUsable?.() } }))
     api.route('/image/codex/login', accountAction(async () => ({ ok: true, ...(await auth.startLogin()), ...auth.loginStatus() })))
     api.route('/image/codex/login/status', async () => ({ ok: true, ...auth.loginStatus(), ...auth.status() }))
@@ -67,15 +87,15 @@ export default {
       description: '画一张图并发到当前 QQ 聊天里。prompt 详细描述画面；可以用 image 参考当前聊天最近收到的图（last）、引用消息里的图（quote）或自己画作的文件名来改画；shape 可按用途选择方图、竖图、横图或宽幅；size 可显式指定常用尺寸（含 2K/4K），不填就沿用 shape / 面板默认。画好会直接发出去，并给你一个画作编号（换头像、收成表情时用这个编号）。回复里简单说一句就行。',
       properties: {
         prompt: str('画面描述'),
+        notice: str('结合对方的要求和当前对话写一句自然简短的回应，开始画图前会直接发送'),
         image: str('可选参考图：last = 当前聊天最近收到的一张图；quote = 当前聊天引用消息里的图；或图库中的画作文件名。禁止本地路径、网址'),
         shape: { type: 'string', enum: ['square', 'portrait', 'landscape', 'wide'], description: 'square 方图 1:1；portrait 竖图 2:3；landscape 横图 3:2；wide 宽幅 16:9。可不填' },
         size: { type: 'string', enum: SIZE_OPTIONS, description: '可选尺寸，例如 2048x2048（2K）、4096x4096（4K）；优先于 shape / 面板默认，不填沿用原逻辑' },
       },
-      required: ['prompt'],
-      slow: '好，我这就去画，画好了发你。',
+      required: ['prompt', 'notice'],
       // 能看图时把原图放进工具结果（image 块），她当轮就能看见自己画了什么
       render: drawResultBlocks,
-      execute: async ({ prompt, shape, image, size }) => {
+      execute: async ({ prompt, shape, image, size, notice }) => {
         const cfg = api.config()
         const ownerRequest = hub.turnSendersAllOwner(sessionId) || (chat.kind === 'group' && hub.turnDirectFromOwner?.(sessionId))
         if (cfg.imageGen.ownerOnly && !ownerRequest) return { ok: false, message: '画图只给主人画哦；群里请主人单独 @ 我或引用回复我提出请求，多人同时提出请求时请分开发送。' }
@@ -84,7 +104,20 @@ export default {
         if (image && cfg.imageGen.img2img === false) return { ok: false, message: '参考图功能已关闭' }
         const startedAt = Date.now()
         const reference = await resolveDrawImage(image, { hub, chat })
-        const buf = await gen.generate(String(prompt || ''), { shape, image: reference, size })
+        const text = typeof notice === 'string' ? notice.trim().slice(0, 200) : ''
+        let acknowledged = text ? await hub.sendText(chat.chatId, text) : null
+        if (!acknowledged) acknowledged = await hub.sendText(chat.chatId, '好，我来画。')
+        if (!acknowledged) return { ok: false, message: '没能发送画图回复，请检查 QQ 网关' }
+        const progress = async (error, retrying) => {
+          const issue = reason(error); const facts = retrying ? '刚才失败，正在尝试下一个备用模型，结果尚未确定' : '生图最终失败，没有图片'
+          const fallback = retrying ? '刚才没画出来，我换个模型再试试。' : '这次没画出来，我先停下了。'
+          let message = ''; let timer
+          try { message = String(await Promise.race([api.core.ask({ model: hub.modelFor(chat), system: `${api.core.personas?.current?.() || ''}\n根据事实写一句自然简短的聊天回复，不编造原因，不说已经画好。只输出回复。`, text: `对方说：${String(hub.lastTextOf(sessionId) || '').slice(0, 500)}\n之前回复：${text}\n事实：${facts}；问题：${issue}。`, maxTokens: 100 }), new Promise(resolve => { timer = setTimeout(() => resolve(''), 6000) })]) || '').trim().slice(0, 200) } catch (e) { api.log.debug('生成生图进度回复失败：', e.message) } finally { clearTimeout(timer) }
+          try { const sent = await hub.sendText(chat.chatId, `${message || fallback}（${issue}）`); if (!sent && message) await hub.sendText(chat.chatId, `${fallback}（${issue}）`) } catch (e) { api.log.debug('生图进度回复没发出去：', e.message) }
+        }
+        let buf
+        try { buf = await gen.generate(String(prompt || ''), { shape, image: reference, size, onRetry: ({ error }) => progress(error, true) }) }
+        catch (error) { await progress(error, false); return { ok: false, message: `生图失败：${reason(error)}。已尝试告知对方，请结合情况回应，不要说画好了。` } }
         const sent = await hub.sendSegments(chat.chatId, [{ type: 'image', data: { file: 'base64://' + buf.toString('base64') } }], `[生图] ${String(prompt).slice(0, 30)}`)
         // 调试 / 试运行下本来就不真发（sendSegments 只记日志、返回 null）：
         // 这一轮仍算画好了 —— 存盘、给编号、能看图，只是 QQ 里收不到；不能当失败。
