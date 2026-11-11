@@ -31,6 +31,11 @@ const DRAFT_MARK = /(?:^|\n)[ \t]*(?:Reply|Careful|Note|Watch|Draft|Final|Plan|�
 const EN_SENTENCE = /[A-Za-z][^\u4e00-\u9fff\n]{0,200}?[.!?]/g
 
 const MAX_GUARD_CHARS = 2000
+// 带代码围栏的消息放宽到 20k：干活时贴代码、命令行、日志是正常输出，不能按「超长思考」拦。
+const MAX_CODE_CHARS = 20000
+const CODE_FENCE = /```/
+// base64 / 哈希 / 长 ID：连续 40 个以上字母数字，不按「复读」判断。
+const LONG_TOKEN = /[A-Za-z0-9+/=_-]{40,}/
 
 /**
  * 切掉思考前缀，只留后面真正要说的话。
@@ -96,25 +101,30 @@ function isBlank (text) {
  * @returns {{ ok: boolean, text: string, reason: string }}
  *   ok=false 时调用方应当不发这一条（宁可沉默），并把 reason 记日志。
  */
-export function guardOutgoing (text, opts = {}) {
-  const source = opts.source || 'message'
+export function guardOutgoing (text, opts = {}) { // eslint-disable-line no-unused-vars
   const raw = String(text || '').trim()
   if (!raw) return { ok: false, text: '', reason: 'empty' }
-  if (raw.length > MAX_GUARD_CHARS) return { ok: false, text: '', reason: 'too-long' }
 
-  // 从思考里捞出来的内容，先按「思考」再收一遍：没命中定稿标记就不发。
-  // （rescue 本身在 steps.js 里已经要求定稿标记，这里防的是调用方传错。）
-  let work = raw
-  if (source === 'reasoning') {
-    work = stripThinkingPrefix(work)
-    if (!work) return { ok: false, text: '', reason: 'thinking-only' }
-  } else {
-    work = stripThinkingPrefix(work)
-    if (!work) return { ok: false, text: '', reason: 'thinking-only' }
+  // 干活时贴的代码块整段豁免：她发给主人的代码、命令行、日志不是「思考」。
+  // 只对围栏外面的部分切思考前缀，围栏里一个字都不动；长度上限也放宽。
+  if (CODE_FENCE.test(raw)) {
+    if (raw.length > MAX_CODE_CHARS) return { ok: false, text: '', reason: 'too-long' }
+    const at = raw.indexOf('```')
+    const head = stripThinkingPrefix(raw.slice(0, at))
+    const body = raw.slice(at)
+    const merged = [head, body].filter(Boolean).join('\n').trim()
+    if (isBlank(merged)) return { ok: false, text: '', reason: 'blank' }
+    return { ok: true, text: merged, reason: '' }
   }
 
+  if (raw.length > MAX_GUARD_CHARS) return { ok: false, text: '', reason: 'too-long' }
+
+  const work = stripThinkingPrefix(raw)
+  if (!work) return { ok: false, text: '', reason: 'thinking-only' }
+
   if (isBlank(work)) return { ok: false, text: '', reason: 'blank' }
-  if (isDegenerate(work)) return { ok: false, text: '', reason: 'degenerate' }
+  // base64 / 哈希 / 长 ID 这类长串不按「复读」处理，否则贴一串数据就被当成退化了。
+  if (!LONG_TOKEN.test(work) && isDegenerate(work)) return { ok: false, text: '', reason: 'degenerate' }
   if (DRAFT_MARK.test(work)) return { ok: false, text: '', reason: 'draft' }
 
   return { ok: true, text: work, reason: '' }

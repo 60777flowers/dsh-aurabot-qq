@@ -79,3 +79,52 @@ test('超长文本直接拦（防止整段思考倾倒）', () => {
   assert.equal(r.ok, false)
   assert.equal(r.reason, 'too-long')
 })
+
+// ---- 干活时贴代码 / 命令行：不能误伤 ----
+
+const fence = '```'
+
+test('干活时贴的代码块：整段放行', () => {
+  const code = '给你改好了：\n' + fence + 'js\nfunction foo() {\n  return 1\n}\n' + fence
+  const r = guardOutgoing(code)
+  assert.equal(r.ok, true)
+  assert.ok(r.text.includes('function foo'))
+})
+
+test('代码里的英文注释不能被当成思考前缀切掉', () => {
+  const code = '看这里：\n' + fence + 'js\n// I should handle this.\nconst a = 1\n' + fence
+  const r = guardOutgoing(code)
+  assert.equal(r.ok, true)
+  assert.ok(r.text.includes('I should handle this'), '注释要保留')
+  assert.ok(r.text.includes('const a = 1'))
+})
+
+test('超过 2000 字的代码块：放行（上限 20k）', () => {
+  const code = fence + '\n' + 'x'.repeat(3000) + '\n' + fence
+  const r = guardOutgoing(code)
+  assert.equal(r.ok, true)
+})
+
+test('超过 2000 字的普通文字：仍然拦', () => {
+  const r = guardOutgoing('啊'.repeat(3000))
+  assert.equal(r.ok, false)
+  assert.equal(r.reason, 'too-long')
+})
+
+test('base64 / 哈希长串：不按复读拦', () => {
+  const r = guardOutgoing('这是结果：' + 'A'.repeat(80))
+  assert.equal(r.ok, true)
+})
+
+test('代码块外的思考前缀照样切，围栏内一个字不动', () => {
+  const text = 'I could react. ' + fence + '\nconst a = 1\n' + fence
+  const r = guardOutgoing(text)
+  assert.equal(r.ok, true)
+  assert.ok(r.text.startsWith(fence), '围栏内容保留')
+  assert.ok(!r.text.includes('I could'), '思考前缀被切掉')
+})
+
+test('命令行多行：放行', () => {
+  const r = guardOutgoing('先跑这两个：\necho %USERPROFILE%\ncd D:\\work\\qq\nnode --test')
+  assert.equal(r.ok, true)
+})
