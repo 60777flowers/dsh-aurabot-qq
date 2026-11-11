@@ -31,6 +31,7 @@ import { cleanContent, cleanText } from '../core/text.js'
 import { createRecentMedia } from './recent-media.js'
 import { createTitleFilter } from './title-filter.js'
 import { takeInterim, reasoningOf, rescueFromThinking } from './steps.js'
+import { guardOutgoing } from './guard.js'
 import { grantOwner } from '../core/workspace-move.js'
 import { withPromptCapture, currentPromptSources, memoryPromptRanges } from '../security/leak-guard.js'
 import { noticeText } from './notices.js'
@@ -1541,6 +1542,17 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     }
     if (disposed) return
     text = cleanOutboundText(text, { ...cleaningFor(chatId), onPromptDecision: (allow) => { outputScope.getStore().allowPromptEcho = allow } })
+    // 出站污染闸：模型偶尔会把思考直接写进正文（英文判断 + 中文真话），或者思考塌缩成复读。
+    // 这里切掉思考前缀、拦住退化内容；拦下就当她这轮没说话，宁可沉默也不发半句思考。
+    if (cfg.chat?.thinkingGuard?.enabled !== false) {
+      const guarded = guardOutgoing(text, { source: opts.fromThinking ? 'reasoning' : (opts.interim ? 'interim' : 'message') })
+      if (!guarded.ok) {
+        log.info(`${chatId}：这条没发出去（${guarded.reason}）`)
+        if (!opts.interim) silenceTurn(chatId)
+        return
+      }
+      text = guarded.text
+    }
     const r = parseReply(text, cleaningFor(chatId))
     if (r.silent) return silenceTurn(chatId)
     let items = r.items
@@ -1736,12 +1748,14 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       const d = event.data || {}
       const completed = d.reason && d.reason.kind === 'completed'
       let text = st.lastTurn === d.turn ? st.text : ''
+      let fromThinking = false
       // 整轮一段正文都没有：她可能把话全写在思考里了（Reply: 起草 → Careful: 自检 → N lines: 定稿），
       // 正文块是空的。chat.rescueFromThinking 打开时从最后一步的思考里捞回定稿；捞不到就照旧不发。
       if (!text && completed && getConfig().chat?.rescueFromThinking && st.thinking && st.thinking.turn === d.turn) {
         const rescued = rescueFromThinking(st.thinking.text)
         if (rescued) {
           text = rescued
+          fromThinking = true
           log.info(`${chatId}：整轮没有正文，从思考里捞回一段（${rescued.length} 字）`)
         }
       }
@@ -1787,7 +1801,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       // 发完再放开：发送期间来的消息也攒到下一段。
       // 没有中间段在发的时候就走原来的路径（同步开始、release 跟着这一条走），时序和以前一模一样；
       // 只有前面真有中间段没发完时才排队，保证最后一段一定是最后一条（#214 review）。
-      const sendLast = () => deliver(chatId, text, { wantVoice, autoReply, userText: st.lastText || '', own: true, onDelivered })
+      const sendLast = () => deliver(chatId, text, { wantVoice, autoReply, userText: st.lastText || '', own: true, onDelivered, fromThinking })
         .catch((error) => log.warn('发送出错：', error.message))
         .finally(() => release(chatId, turnToken))
       const pending = sendChain.get(chatId)
