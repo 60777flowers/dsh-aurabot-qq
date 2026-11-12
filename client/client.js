@@ -1832,6 +1832,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
               inactive.length ? h('section', { className: 'ab-permission-section' }, h('h4', null, '当前不可用的授权'),
                 inactive.map((key) => toggle({ key, label: key, description: '此模块命令未启用或已停止开放，可以撤销原授权。' }))) : null,
             ) : null,
+            modOn(st, 'memory') ? h(Row, { label: '用户记忆' }, h(PersonMemoryReset, { key: id, qq: id, toast })) : null,
           ),
       )
     }
@@ -4537,6 +4538,20 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         selected ? h(PersonaDetail, { key: selected, qq: selected, toast, back: () => setSelected(''), onChanged: load }) : h('div', { className: 'ab-pm-detail' }, h(Empty, { text: '选一个人看看' })))
     }
 
+    function PersonMemoryReset({ qq, toast, onDone }) {
+      const [busy, setBusy] = useState(false)
+      const reset = async () => {
+        if (busy || !confirm(`清理 QQ ${qq} 的记忆并重开私聊？\n相关记忆会被删除，清理前的消息将退出机器人上下文。旧会话仍可在 QQ 和 DSH 中查看，权限设置会保留。`)) return
+        setBusy(true)
+        try {
+          const result = await post('/persona/person/reset', { qq })
+          toast(result.message || (result.ok ? '记忆已清理' : '清理失败'), result.ok ? 'ok' : 'err')
+          if (result.ok) await onDone?.()
+        } finally { setBusy(false) }
+      }
+      return h(Btn, { small: true, kind: 'danger', disabled: busy, onClick: reset }, '清理记忆并重开私聊')
+    }
+
     function PersonaDetail({ qq, toast, back, onChanged }) {
       const [data, setData] = useState(null)
       const [form, setForm] = useState(null)
@@ -4636,7 +4651,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         h(Card, { title: '是否留下记忆', desc: '讨厌 = 不爱搭理；不再记住 = 不留记忆。两者分别设置。消息仍照常进入聊天，她能看懂当下的对话。撤销后，以后的互动会恢复记忆。' },
           h(Row, { label: '不再记住', hint: p.isOwner ? '主人始终会被记住。' : p.noMemory ? '已停止形成人物记忆，已有记忆也不会带进聊天。' : '可以随时开启或撤销。' },
             h('input', { type: 'checkbox', role: 'switch', 'aria-label': '不再记住', checked: Boolean(p.noMemory && !p.isOwner), disabled: p.isOwner, onChange: (e) => toggleNoMemory(e.target.checked) })),
-          !p.isOwner ? h(Btn, { small: true, kind: 'ghost', onClick: forgetPerson }, '删除这个人') : null),
+          !p.isOwner ? h(Btn, { small: true, kind: 'ghost', onClick: forgetPerson }, '删除这个人') : null,
+          h(PersonMemoryReset, { qq, toast, onDone: () => { back(); return onChanged() } })),
         editing ? h(Card, { title: '编辑印象' },
           h('div', { className: 'ab-pm-form' }, PERSON_FIELDS.map(([key, label]) => h('label', { key, className: key === 'text' ? 'full' : '' }, label,
             h('textarea', { className: 'ab-textarea', rows: key === 'text' ? 3 : 2, value: form[key], onChange: (e) => setForm({ ...form, [key]: e.target.value }) })))),
