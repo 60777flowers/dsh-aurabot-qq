@@ -1082,7 +1082,8 @@ export function publicConfig(cfg) {
   delete c.ownerAuthorization
   // 面板上的「试运行」只表示「试运行但不调试」：调试开着时它显示为关
   c.dryRun = Boolean(c.dryRun && !c.debug)
-  delete c.chatEfforts // 当前档位通过 QQ 命令查看，面板不管理这份设置。
+  // 面板要能显示/修改「单个聊天的思考档位」（chatEfforts），所以回传这份配置；
+  // 它本来就不含敏感内容，只是「聊天 → 模型 → 档位」的映射。
   for (const [g, k] of HINTED) c[g][`${k}Hint`] = c[g][k] ? '…' + String(c[g][k]).slice(-4) : ''
   for (const path of allSecrets()) {
     const p = parentOf(c, path, false)
@@ -1098,8 +1099,12 @@ export function publicConfig(cfg) {
 /** 面板保存时：没改的密码字段（空串）保留原值。 */
 export function mergeFromPanel(current, incoming) {
   const next = deepMerge(current, incoming || {})
-  // QQ 中修改的档位独立保存，面板草稿不覆盖。
-  next.chatEfforts = current.chatEfforts
+  // 面板明确带了非空 chatEfforts（面板上改过单个聊天的档位）就以面板为准；
+  // 没带或带的是空对象（旧版面板 / 面板没动过）时保留当前值——QQ 里 /effort 设过的不被清掉。
+  const incomingEfforts = incoming && incoming.chatEfforts
+  next.chatEfforts = incomingEfforts && typeof incomingEfforts === 'object' && Object.keys(incomingEfforts).length
+    ? incomingEfforts
+    : current.chatEfforts
   for (const path of allSecrets()) {
     const v = getAt(incoming || {}, path)
     const p = parentOf(next, path, v !== undefined)
