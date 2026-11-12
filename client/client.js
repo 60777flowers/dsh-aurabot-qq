@@ -2166,13 +2166,43 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         setAdd({ ...add, id: '' })
       }
       const remove = (kind, id) => { const field = kind === 'private' ? 'privates' : 'groups'; const n = { ...(cm[field] || {}) }; delete n[id]; setCm({ [field]: n }) }
-      return h(Card, { title: '按聊天选模型', desc: '顺序：这个私聊 > 这个群 > 所有私聊 / 所有群的默认 > 上面的全局模型。没选的一级就用下一级；选的模型在 DSH 里找不到时也自动退回。只有你能在这里改，聊天里的人换不了。换了之后从那个聊天的下一条消息起生效。' },
+      // 思考强度：beta 的 chatEfforts 按「聊天 + 当前模型」各存一份，键是 JSON.stringify([provider, model])。
+      const globalModel = draft.model || {}
+      const EFFORTS = [
+        { value: '', label: '跟随默认' },
+        { value: 'low', label: '低（快）' },
+        { value: 'high', label: '高' },
+        { value: 'max', label: '最高' },
+      ]
+      const modelOf = (sel) => ({ provider: (sel && sel.provider) || globalModel.provider || '', model: (sel && sel.model) || globalModel.model || '' })
+      const effortOf = (kind, id, sel) => {
+        const m = modelOf(sel)
+        if (!m.provider || !m.model) return ''
+        return ((draft.chatEfforts || {})[`${kind}:${id}`] || {})[JSON.stringify([m.provider, m.model])] || ''
+      }
+      const setEffort = (kind, id, sel, eff) => {
+        const m = modelOf(sel)
+        if (!m.provider || !m.model) return
+        const cid = `${kind}:${id}`
+        const key = JSON.stringify([m.provider, m.model])
+        const cur = { ...(draft.chatEfforts || {}) }
+        const row = { ...(cur[cid] || {}) }
+        if (eff) row[key] = eff
+        else delete row[key]
+        if (Object.keys(row).length) cur[cid] = row
+        else delete cur[cid]
+        setDraft(setPath(draft, 'chatEfforts', cur))
+      }
+      return h(Card, { title: '按聊天选模型 / 思考强度', desc: '顺序：这个私聊 > 这个群 > 所有私聊 / 所有群的默认 > 上面的全局模型。没选的一级就用下一级；选的模型在 DSH 里找不到时也自动退回。单个聊天的「思考强度」按「聊天 + 当前模型」各存一份（和 /effort 命令是同一份配置）。只有你能在这里改，聊天里的人换不了。换了之后从那个聊天的下一条消息起生效。' },
         h(Row, { label: '私聊默认模型' }, h(Select, { value: val(cm.privateDefault), width: 280, options: optsFor(val(cm.privateDefault)), onChange: (v) => setCm({ privateDefault: toSel(v) }) })),
         h(Row, { label: '群聊默认模型' }, h(Select, { value: val(cm.groupDefault), width: 280, options: optsFor(val(cm.groupDefault)), onChange: (v) => setCm({ groupDefault: toSel(v) }) })),
         h('div', { style: { marginTop: 8 } }, h(Btn, { small: true, kind: 'ghost', onClick: () => setOpen(!open) }, (open ? '收起' : '展开') + '单个 QQ / 群的例外（' + rows.length + '）')),
         open ? h('div', { style: { marginTop: 8 } },
           rows.length === 0 ? h('div', { className: 'ab-muted', style: { marginBottom: 10 } }, '还没有单独设置的 QQ 或群。') :
-            rows.map((r) => h(Row, { key: r.kind + r.id, label: (r.kind === 'private' ? '私聊 ' : '群 ') + r.id }, h('span', { className: 'ab-muted' }, label(r.sel)), h(Btn, { small: true, kind: 'ghost', onClick: () => remove(r.kind, r.id) }, '移除'))),
+            rows.map((r) => h(Row, { key: r.kind + r.id, label: (r.kind === 'private' ? '私聊 ' : '群 ') + r.id },
+              h('span', { className: 'ab-muted' }, label(r.sel)),
+              h(Select, { value: effortOf(r.kind, r.id, r.sel), width: 140, options: EFFORTS, onChange: (v) => setEffort(r.kind, r.id, r.sel, v) }),
+              h(Btn, { small: true, kind: 'ghost', onClick: () => remove(r.kind, r.id) }, '移除'))),
           h('div', { className: 'ab-flex' },
             h(Seg, { value: add.kind, onChange: (v) => setAdd({ ...add, kind: v }), options: [{ value: 'private', label: '私聊' }, { value: 'group', label: '群' }] }),
             h('input', { className: 'ab-input', placeholder: add.kind === 'private' ? 'QQ 号' : '群号', value: add.id, onChange: (e) => setAdd({ ...add, id: e.target.value.replace(/\D/g, '') }) }),
