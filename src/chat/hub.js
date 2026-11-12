@@ -25,6 +25,7 @@ import { findFfmpeg, findSharp, shrinkImage, shrinkWithSharp } from '../core/img
 import { redact } from '../core/redact.js'
 import { defaultModel, pickReasoningEffort, canSeeImages, modelVision } from '../core/llm.js'
 import { resolveChatModel } from './chat-model.js'
+import { chatEffortFor } from './effort-command.js'
 import { createFaces, textToSegments, stripFaceTags, splitSpeakable } from './faces.js'
 import { expandMentions, hasMention } from './mentions.js'
 import { cleanContent, cleanText } from '../core/text.js'
@@ -904,7 +905,8 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
         if (r && r.provider && r.model) sel = { reasoningEffort: '', ...r }
       } catch (error) {}
     }
-    return sel
+    const effort = chatEffortFor(cfg, chat?.chatId, sel)
+    return sel && effort ? { ...sel, reasoningEffort: effort } : sel
   }
 
   // 入站图片也按最终聊天模型（包括模块覆盖）判断；全局手动 vision 声明仍优先。
