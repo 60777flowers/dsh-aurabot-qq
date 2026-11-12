@@ -10,6 +10,7 @@
 // 另外顺手把模型偶尔漏出来的 Markdown 洗掉——QQ 不渲染 Markdown。
 
 import { contextInjectionRanges, currentPromptSources, promptFingerprint, promptTextRanges } from '../security/leak-guard.js'
+import { stripMarkers } from './reply-marker.js'
 import { stripHtmlFragments } from './html-fragments.js'
 
 export const SILENCE = '[沉默]'
@@ -399,7 +400,9 @@ export function cleanOutboundText(text, { warn, promptSources, fingerprint, user
     clean = ''
   }
   onRanges?.(ranges)
-  return clean
+  // 出站统一兜底：正文标记本身不能发出去。turn/end 已经解析过标记，
+  // 但空间说说、B 站评论、命令回复这些不走 turn/end 的出口也要剥一次（没有标记时原样返回）。
+  return stripMarkers(clean)
 }
 
 /** 最终平台出口：合并检查整条消息的文字段，避免调用被拆段绕过；引用、@ 和媒体段原样保留。 */
