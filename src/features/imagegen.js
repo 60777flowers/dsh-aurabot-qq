@@ -135,7 +135,7 @@ async function valueToBuffer (v) {
   throw new Error('生图接口返回的既不是图片地址也不是图片')
 }
 
-export function createImageGen({ getConfig, log, local, dsh, fetchImpl, codexAuth }) {
+export function createImageGen({ getConfig, log, local, dsh, fetchImpl, codexAuth, upstream }) {
   const fetch = fetchImpl || ((...args) => globalThis.fetch(...args))
   const auth = codexAuth || createCodexAuth({ log, fetchImpl: fetch })
   const viaCodex = createCodexImage({ auth, fetchImpl: fetch, log })
@@ -146,6 +146,18 @@ export function createImageGen({ getConfig, log, local, dsh, fetchImpl, codexAut
     const c = { ...config, size: requestedSize || imageSizeFor(shape, config) }
     if (image != null && (!Buffer.isBuffer(image) || !String(mimeOf(image)).startsWith('image/'))) throw new Error('参考图不是可用的图片')
     if (image && c.img2img === false) throw new Error('参考图功能已关闭')
+    // 外部生图模块（如社区库的「生图 · DSH 已接入模型」）：它明确接管时就用它，返回 null 则照旧。
+    // 只在没有参考图时询问：对话模型通道没有统一的编辑协议，图生图落回内置接法。
+    if (upstream && !image) {
+      const full = [c.stylePrompt, prompt].filter(Boolean).join('，')
+      const handled = await upstream(full, { shape, size: c.size })
+      if (handled != null) {
+        if (!Buffer.isBuffer(handled) || !handled.length) throw new Error('生图接口没有返回图片')
+        if (!String(mimeOf(handled)).startsWith('image/')) throw new Error('生图接口返回的不是图片')
+        log.info(`画好了一张图（${Math.round(handled.length / 1024)}KB，外部生图模块）：${prompt.slice(0, 40)}`)
+        return handled
+      }
+    }
     // 本地接口接管：用用户自己电脑上的画图服务
     if (local?.active('image')) {
       const { toImageBuffer } = await import('../local/local.js')
@@ -238,6 +250,8 @@ export function createImageGen({ getConfig, log, local, dsh, fetchImpl, codexAut
 
   const enabled = () => {
     if (local?.active('image')) return true
+    // 外部生图模块已就绪时，插件自己的「生图」开关不是必要条件。
+    try { if (upstream && upstream.ready && upstream.ready()) return true } catch {}
     const c = getConfig().imageGen
     if (!c.enabled) return false
     if (c.provider === 'codex') return auth.status().loggedIn
@@ -250,6 +264,7 @@ export function createImageGen({ getConfig, log, local, dsh, fetchImpl, codexAut
    */
   const notReadyReason = () => {
     if (local?.active('image')) return ''
+    try { if (upstream && upstream.ready && upstream.ready()) return '' } catch {}
     const c = getConfig().imageGen
     if (!c.enabled) return '生图还没开启：面板「生图」页右上角开关打开并保存'
     if (c.provider === 'codex') {
