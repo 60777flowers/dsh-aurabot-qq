@@ -2497,7 +2497,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       post_type: 'message', message_type: group ? 'group' : 'private', sub_type: group ? 'normal' : 'friend',
       self_id: Number(self), user_id: Number(poker), ...(group ? { group_id: Number(group) } : {}), message_id: 0,
       sender: { user_id: Number(poker), nickname, card: nickname },
-      message: [{ type: 'at', data: { qq: self } }, { type: 'text', data: { text: ` [戳了戳你${ev.action ? '：' + ev.action + (ev.suffix || '') : ''}]` } }],
+      message: [{ type: 'at', data: { qq: self } }, { type: 'text', data: { text: ev.action ? ' [' + ev.action + (ev.suffix || '') + '（这是戳一戳的动作）]' : ' [戳了戳你]' } }],
     })
   }
 
