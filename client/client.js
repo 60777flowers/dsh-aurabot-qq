@@ -201,6 +201,13 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-deep:#9cc4f5;--ab-sea:#6
 .ab-finder-empty{padding:12px 10px;color:var(--ab-dim);font-size:12px}
 @media (max-width:640px){.ab-grp{padding:0 10px;gap:5px}.ab-find-btn .t,.ab-find-btn .ab-kbd{display:none}.ab-finder{left:6px;right:6px;width:auto;max-width:none}}
 .ab-grid{display:grid;gap:12px}
+.ab-permission-grid{display:grid;grid-template-columns:minmax(220px,1fr) minmax(0,2fr);gap:12px;align-items:start}
+.ab-permission-people{display:grid;gap:4px;margin:10px 0;max-height:420px;overflow:auto}
+.ab-permission-person{display:flex;align-items:center;justify-content:space-between;gap:8px;text-align:left;padding:8px 10px;border:1px solid transparent;border-radius:8px;background:transparent;color:var(--ab-text);font:inherit;cursor:pointer}
+.ab-permission-person:hover,.ab-permission-person.on{border-color:var(--ab-line);background:var(--ab-foam)}
+.ab-permission-person small{display:block;color:var(--ab-sub)}
+.ab-permission-section h4{margin:16px 0 6px}
+@media(max-width:650px){.ab-permission-grid{grid-template-columns:1fr}.ab-permission-people{max-height:190px}}
 .ab-g2{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
 .ab-g4{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
 .ab-card{background:var(--ab-card);border:1px solid var(--ab-line);border-radius:14px;padding:16px 18px}
@@ -1726,7 +1733,126 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           : rows)
     }
 
-    function Access({ st, draft, setDraft, toast }) {
+    function Access(props) {
+      const [tab, setTab] = useState('people')
+      return h('div', { className: 'ab-grid' },
+        h('div', null, h(Seg, { value: tab, onChange: setTab, options: [
+          { value: 'people', label: '私聊用户' }, { value: 'groups', label: '群聊' }, { value: 'global', label: '全局设置' },
+        ] })),
+        tab === 'people' ? h(PrivatePermissions, props)
+          : tab === 'groups' ? h(GroupPermissions, props) : h(GlobalAccess, props),
+      )
+    }
+
+    function usePermissionSave(toast, reload) {
+      const [busy, setBusy] = useState(false)
+      const pending = useRef(false)
+      const apply = async (id, kind, changes) => {
+        if (pending.current) return false
+        pending.current = true
+        setBusy(true)
+        try {
+          const result = await post('/permissions/subject', { id, kind, changes })
+          if (!result.ok) { toast(result.message || '保存权限失败', 'err'); return false }
+          await reload()
+          toast('权限已保存', 'ok')
+          return true
+        } finally {
+          pending.current = false
+          setBusy(false)
+        }
+      }
+      return { busy, apply }
+    }
+
+    function PrivatePermissions({ st, toast, reload }) {
+      const [catalog, setCatalog] = useState(null)
+      const [friends, setFriends] = useState([])
+      const [query, setQuery] = useState('')
+      const [selected, setSelected] = useState('')
+      const { busy, apply } = usePermissionSave(toast, reload)
+      const modules = (st.modules || []).map(({ id, running, commands }) => [id, running, commands])
+      const catalogVersion = JSON.stringify(modules)
+      useEffect(() => {
+        let active = true
+        get('/permissions/catalog').then((r) => { if (active) setCatalog(r) })
+        return () => { active = false }
+      }, [catalogVersion])
+      const loadFriends = async () => {
+        const r = await get('/permissions/friends')
+        if (r.ok) setFriends(r.friends)
+        else toast(r.message || '读取好友失败', 'err')
+      }
+      const cfg = st.config
+      const owner = String(cfg.ownerQQ)
+      const saved = [cfg.allow.private, ...Object.values(cfg.capabilityAllow || {}), ...Object.values(cfg.commandAllow || {})]
+      const ids = [...new Set(saved.flat().map(String))].filter((id) => id !== owner)
+      const names = new Map(friends.map(({ id, name }) => [id, name]))
+      const q = query.trim().toLowerCase()
+      const matching = [...new Set([...ids, ...names.keys()])].filter((id) => id !== owner && (!q ? ids.includes(id) : id.includes(q) || names.get(id)?.toLowerCase().includes(q)))
+      const entries = matching.slice(0, 50)
+      const id = selected || (!q ? entries[0] : '')
+      const open = Boolean(id && cfg.allow.private.includes(id))
+      const has = (key) => key === 'chat' ? open : (cfg.capabilityAllow?.[key] || cfg.commandAllow?.[key] || []).includes(id)
+      const canOpen = /^\d{5,}$/.test(q) && q !== owner && !entries.includes(q)
+      const permissions = catalog?.list || []
+      const known = new Set(permissions.map(({ key }) => key))
+      const inactive = Object.keys(cfg.commandAllow || {}).filter((key) => has(key) && !known.has(key))
+      const toggle = ({ key, label, description }) => {
+        const publicFeature = (key === 'image' && cfg.imageGen.ownerOnly === false) || (key === 'song' && cfg.song.ownerOnly === false)
+        const hint = publicFeature ? `${description}。当前功能对所有白名单会话开放。` : description
+        return h(Row, { key, label, hint },
+          h(Switch, { on: has(key), title: label, disabled: busy, onChange: (value) => apply(id, 'private', { [key]: value }) }))
+      }
+      return h('div', { className: 'ab-permission-grid' },
+        h(Card, { title: '私聊用户', right: h(Btn, { small: true, onClick: loadFriends }, '读取 QQ 好友') },
+          h('input', { className: 'ab-input wide', value: query, 'aria-label': '搜索 QQ 号或好友昵称', placeholder: '搜索昵称或输入 QQ 号', onChange: (e) => setQuery(e.target.value) }),
+          h('div', { className: 'ab-permission-people' }, entries.map((qq) => h('button', {
+            key: qq, type: 'button', className: cx('ab-permission-person', qq === id && 'on'), 'aria-pressed': qq === id,
+            disabled: busy, onClick: () => setSelected(qq),
+          }, h('span', null, names.get(qq) || qq, names.get(qq) ? h('small', null, qq) : null),
+          h('small', null, cfg.allow.private.includes(qq) ? '允许私聊' : ids.includes(qq) ? '已暂停' : '未授权')))),
+          canOpen ? h(Btn, { small: true, disabled: busy, onClick: () => setSelected(q) }, `配置 ${q}`) : null,
+          !entries.length && !canOpen ? h('p', { className: 'ab-muted ab-small' }, q ? '没有匹配的用户' : '输入 QQ 号，或读取好友后按昵称搜索。') : null,
+          matching.length > entries.length ? h('p', { className: 'ab-muted ab-small' }, '请继续输入，缩小搜索范围。') : null,
+        ),
+        !id ? h(Card, null, h(Empty, { text: '选择一位私聊用户来管理授权' }))
+          : h(Card, { title: names.get(id) || id, desc: names.get(id) ? `QQ ${id}` : undefined },
+            toggle({ key: 'chat', label: '允许私聊', description: '关闭会暂停这个人的其他授权，重新开启即可恢复。' }),
+            !open ? h('p', { className: 'ab-muted ab-small' }, '这个人目前无法私聊。可以先选好功能，开启私聊后授权生效。') : null,
+            catalog?.ok === false ? h('p', { className: 'ab-note err' }, catalog.message || '读取可授权项失败') : null,
+            catalog?.ok ? h(Fragment, null,
+              h('div', { className: 'ab-flex', style: { margin: '10px 0', flexWrap: 'wrap' } },
+                h(Btn, { small: true, disabled: busy || (open && has('help') && has('reset')), onClick: () => apply(id, 'private', { chat: true, help: true, reset: true }) }, open ? '授予会话自助' : '开放私聊和会话自助'),
+                h('span', { className: 'ab-muted ab-small' }, '包含 /help、/reset')),
+              ['功能', '命令', '扩展命令'].map((group) => {
+                const items = permissions.filter((item) => item.group === group)
+                return items.length ? h('section', { key: group, className: 'ab-permission-section' }, h('h4', null, group), items.map(toggle)) : null
+              }),
+              inactive.length ? h('section', { className: 'ab-permission-section' }, h('h4', null, '当前不可用的授权'),
+                inactive.map((key) => toggle({ key, label: key, description: '此模块命令未启用或已停止开放，可以撤销原授权。' }))) : null,
+            ) : null,
+          ),
+      )
+    }
+
+    function GroupPermissions({ st, toast, reload }) {
+      const [input, setInput] = useState('')
+      const { busy, apply } = usePermissionSave(toast, reload)
+      const id = input.trim()
+      const groups = st.config.allow.groups
+      return h('div', { className: 'ab-grid' },
+        h(Card, { title: '群白名单', desc: '机器人只在白名单中的群聊响应消息。' },
+          h('div', { className: 'ab-flex' },
+            h('input', { className: 'ab-input', 'aria-label': '群号', placeholder: '输入群号', inputMode: 'numeric', value: input, onChange: (e) => setInput(e.target.value) }),
+            h(Btn, { kind: 'primary', disabled: busy || !/^\d{5,}$/.test(id) || groups.includes(id), onClick: async () => { if (await apply(id, 'group', { chat: true })) setInput('') } }, '添加群聊')),
+          groups.map((qq) => h(Row, { key: qq, label: qq }, h(Btn, { small: true, disabled: busy, onClick: () => apply(qq, 'group', { chat: false }) }, '移除'))),
+        ),
+        modOn(st, 'group-admin') ? h(GroupRoles, null) : null,
+      )
+    }
+
+    function GlobalAccess({ st, draft, setDraft, toast }) {
       const f = useField(draft, setDraft)
       return h('div', { className: 'ab-grid' },
         h(Card, { title: '主人', desc: '主人的 QQ 号。群管、点歌、电脑上的操作只听主人的。' },
@@ -1758,11 +1884,6 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             ] })),
         ),
         h(ProfilePerms, { st, draft, setDraft }),
-        h(Card, { title: '白名单', desc: '只有名单里的人和群，ta才会理。一行一个号码。' },
-          h(Row, { label: '私聊白名单', hint: '主人默认就在里面。' }, f.list('allow.private', { placeholder: '每行一个 QQ 号', numbers: true })),
-          h(Row, { label: '群白名单', hint: '把机器人拉进群后，把群号加到这里。' }, f.list('allow.groups', { placeholder: '每行一个群号', numbers: true })),
-        ),
-        modOn(st, 'group-admin') ? h(GroupRoles, null) : null,
         h(CommandList, null),
       )
     }
@@ -1804,7 +1925,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     function CommandList() {
       const [list, setList] = useState([])
       useEffect(() => { get('/commands').then((r) => setList(r.list || [])) }, [])
-      return h(Card, { title: 'QQ 命令', desc: '主人在 QQ 里（私聊或白名单群）直接发这些命令就能管ta，别人发了不算。总开关关着时也能用。' },
+      return h(Card, { title: 'QQ 命令', desc: '主人可以在 QQ 私聊或白名单群使用命令。其他人获授权后可在自己的私聊使用对应命令。' },
         h('table', { className: 'ab-table' }, h('tbody', null, list.map((c) => h('tr', { key: c.name },
           h('td', { style: { whiteSpace: 'nowrap' } }, h('code', null, '/' + c.name), c.aliases.length ? h('div', { className: 'ab-muted ab-small' }, c.aliases.map((a) => '/' + a).join(' ')) : null),
           h('td', null, c.desc))))))
@@ -6267,7 +6388,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h(Row, { label: '截哪一段' }, f.choices('song.clipStart', [{ value: 'auto', label: '副歌附近', desc: '从全曲大约 30% 的地方开始' }, { value: 'head', label: '从头开始' }])),
           h(Row, { label: '人声音量' }, f.range('song.vocalVolume', 0.2, 2, 0.05, (v) => Math.round(v * 100) + '%')),
           h(Row, { label: '伴奏音量' }, f.range('song.instVolume', 0.1, 2, 0.05, (v) => Math.round(v * 100) + '%')),
-          h(Row, { label: '只有主人能点歌' }, f.sw('song.ownerOnly')),
+          h(Row, { label: '限制点歌权限', hint: '开启时主人和权限页授权的私聊对象可以点歌。' }, f.sw('song.ownerOnly')),
         ),
         h(Card, { title: '网易云', desc: '不登录也能唱免费歌；会员歌、版权歌要填网易云的 Cookie。' },
           h(Row, { label: 'Cookie（MUSIC_U）', hint: '电脑浏览器登录 music.163.com → F12 → 应用 / 存储 → Cookie → 复制 MUSIC_U 的值。只存在本机，不显示' },
@@ -7809,7 +7930,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           !isCodex && (!c.shape || c.shape === 'her') ? h(Row, { label: '图片尺寸', hint: isCustom ? '接口地址 / 参数里可以用 {size} 或 {width}/{height}' : '未指定构图时沿用这个尺寸' },
             f.select('imageGen.size', [{ value: '1024x1024', label: '1024 × 1024', desc: '方图' }, { value: '768x1024', label: '768 × 1024', desc: '竖图' }, { value: '1024x768', label: '1024 × 768', desc: '横图' }, { value: '512x512', label: '512 × 512', desc: '小图，更快' }, { value: '2048x2048', label: '2K · 2048 × 2048', desc: '2K 方图' }, { value: '4096x4096', label: '4K · 4096 × 4096', desc: '4K 方图' }], { width: 230 })) : null,
           h(Row, { label: '固定风格', hint: '每次画都会加在描述前面' }, f.text('imageGen.stylePrompt', { size: 'wide', placeholder: '例如：日系二次元，柔和光线，蓝白配色' })),
-          h(Row, { label: '只给主人画', hint: '关掉后群友也能让ta画（会花你的额度）' }, f.sw('imageGen.ownerOnly')),
+          h(Row, { label: '限制生图权限', hint: '开启时主人和权限页授权的私聊对象可以生图；关闭后允许白名单中的聊天使用。' }, f.sw('imageGen.ownerOnly')),
           h(Row, { label: '允许参考图改画', hint: '默认开启，只接受当前聊天收到的图、引用图或图库文件名；Codex 订阅暂不支持' }, f.sw('imageGen.img2img')),
           h(Row, { label: '让ta画完自己看一眼', hint: '开着才把画好的图传给ta看（模型不支持看图时自动不传）；关掉就只回一句「画好了」，不传图' }, f.sw('imageGen.seeOwn')),
           isCustom ? h('div', { className: 'ab-note', style: { marginTop: 10 } }, '例子：地址填 https://image.pollinations.ai/prompt/{prompt}，再加 model=flux-anime、width=1080、height=1920、nologo=true 四个参数，GET 就会请求 …/prompt/<提示词>?model=flux-anime&width=1080&…') : null,
@@ -8315,7 +8436,10 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         if (Number(r.startedAt)) pluginStartRef.current = Number(r.startedAt)
         setErr('')
         setSt(r)
-        if (!dirtyRef.current) setDraft(clone(r.config))
+        setDraft((current) => {
+          if (!dirtyRef.current || !current) return clone(r.config)
+          return { ...current, allow: r.config.allow, commandAllow: r.config.commandAllow, capabilityAllow: r.config.capabilityAllow }
+        })
         return r
       }, [])
       useEffect(() => {
@@ -8361,7 +8485,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       dirtyRef.current = dirty
       const setD = (d) => setDraft(d)
       const save = async (override) => {
-        const body = override || draft
+        const { allow, commandAllow, capabilityAllow, ...body } = override || draft
         const r = await post('/save', body)
         if (r.ok === false) { toast(r.message || '保存失败', 'err'); return false }
         dirtyRef.current = false
@@ -8430,7 +8554,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         stickers: Stickers, imagegen: ImageGen, diary: Diary, speakup: SpeakUp, autotelic: Autotelic, pet: PetPanel, mood: Mood, memory: MemoryPage, persona: PersonaMemory, song: Song, bili: Bili, douyin: Douyin, heybox: Heybox, local: LocalApi, browser: Browser, security: Security, market: Market, modules: Modules, logs: Logs, about: About, backup: Backup,
       }[curTab.id] || Overview
       // 哪些标签有没保存的改动
-      const TAB_KEYS = { connect: ['snowluma', 'botQQ'], access: ['ownerQQ', 'ownerName', 'ownerLevel', 'approvalNotify', 'approvalViaQQ', 'qqApi', 'longTasks', 'profilePerms', 'allow'], group: ['group', 'merge', 'titleFilter', 'chat'], model: ['model', 'chatModels'], voice: ['voice'], asr: ['voice'], stickers: ['stickers'], imagegen: ['imageGen'], diary: ['diary', 'qzoneSocial'], speakup: ['speakUp'], autotelic: [], pet: [], mood: ['mood', 'memory'], song: ['song'], bili: ['bili'], douyin: ['douyin'], heybox: ['heybox'], local: ['local'], browser: ['browser'], security: ['security', 'update'] }
+      const TAB_KEYS = { connect: ['snowluma', 'botQQ'], access: ['ownerQQ', 'ownerName', 'ownerLevel', 'approvalNotify', 'approvalViaQQ', 'qqApi', 'longTasks', 'profilePerms', 'subagentBackground'], group: ['group', 'merge', 'titleFilter', 'chat'], model: ['model', 'chatModels'], voice: ['voice'], asr: ['voice'], stickers: ['stickers'], imagegen: ['imageGen'], diary: ['diary', 'qzoneSocial'], speakup: ['speakUp'], autotelic: [], pet: [], mood: ['mood', 'memory'], song: ['song'], bili: ['bili'], douyin: ['douyin'], heybox: ['heybox'], local: ['local'], browser: ['browser'], security: ['security', 'update'] }
       const tabDirty = (id) => {
         if (!dirty) return false
         if (id.startsWith('ext:')) { const k = id.slice(4); return JSON.stringify((draft.ext || {})[k]) !== JSON.stringify((cfg.ext || {})[k]) }

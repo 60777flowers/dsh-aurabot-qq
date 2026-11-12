@@ -1,6 +1,7 @@
 // QQ 里的主人命令：/silent /active 之类，直接在 QQ 上管她。只认主人；在总开关关着时也能用（所以 /on 才有用）。
 
 import { dataDir, readJson, writeJson } from '../core/store.js'
+import { runPermissionsCommand } from './permissions-command.js'
 
 /**
  * 解析命令：「/silent 30」→ { name: 'silent', arg: '30' }。不是命令返回 null。支持全角斜杠和中文别名。
@@ -10,6 +11,8 @@ export function parseCommand(text, extra = []) {
   const m = String(text || '').trim().match(/^[/／]\s*([A-Za-z0-9一-龥_-]+)\s*([\s\S]*)$/)
   if (!m) return null
   const word = m[1].toLowerCase()
+  // 权限管理是保留命令，扩展模块不能抢占。
+  if (word === '权限' || word === 'permissions' || word === 'perms') return { name: 'permissions', arg: m[2].trim() }
   for (const c of extra) {
     const names = [c.name, ...(c.aliases || [])].map((x) => String(x).toLowerCase())
     if (names.includes(word)) return { name: c.name, arg: m[2].trim(), ext: c }
@@ -39,6 +42,7 @@ const ALIASES = {
 
 const COMMANDS = {
   help: '看这份命令列表',
+  permissions: '主人私聊管理权限：/权限 查看用法',
   silent: '在这里闭嘴（可带分钟数，如 /silent 30；不带就一直到 /active）',
   active: '解除闭嘴；在群里还会接着参与话题一会儿',
   quiet: '这个群里只在被叫到时说话，不插话',
@@ -109,6 +113,8 @@ export async function runCommand(cmd, msg, deps) {
     setConfig({ ...cfg, group: { ...cfg.group, overrides } })
   }
   switch (cmd.name) {
+    case 'permissions':
+      return runPermissionsCommand(cmd.arg, msg, deps)
     case 'help':
       return helpText(deps.extraCommands || [])
     case 'silent': {

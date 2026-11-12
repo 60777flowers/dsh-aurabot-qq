@@ -1,6 +1,7 @@
 // 内置模块：生图。她能画图发到聊天里（OpenAI 兼容的生图服务，或「本地接口」里接的 SD WebUI / ComfyUI）。
 
 import { readFileSync } from 'node:fs'
+import { privateCapabilityAllowed } from '../../chat/access.js'
 import { createImageGen, drawResultBlocks, drawToolMessage, imageToolBlock, resolveDrawImage } from '../../features/imagegen.js'
 import { listPaintings, openPaintFolder, paintingPath, rememberPainting, removePainting, savePainting } from '../../features/paintings.js'
 import { defineTool, str } from '../../tools/tools.js'
@@ -25,6 +26,10 @@ export default {
     const gen = createImageGen({ getConfig: api.config, log: api.log, local, dsh: api.dsh })
     const auth = gen.codexAuth
     api.onDispose?.(() => gen.dispose())
+    api.context?.(({ chat }) => {
+      if (!gen.enabled() || !privateCapabilityAllowed(api.config(), chat, 'image')) return ''
+      return '当前私聊对象已经获得主人的画图授权。对方请求画图时可以直接使用 qq_draw_image；之前说过的权限限制已更新，以当前授权为准。'
+    })
     const accountAction = (fn) => async (req) => {
       if (req?.method !== 'POST' || !/^application\/json(?:\s*;|$)/i.test(String(req.headers?.['content-type'] || ''))) return { ok: false, message: '账号操作需要 POST JSON 请求' }
       return fn(req)
@@ -98,7 +103,7 @@ export default {
       execute: async ({ prompt, shape, image, size, notice }) => {
         const cfg = api.config()
         const ownerRequest = hub.turnSendersAllOwner(sessionId) || (chat.kind === 'group' && hub.turnDirectFromOwner?.(sessionId))
-        if (cfg.imageGen.ownerOnly && !ownerRequest) return { ok: false, message: '画图只给主人画哦；群里请主人单独 @ 我或引用回复我提出请求，多人同时提出请求时请分开发送。' }
+        if (cfg.imageGen.ownerOnly && !ownerRequest && !privateCapabilityAllowed(cfg, chat, 'image')) return { ok: false, message: '画图只给主人画哦；群里请主人单独 @ 我或引用回复我提出请求，多人同时提出请求时请分开发送。' }
         // 工具常驻，真正能不能画在执行时判断（Codex 登录状态可能刚变过）
         if (!gen.enabled()) return { ok: false, message: gen.notReadyReason() || '生图还没配置好' }
         if (image && cfg.imageGen.img2img === false) return { ok: false, message: '参考图功能已关闭' }
