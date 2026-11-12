@@ -44,9 +44,8 @@ export function changePermissions(cfg, { id, kind = 'private', changes } = {}, c
   return { ok: true, config: next }
 }
 
-/** 批量加入或移出私聊白名单；功能和命令授权保持原样，重新加入后会恢复。 */
-export function changePrivateWhitelist(cfg, { ids, action = 'add' } = {}) {
-  if (!['add', 'remove'].includes(action)) return { ok: false, message: '操作只能是添加或移出' }
+/** 批量加入私聊白名单，不改动已有的功能和命令授权。 */
+export function changePrivateWhitelist(cfg, { ids } = {}) {
   if (!Array.isArray(ids) || !ids.length) return { ok: false, message: '请先输入 QQ 号' }
   if (ids.length > 500) return { ok: false, message: '一次最多处理 500 个 QQ 号，请分批粘贴' }
 
@@ -57,12 +56,8 @@ export function changePrivateWhitelist(cfg, { ids, action = 'add' } = {}) {
   const owner = String(cfg.ownerQQ || '')
   const requested = unique.filter((id) => id !== owner)
   const current = (cfg.allow?.private || []).map(String)
-  const nextList = action === 'add'
-    ? [...new Set([...current, ...requested])]
-    : current.filter((id) => !requested.includes(id))
-  const changed = action === 'add'
-    ? nextList.length - current.length
-    : current.length - nextList.length
+  const nextList = [...new Set([...current, ...requested])]
+  const changed = nextList.length - current.length
   const next = changed ? { ...cfg, allow: { ...cfg.allow, private: nextList } } : null
 
   return {
@@ -71,6 +66,5 @@ export function changePrivateWhitelist(cfg, { ids, action = 'add' } = {}) {
     changed,
     skipped: unique.length - changed,
     ownerSkipped: unique.includes(owner) ? 1 : 0,
-    action,
   }
 }

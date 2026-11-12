@@ -1884,10 +1884,7 @@ export function apply(ctx) {
       ok: true,
       changed: result.changed,
       skipped: result.skipped,
-      ownerSkipped: result.ownerSkipped,
-      message: result.action === 'add'
-        ? `已加入私聊白名单 ${result.changed} 人，跳过 ${result.skipped} 个重复、已存在或主人号码`
-        : `已移出私聊白名单 ${result.changed} 人，跳过 ${result.skipped} 个未在名单中的号码；功能授权保留，重新加入后恢复`,
+      message: `已加入私聊白名单 ${result.changed} 人，跳过 ${result.skipped} 个重复、已存在或主人号码`,
     }
   })
   route('/permissions/friends', async () => {
