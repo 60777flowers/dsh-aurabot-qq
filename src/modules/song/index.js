@@ -3,6 +3,7 @@
 
 import { createHash } from 'node:crypto'
 import { createSongStudio, checkRoot, listDrives } from '../../song/studio.js'
+import { privateCapabilityAllowed } from '../../chat/access.js'
 import { defineTool, str, int, bool } from '../../tools/tools.js'
 
 export default {
@@ -16,6 +17,10 @@ export default {
     const { hub, local, http } = api.core
     const mood = api.lazy('mood')
     const memory = api.lazy('memory')
+    api.context?.(({ chat }) => {
+      if (!api.config().song.enabled || !privateCapabilityAllowed(api.config(), chat, 'song')) return ''
+      return '当前私聊对象已经获得主人的点歌授权。对方请求唱歌时可以使用 qq_song_cover，以当前授权为准。'
+    })
     const song = createSongStudio({
       local,
       getConfig: api.config,
@@ -51,7 +56,7 @@ export default {
       required: ['song'],
       slow: '好，我这就去弄，稍等一会儿（做好了发你）。',
       execute: async ({ song: name, pitch, acapella }) => {
-        if (api.config().song.ownerOnly && !hub.turnSendersAllOwner(sessionId)) return { ok: false, message: '只有主人能点歌' }
+        if (api.config().song.ownerOnly && !hub.turnSendersAllOwner(sessionId) && !privateCapabilityAllowed(api.config(), chat, 'song')) return { ok: false, message: '你还没有获得点歌权限' }
         return song.request({ song: name, pitch, acapella, chatId: chat.chatId })
       },
     }) : []))

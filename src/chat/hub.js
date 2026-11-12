@@ -2236,26 +2236,26 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       recentMedia.remember(msg.chatId, segmentsOf(event).filter((seg) => msg.images.includes(seg) || msg.stickers.includes(seg)).map((seg) => ({ seg, userId: msg.userId, sticker: msg.stickers.includes(seg) })))
     }
     // 主人命令（/silent /active …）：总开关关着也处理，回复直接发
-    if (fromOwner && /^\s*[/／]/.test(msg.text)) {
+    if (onCommand && (fromOwner || msg.kind === 'private') && /^\s*[/／]/.test(msg.text)) {
       let sensitiveCommand = ''
       const ownerStillCurrent = () => {
         const current = getConfig()
-        return isOwner(current, msg.userId) && ownerAuthorizationRevision(current) === ownerRevision
+        return fromOwner && isOwner(current, msg.userId) && ownerAuthorizationRevision(current) === ownerRevision
       }
       try {
         const reply = await onCommand(msg, (name) => {
           sensitiveCommand = '主人命令 /' + name
           return ownerStillCurrent()
-        })
+        }, ownerStillCurrent)
         if (disposed || (sensitiveCommand && !ownerStillCurrent())) return
         if (reply) {
-          log.info(sensitiveCommand || `主人命令 ${msg.text.trim().slice(0, 30)} → ${reply.split('\n')[0]}`)
+          log.info(sensitiveCommand || `QQ 命令 ${msg.text.trim().slice(0, 30)} → ${reply.split('\n')[0]}`)
           await sendSegments(msg.chatId, [{ type: 'text', data: { text: reply } }], sensitiveCommand || reply.slice(0, 60), {
             force: true, sensitive: Boolean(sensitiveCommand), isCurrent: sensitiveCommand ? ownerStillCurrent : null,
           })
           return
         }
-        if (sensitiveCommand) return
+        if (sensitiveCommand || reply === '') return
       } catch (error) {
         if (disposed || (sensitiveCommand && !ownerStillCurrent())) return
         const detail = sensitiveCommand || error.message

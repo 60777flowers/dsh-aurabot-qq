@@ -35,6 +35,9 @@ import { dataDir, ensureDir } from './core/store.js'
 import { initUsage, usageReport } from './core/usage.js'
 import { createUpdateChecker, changelogSection, hostEnv, updatePlan, repoOf } from './core/update.js'
 import { parseCommand, runCommand, createMutes, commandList } from './chat/commands.js'
+import { isOwner } from './chat/access.js'
+import { changePermissions, privatePermissionCatalog } from './chat/permission-policy.js'
+import { canUseDelegatedCommand, delegatedCommandKey, runPersonalModelCommand } from './chat/delegated-commands.js'
 import { listPersonas, readPersona, savePersona, deletePersona, currentPersonaText, rulesText, seedPersonas } from './persona/personas.js'
 import { createModules, API_VERSION } from './core/modules.js'
 import { createCommunity, REGISTRY_URL, GITEE_MIRROR } from './core/community.js'
@@ -444,13 +447,27 @@ export function apply(ctx) {
     dislikes: (qq) => use('memory')?.dislikes?.(qq) ?? false,
     onMemoryCommand: (msg, text) => use('memory')?.handleCommand?.(msg, text),
     // QQ 里的主人命令（模块加的命令优先）
-    onCommand: async (msg, markSensitive) => {
-      const cmd = parseCommand(msg.text, mods.commands())
+    onCommand: async (msg, markSensitive, ownerStillCurrent) => {
+      const commands = mods.commands()
+      const cmd = parseCommand(msg.text, commands)
       if (!cmd) return null
+      if (!ownerStillCurrent()) {
+        const key = delegatedCommandKey(cmd)
+        if (!canUseDelegatedCommand(getConfig(), msg, key)) return '你没有使用这个命令的权限，请联系主人设置。'
+        if (key === 'help') {
+          const list = commandList(commands).filter((item) => canUseDelegatedCommand(getConfig(), msg, delegatedCommandKey(parseCommand('/' + item.name, commands))))
+          return '你可以使用的命令：\n' + list.map((item) => {
+            const desc = item.name === 'model' ? '查看或切换当前私聊模型' : item.desc
+            return `/${item.name}  ${desc}`
+          }).join('\n')
+        }
+        if (key === 'model') return runPersonalModelCommand(cmd, msg, { getConfig, setConfig, listModels, defaultModel: () => defaultModel(ctx, getConfig()) })
+      }
       if (cmd.ext) {
         if (cmd.ext.sensitive === true && !markSensitive(cmd.name)) return ''
         return String((await cmd.ext.run(cmd.arg, msg)) ?? '')
       }
+      if (cmd.name === 'permissions' && !markSensitive(cmd.name)) return ''
       return runCommand(cmd, msg, { getConfig, setConfig, mutes, hub, mood: use('mood'), memory: use('memory'), qzone: use('diary'), song: use('song'), listModels, defaultModel: () => defaultModel(ctx, { model: {} }), extraCommands: mods.commands() })
     },
     isMuted: (chatId) => mutes.muted(chatId),
@@ -1848,6 +1865,20 @@ export function apply(ctx) {
     return r
   })
   route('/commands', async () => ({ ok: true, list: commandList(mods.commands()) }))
+  route('/permissions/catalog', async () => ({ ok: true, list: privatePermissionCatalog(mods.commands()) }))
+  route('/permissions/subject', async (req) => {
+    if (req.method !== 'POST' || !/^application\/json(?:\s*;|$)/i.test(String(req.headers?.['content-type'] || ''))) return { ok: false, message: '权限修改需要 POST JSON 请求' }
+    const body = await readBody(req)
+    const result = changePermissions(cfg, body || {}, mods.commands())
+    if (!result.ok) return result
+    setConfig(result.config)
+    return { ok: true }
+  })
+  route('/permissions/friends', async () => {
+    const result = await onebot.call('get_friend_list', {}, { timeoutMs: 8000 })
+    const friends = Array.isArray(result) ? result : (result?.friends || [])
+    return { ok: true, friends: friends.map((friend) => ({ id: String(friend.user_id || ''), name: String(friend.remark || friend.nickname || '') })).filter(({ id }) => /^\d{5,}$/.test(id)) }
+  })
   // 更新：检查 GitHub 上有没有新版本；这次更新了什么
   const checkUpdate = createUpdateChecker({ pkg: PKG, log, unstable: () => getConfig().update.unstable })
   // 宿主环境（Windows/macOS/Linux + 桌面版/网页版）决定更新命令怎么写、发布页指向哪
@@ -2358,8 +2389,10 @@ export function apply(ctx) {
     const msg = { ...chat, nickname: owner ? cfg.ownerName || '主人' : '路人', role: '', messageId: 'sim', text, mentioned: Boolean(b.mentioned), replyId: '', images: [], stickers: [], records: [], forwards: [], raw: { simulated: true } }
     const { sent } = await hub.capture(async () => {
       if (text) {
-        const cmd = owner && /^\s*[/／]/.test(text) ? parseCommand(text, mods.commands()) : null
-        if (cmd && cmd.ext) {
+        const cmd = (owner || chat.kind === 'private') && /^\s*[/／]/.test(text) ? parseCommand(text, mods.commands()) : null
+        if (cmd && !owner && !canUseDelegatedCommand(cfg, msg, delegatedCommandKey(cmd))) {
+          steps.push('这个私聊对象没有使用该命令的权限')
+        } else if (cmd && cmd.ext) {
           const reply = String((await cmd.ext.run(cmd.arg, msg)) ?? '')
           steps.push(`命令 /${cmd.name}（模块「${cmd.ext.module}」）回：${reply || '（空）'}`)
           if (reply) await hub.sendText(chat.chatId, reply)
