@@ -217,7 +217,7 @@ export const DEFAULTS = {
       groupId: '', // 目标群号；空 = 不生效。生产群号留在部署侧 config.json，不进默认值（上游开源）
       dailyLimit: 3, // 每天最多真发几条到群
       pendingTtlHours: 24, // 待批多久没回就当不发
-      queueLimit: 5, // 一次最多攒几条待批（避免一次问一长串）
+      queueLimit: 1, // 一次最多攒几条待批：默认 1，一次只问一条、只发一条（发多了像刷屏）
     },
   },
   // 刷抖音：专用浏览器（独立登录资料，不碰你平时的浏览器），经 CDP 控制。浏览 / 点赞 / 评论 / 分享各项权限在 profilePerms.douyin*。
@@ -664,7 +664,7 @@ export function normalize(raw) {
   b.groupShare.groups = [...new Set((Array.isArray(b.groupShare.groups) ? b.groupShare.groups : []).map(qq).filter(Boolean))].slice(0, 20)
   b.groupShare.dailyLimit = Math.round(num(b.groupShare.dailyLimit, 3, 0, BIG))
   b.groupShare.pendingTtlHours = Math.round(num(b.groupShare.pendingTtlHours, 24, 1, 24 * 30))
-  b.groupShare.queueLimit = Math.round(num(b.groupShare.queueLimit, 5, 1, 20))
+  b.groupShare.queueLimit = Math.round(num(b.groupShare.queueLimit, 1, 1, 20))
   b.intervalHours = num(b.intervalHours, 4, 0.1, BIG)
   b.maxRunsPerDay = num(b.maxRunsPerDay, 3, 0, BIG)
   b.perRun = num(b.perRun, 3, 1, BIG)
