@@ -1583,7 +1583,8 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     if (cfg.chat?.thinkingGuard?.enabled !== false) {
       const guarded = guardOutgoing(text, { source: opts.fromThinking ? 'reasoning' : (opts.interim ? 'interim' : 'message') })
       if (!guarded.ok) {
-        log.info(`${chatId}：这条没发出去（${guarded.reason}）`)
+        // 带上被拦原文的前 80 字：blank / thinking-only 这类判定看不出拦了什么，排查时只能靠它。
+        log.info(`${chatId}：这条没发出去（${guarded.reason}）：${String(text || '').replace(/\s+/g, ' ').slice(0, 80)}`)
         if (!opts.interim) silenceTurn(chatId)
         return
       }
