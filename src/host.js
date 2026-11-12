@@ -36,7 +36,7 @@ import { initUsage, usageReport } from './core/usage.js'
 import { createUpdateChecker, changelogSection, hostEnv, updatePlan, repoOf } from './core/update.js'
 import { parseCommand, runCommand, createMutes, commandList } from './chat/commands.js'
 import { isOwner } from './chat/access.js'
-import { changePermissions, privatePermissionCatalog } from './chat/permission-policy.js'
+import { changePermissions, changePrivateWhitelist, privatePermissionCatalog } from './chat/permission-policy.js'
 import { canUseDelegatedCommand, delegatedCommandKey, runPersonalModelCommand } from './chat/delegated-commands.js'
 import { listPersonas, readPersona, savePersona, deletePersona, currentPersonaText, rulesText, seedPersonas } from './persona/personas.js'
 import { createModules, API_VERSION } from './core/modules.js'
@@ -1874,10 +1874,30 @@ export function apply(ctx) {
     setConfig(result.config)
     return { ok: true }
   })
+  route('/permissions/private-batch', async (req) => {
+    if (req.method !== 'POST' || !/^application\/json(?:\s*;|$)/i.test(String(req.headers?.['content-type'] || ''))) return { ok: false, message: '私聊名单修改需要 POST JSON 请求' }
+    const body = await readBody(req)
+    const result = changePrivateWhitelist(cfg, body || {})
+    if (!result.ok) return result
+    if (result.config) setConfig(result.config)
+    return {
+      ok: true,
+      changed: result.changed,
+      skipped: result.skipped,
+      ownerSkipped: result.ownerSkipped,
+      message: result.action === 'add'
+        ? `已加入私聊白名单 ${result.changed} 人，跳过 ${result.skipped} 个重复、已存在或主人号码`
+        : `已移出私聊白名单 ${result.changed} 人，跳过 ${result.skipped} 个未在名单中的号码；功能授权保留，重新加入后恢复`,
+    }
+  })
   route('/permissions/friends', async () => {
-    const result = await onebot.call('get_friend_list', {}, { timeoutMs: 8000 })
-    const friends = Array.isArray(result) ? result : (result?.friends || [])
-    return { ok: true, friends: friends.map((friend) => ({ id: String(friend.user_id || ''), name: String(friend.remark || friend.nickname || '') })).filter(({ id }) => /^\d{5,}$/.test(id)) }
+    try {
+      const result = await onebot.call('get_friend_list', {}, { timeoutMs: 8000 })
+      const friends = Array.isArray(result) ? result : (result?.friends || [])
+      return { ok: true, friends: friends.map((friend) => ({ id: String(friend.user_id || ''), name: String(friend.remark || friend.nickname || '') })).filter(({ id }) => /^\d{5,12}$/.test(id)) }
+    } catch (error) {
+      return { ok: false, message: `读取 QQ 好友失败：${error.message || String(error)}` }
+    }
   })
   // 更新：检查 GitHub 上有没有新版本；这次更新了什么
   const checkUpdate = createUpdateChecker({ pkg: PKG, log, unstable: () => getConfig().update.unstable })

@@ -203,7 +203,9 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-deep:#9cc4f5;--ab-sea:#6
 .ab-grid{display:grid;gap:12px}
 .ab-permission-grid{display:grid;grid-template-columns:minmax(220px,1fr) minmax(0,2fr);gap:12px;align-items:start}
 .ab-permission-people{display:grid;gap:4px;margin:10px 0;max-height:420px;overflow:auto}
+.ab-permission-person-row{display:flex;align-items:center;gap:6px;min-width:0}
 .ab-permission-person{display:flex;align-items:center;justify-content:space-between;gap:8px;text-align:left;padding:8px 10px;border:1px solid transparent;border-radius:8px;background:transparent;color:var(--ab-text);font:inherit;cursor:pointer}
+.ab-permission-person-row>.ab-permission-person{flex:1;min-width:0;width:100%}
 .ab-permission-person:hover,.ab-permission-person.on{border-color:var(--ab-line);background:var(--ab-foam)}
 .ab-permission-person small{display:block;color:var(--ab-sub)}
 .ab-permission-section h4{margin:16px 0 6px}
@@ -1747,22 +1749,24 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     function usePermissionSave(toast, reload) {
       const [busy, setBusy] = useState(false)
       const pending = useRef(false)
-      const apply = async (id, kind, changes) => {
+      const save = async (path, payload) => {
         if (pending.current) return false
         pending.current = true
         setBusy(true)
         try {
-          const result = await post('/permissions/subject', { id, kind, changes })
+          const result = await post(path, payload)
           if (!result.ok) { toast(result.message || '保存权限失败', 'err'); return false }
-          await reload()
-          toast('权限已保存', 'ok')
+          if (path === '/permissions/subject' || result.changed) await reload()
+          toast(result.message || '权限已保存', 'ok')
           return true
         } finally {
           pending.current = false
           setBusy(false)
         }
       }
-      return { busy, apply }
+      const apply = (id, kind, changes) => save('/permissions/subject', { id, kind, changes })
+      const applyMany = (ids, action) => save('/permissions/private-batch', { ids, action })
+      return { busy, apply, applyMany }
     }
 
     function PrivatePermissions({ st, toast, reload }) {
@@ -1770,7 +1774,12 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const [friends, setFriends] = useState([])
       const [query, setQuery] = useState('')
       const [selected, setSelected] = useState('')
-      const { busy, apply } = usePermissionSave(toast, reload)
+      const [quickQQ, setQuickQQ] = useState('')
+      const [batchOpen, setBatchOpen] = useState(false)
+      const [batchText, setBatchText] = useState('')
+      const [friendMulti, setFriendMulti] = useState(false)
+      const [friendSelection, setFriendSelection] = useState([])
+      const { busy, apply, applyMany } = usePermissionSave(toast, reload)
       const modules = (st.modules || []).map(({ id, running, commands }) => [id, running, commands])
       const catalogVersion = JSON.stringify(modules)
       useEffect(() => {
@@ -1779,25 +1788,52 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         return () => { active = false }
       }, [catalogVersion])
       const loadFriends = async () => {
-        const r = await get('/permissions/friends')
-        if (r.ok) setFriends(r.friends)
-        else toast(r.message || '读取好友失败', 'err')
+        try {
+          const r = await get('/permissions/friends')
+          if (r.ok) { setFriends(r.friends); return true }
+          toast(r.message || '读取好友失败', 'err')
+        } catch (error) { toast(error.message || '读取好友失败', 'err') }
+        return false
       }
       const cfg = st.config
       const owner = String(cfg.ownerQQ)
+      const privateAllow = (cfg.allow.private || []).map(String)
+      const isOpen = (qq) => privateAllow.includes(String(qq))
       const saved = [cfg.allow.private, ...Object.values(cfg.capabilityAllow || {}), ...Object.values(cfg.commandAllow || {})]
       const ids = [...new Set(saved.flat().map(String))].filter((id) => id !== owner)
       const names = new Map(friends.map(({ id, name }) => [id, name]))
       const q = query.trim().toLowerCase()
-      const matching = [...new Set([...ids, ...names.keys()])].filter((id) => id !== owner && (!q ? ids.includes(id) : id.includes(q) || names.get(id)?.toLowerCase().includes(q)))
+      const matching = [...new Set([...ids, ...names.keys()])].filter((id) => id !== owner && (!q ? ids.includes(id) || names.has(id) : id.includes(q) || names.get(id)?.toLowerCase().includes(q)))
       const entries = matching.slice(0, 50)
       const id = selected || (!q ? entries[0] : '')
-      const open = Boolean(id && cfg.allow.private.includes(id))
+      const open = Boolean(id && isOpen(id))
       const has = (key) => key === 'chat' ? open : (cfg.capabilityAllow?.[key] || cfg.commandAllow?.[key] || []).includes(id)
-      const canOpen = /^\d{5,}$/.test(q) && q !== owner && !entries.includes(q)
+      const canOpen = /^\d{5,12}$/.test(q) && q !== owner && !entries.includes(q)
       const permissions = catalog?.list || []
       const known = new Set(permissions.map(({ key }) => key))
       const inactive = Object.keys(cfg.commandAllow || {}).filter((key) => has(key) && !known.has(key))
+      const quickId = quickQQ.trim()
+      const canQuickAdd = /^\d{5,12}$/.test(quickId) && quickId !== owner && !isOpen(quickId)
+      const addPrivate = async (qq) => {
+        if (!/^\d{5,12}$/.test(String(qq)) || String(qq) === owner) return
+        if (await apply(String(qq), 'private', { chat: true })) { setSelected(String(qq)); setQuickQQ('') }
+      }
+      const batchTokens = batchText.split(/[\s,，;；、]+/).filter(Boolean)
+      const batchValid = batchTokens.filter((value) => /^\d{5,12}$/.test(value))
+      const batchUnique = [...new Set(batchValid)]
+      const ownerCount = batchUnique.filter((value) => value === owner).length
+      const batchIds = batchUnique.filter((value) => value !== owner)
+      const batchAdd = batchIds.filter((value) => !isOpen(value))
+      const batchRemove = batchIds.filter(isOpen)
+      const tooManyBatchAdd = batchAdd.length > 500
+      const tooManyBatchRemove = batchRemove.length > 500
+      const batchDuplicates = batchValid.length - batchUnique.length
+      const batchInvalid = batchTokens.length - batchValid.length
+      const addSelectedFriends = async () => {
+        if (!friendSelection.length) return
+        if (await applyMany(friendSelection, 'add')) { setFriendSelection([]); setFriendMulti(false) }
+      }
+      const chooseVisibleFriends = () => setFriendSelection((old) => [...new Set([...old, ...entries.filter((qq) => !isOpen(qq))])])
       const toggle = ({ key, label, description }) => {
         const publicFeature = (key === 'image' && cfg.imageGen.ownerOnly === false) || (key === 'song' && cfg.song.ownerOnly === false)
         const hint = publicFeature ? `${description}。当前功能对所有白名单会话开放。` : description
@@ -1805,15 +1841,36 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h(Switch, { on: has(key), title: label, disabled: busy, onChange: (value) => apply(id, 'private', { [key]: value }) }))
       }
       return h('div', { className: 'ab-permission-grid' },
-        h(Card, { title: '私聊用户', right: h(Btn, { small: true, onClick: loadFriends }, '读取 QQ 好友') },
-          h('input', { className: 'ab-input wide', value: query, 'aria-label': '搜索 QQ 号或好友昵称', placeholder: '搜索昵称或输入 QQ 号', onChange: (e) => setQuery(e.target.value) }),
-          h('div', { className: 'ab-permission-people' }, entries.map((qq) => h('button', {
-            key: qq, type: 'button', className: cx('ab-permission-person', qq === id && 'on'), 'aria-pressed': qq === id,
-            disabled: busy, onClick: () => setSelected(qq),
-          }, h('span', null, names.get(qq) || qq, names.get(qq) ? h('small', null, qq) : null),
-          h('small', null, cfg.allow.private.includes(qq) ? '允许私聊' : ids.includes(qq) ? '已暂停' : '未授权')))),
-          canOpen ? h(Btn, { small: true, disabled: busy, onClick: () => setSelected(q) }, `配置 ${q}`) : null,
-          !entries.length && !canOpen ? h('p', { className: 'ab-muted ab-small' }, q ? '没有匹配的用户' : '输入 QQ 号，或读取好友后按昵称搜索。') : null,
+        h(Card, { title: '私聊用户', desc: '可以从 QQ 好友中按昵称添加，也可以直接输入 5～12 位 QQ 号或批量维护名单。', right: h('div', { className: 'ab-flex', style: { gap: 6, flexWrap: 'wrap' } },
+          h(Btn, { small: true, kind: 'ghost', onClick: loadFriends }, friends.length ? '刷新好友' : '读取 QQ 好友'),
+          h(Btn, { small: true, onClick: async () => { if (!friends.length && !(await loadFriends())) return; setFriendMulti(!friendMulti); setFriendSelection([]) } }, friendMulti ? '退出多选' : '批量选好友')) },
+          h('input', { className: 'ab-input wide', value: query, 'aria-label': '搜索已授权用户或好友昵称', placeholder: '搜索已授权用户或好友昵称', onChange: (e) => setQuery(e.target.value) }),
+          h('div', { className: 'ab-flex', style: { marginTop: 8, flexWrap: 'wrap' } },
+            h('input', { className: 'ab-input', style: { flex: 1, minWidth: 140 }, inputMode: 'numeric', value: quickQQ, 'aria-label': '直接输入 QQ 号添加私聊', placeholder: '直接输入 QQ 号添加', onChange: (e) => setQuickQQ(e.target.value) }),
+            h(Btn, { kind: 'primary', disabled: busy || !canQuickAdd, onClick: () => addPrivate(quickId) }, '添加私聊'),
+            h(Btn, { small: true, kind: 'ghost', onClick: () => setBatchOpen(!batchOpen) }, batchOpen ? '收起批量工具' : '批量添加 / 移出')),
+          batchOpen ? h('div', { className: 'ab-permission-bulk' },
+            h('b', null, '批量维护私聊白名单'),
+            h('p', { className: 'ab-muted ab-small' }, '粘贴 QQ 号列表，支持换行、空格、逗号或顿号；每个号码需为 5～12 位数字。移出只暂停私聊，其他功能授权会保留。'),
+            h('textarea', { className: 'ab-textarea', style: { width: '100%', minHeight: 92, boxSizing: 'border-box' }, value: batchText, 'aria-label': '批量 QQ 号列表', placeholder: '12345678\n23456789，34567890', onChange: (e) => setBatchText(e.target.value) }),
+            h('p', { className: 'ab-muted ab-small' }, `解析到 ${batchUnique.length} 个号码；可新增 ${batchAdd.length} 个；名单已有 ${batchRemove.length} 个；重复 ${batchDuplicates} 个；主人号码跳过 ${ownerCount} 个；格式不对 ${batchInvalid} 条。单次最多处理 500 个。`),
+            h('div', { className: 'ab-flex', style: { flexWrap: 'wrap' } },
+              h(Btn, { kind: 'primary', disabled: busy || !batchAdd.length || tooManyBatchAdd, onClick: async () => { if (await applyMany(batchAdd, 'add')) setBatchText('') } }, `批量添加 ${batchAdd.length} 人`),
+              h(Btn, { kind: 'ghost', disabled: busy || !batchRemove.length || tooManyBatchRemove, onClick: async () => { if (await applyMany(batchRemove, 'remove')) setBatchText('') } }, `批量移出 ${batchRemove.length} 人`))) : null,
+          h('div', { className: 'ab-permission-people' }, entries.map((qq) => h('div', { key: qq, className: 'ab-permission-person-row' },
+            h('button', {
+              type: 'button', className: cx('ab-permission-person', qq === id && 'on'), 'aria-pressed': qq === id,
+              disabled: busy, onClick: () => setSelected(qq),
+            }, h('span', null, names.get(qq) || qq, names.get(qq) ? h('small', null, qq) : null),
+            h('small', null, isOpen(qq) ? '允许私聊' : ids.includes(qq) ? '已暂停' : '未授权')),
+            !isOpen(qq) && friendMulti ? h('input', { type: 'checkbox', checked: friendSelection.includes(qq), disabled: busy, 'aria-label': `选择 ${names.get(qq) || qq} 批量添加`, onChange: (e) => setFriendSelection((old) => e.target.checked ? [...new Set([...old, qq])] : old.filter((value) => value !== qq)) }) :
+              !isOpen(qq) ? h(Btn, { small: true, kind: 'ghost', disabled: busy, onClick: () => addPrivate(qq) }, '添加') : null))),
+          friendMulti ? h('div', { className: 'ab-flex', style: { flexWrap: 'wrap', marginBottom: 8 } },
+            h('span', { className: 'ab-muted ab-small' }, `已选 ${friendSelection.length} 人${friendSelection.length > 500 ? '；单次最多 500 人，请分批操作' : ''}`),
+            h(Btn, { small: true, kind: 'ghost', disabled: busy || !entries.some((qq) => !isOpen(qq)), onClick: chooseVisibleFriends }, '全选当前结果'),
+            h(Btn, { small: true, disabled: busy || !friendSelection.length || friendSelection.length > 500, onClick: addSelectedFriends }, '添加选中好友')) : null,
+          canOpen ? h(Btn, { small: true, disabled: busy, onClick: () => setSelected(q) }, `查看 ${q} 的权限`) : null,
+          !entries.length && !canOpen ? h('p', { className: 'ab-muted ab-small' }, q ? '没有匹配的用户' : '读取好友后可以按昵称添加；也可以在上方直接输入 QQ 号。') : null,
           matching.length > entries.length ? h('p', { className: 'ab-muted ab-small' }, '请继续输入，缩小搜索范围。') : null,
         ),
         !id ? h(Card, null, h(Empty, { text: '选择一位私聊用户来管理授权' }))
