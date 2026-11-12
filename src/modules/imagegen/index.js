@@ -23,7 +23,20 @@ export default {
   setup(api) {
     const { hub, local } = api.core
     const memory = api.lazy('memory')
-    const gen = createImageGen({ getConfig: api.config, log: api.log, local, dsh: api.dsh })
+    // 外部生图模块（例如社区库的「生图 · DSH 已接入模型」）：装了且自己选了模型就由它先接管。
+    // 用 lazy 拿，模块后装 / 重载都能跟上；没装时这里恒为 null，行为与改动前一致。
+    const external = api.lazy('dsh-image')
+    const gen = createImageGen({
+      getConfig: api.config,
+      log: api.log,
+      local,
+      dsh: api.dsh,
+      upstream: Object.assign(
+        (prompt, opts) => (external && external.generate ? external.generate(prompt, opts) : null),
+        // ready() 必须同步且不联网：只回答「这个模块现在愿不愿意接管」。
+        { ready: () => Boolean(external && external.ready && external.ready()) },
+      ),
+    })
     const auth = gen.codexAuth
     api.onDispose?.(() => gen.dispose())
     api.context?.(({ chat }) => {
