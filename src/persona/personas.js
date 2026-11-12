@@ -5,6 +5,7 @@
 import { readdirSync, readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, unlinkSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { dataDir } from '../core/store.js'
 import { FACE_EXAMPLES } from '../chat/faces.js'
 
@@ -38,7 +39,42 @@ export function parsePersona(id, raw) {
   return { ...meta, body: text.trim() }
 }
 
-const safeId = (id) => String(id || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40)
+export const safeId = (id) => String(id || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40)
+
+// ---------- 每个人格自己的数据（记忆、会话表、聊天流水） ----------
+// 根目录归「数据归属人格」（persona.dataOwner），路径和老版本完全一样；其他人格放在 persona-data/<id>/。
+// 老用户升级后还没认领时（根目录有数据、没设 dataOwner），所有人格照旧共用根目录，等主人在面板里认领。
+
+/** 这件事属于哪个人格：收消息、会话事件、定时任务在入口固定，整条异步链都带着。 */
+export const personaScope = new AsyncLocalStorage()
+
+/** 当前这件事的人格；入口没固定时就是当前人格。 */
+export function personaNow(cfg) {
+  return safeId(personaScope.getStore() || cfg?.persona?.current)
+}
+
+const ROOT_DATA = ['memory.sqlite', 'memories.json', 'memory-json-fallback.json', 'sessions.json', 'chatlog']
+/** 根目录里有没有老版本留下的记忆、会话表或聊天流水。 */
+export const hasRootData = () => ROOT_DATA.some((n) => existsSync(dataDir(n)))
+
+export const dataOwner = (cfg) => safeId(cfg?.persona?.dataOwner)
+/** 老用户还没认领根目录数据。 */
+export const claimPending = (cfg) => !dataOwner(cfg) && hasRootData()
+
+/** 这个人格的数据目录：根目录人格和还没认领时是老路径，其他人格是 persona-data/<id>/。 */
+export function personaDataDir(cfg, id, ...parts) {
+  const owner = dataOwner(cfg)
+  const sid = safeId(id)
+  return !owner || !sid || sid === owner ? dataDir(...parts) : dataDir('persona-data', sid, ...parts)
+}
+
+/** 所有有数据的人格目录：[{ id, dir }]，根目录在最前（还没认领时 id 记成当前人格）。 */
+export function personaDataRoots(cfg) {
+  const owner = dataOwner(cfg) || safeId(cfg?.persona?.current)
+  let ids = []
+  try { ids = readdirSync(dataDir('persona-data'), { withFileTypes: true }).filter((d) => d.isDirectory() && safeId(d.name) === d.name && d.name !== owner).map((d) => d.name) } catch (error) {}
+  return [{ id: owner, dir: dataDir() }, ...ids.map((id) => ({ id, dir: dataDir('persona-data', id) }))]
+}
 
 export function listPersonas() {
   seedPersonas()
@@ -88,9 +124,9 @@ function currentPersona(currentId) {
   } catch (error) { return null }
 }
 
-/** 当前人格文件头的 name；缺失、空白或读取失败时沿用默认名。 */
+/** 这件事所属人格（见 personaNow）文件头的 name；缺失、空白或读取失败时沿用默认名。 */
 export function selfName(cfg) {
-  const p = currentPersona(cfg?.persona?.current)
+  const p = currentPersona(personaNow(cfg))
   // parsePersona 默认把 id 当显示名；这里仅接受文件头里明确写出的名字。
   return (p && parsePersona('', p.raw).name.trim()) || '大肥鱼'
 }

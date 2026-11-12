@@ -39,6 +39,7 @@ import { withPromptCapture, currentPromptSources, memoryPromptRanges } from '../
 import { noticeText } from './notices.js'
 import { createConversationArchive, packEvidence } from './conversation-context.js'
 import { matchesMemoryKeyword, parseMemoryCommand } from '../features/memory.js'
+import { personaScope, personaNow, personaDataDir, personaDataRoots, safeId, selfName } from '../persona/personas.js'
 import { currentTimeLine } from './time-context.js'
 import { SESSION_BACKOFF, isSessionBackoff } from './session-backoff.js'
 import { recordUsage, moduleLabel, moduleOfTool } from '../core/usage.js'
@@ -121,11 +122,21 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
   }
   // 心情对行为的影响（表情 / 语音概率、回复快慢、插话积极程度），没接就是 1
   const mood = () => (typeof moodEffects === 'function' ? moodEffects() : null) || { sticker: 1, voice: 1, delay: 1, chatty: 1 }
-  const mapFile = () => dataDir('sessions.json')
-  const map = () => readJson(mapFile(), () => ({ chats: {} }))
-  const saveMap = (m) => writeJson(mapFile(), m)
-  const memoryCutoffs = map().memoryCutoffs || {}
-  const memoryResetAt = (qq) => Number(memoryCutoffs[qq]) || 0
+  // 会话表和聊天流水都按人格分开（见 personas.js）：入口固定了人格，这里按「这件事的人格」取目录
+  const pnow = () => personaNow(getConfig())
+  const mapFile = (pid = pnow()) => personaDataDir(getConfig(), pid, 'sessions.json')
+  const map = (pid) => readJson(mapFile(pid), () => ({ chats: {} }))
+  const saveMap = (m, pid) => writeJson(mapFile(pid), m)
+  const chatDir = (pid = pnow()) => personaDataDir(getConfig(), pid, 'chatlog')
+  const sessionPersona = new Map() // sessionKey → 这个 DSH 会话属于哪个人格
+  // 清理某人记忆的截止时间存在各人格自己的会话表里：在哪个人格下清理，就只清这个人格的
+  const cutoffCache = new Map() // 会话表文件 → { QQ 号: 截止时间 }（还没认领时几个人格共用一个文件，按文件缓存）
+  const memoryCutoffs = (pid = pnow()) => {
+    const file = mapFile(pid)
+    if (!cutoffCache.has(file)) cutoffCache.set(file, map(pid).memoryCutoffs || {})
+    return cutoffCache.get(file)
+  }
+  const memoryResetAt = (qq) => Number(memoryCutoffs()[qq]) || 0
   function chatMemoryCutoff(chatId, uid) {
     const qq = chatId.startsWith('private:') ? chatId.slice(8) : chatId.startsWith('group:') ? uid : ''
     return memoryResetAt(qq)
@@ -504,7 +515,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       const timestamp = Number(at) > 0 && Number.isFinite(Number(at)) && Number.isFinite(new Date(Number(at)).getTime()) ? Number(at) : Date.now()
       const d = new Date(timestamp)
       const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-      const dir = dataDir('chatlog')
+      const dir = chatDir()
       mkdirSync(dir, { recursive: true })
       const forgotten = String(chatId).startsWith('private:') && getConfig().memory?.enabled && getConfig().memory?.instantCommands !== false && parseMemoryCommand(text)?.action === 'forget'
       const row = { t: timestamp, chatId, who, ...(uid ? { uid: String(uid) } : {}), text: redact(String(text).slice(0, 500)), ...(via ? { via } : {}), ...(proactive ? { proactive } : {}), ...(interaction?.length ? { interaction: [...new Set(interaction.map(String))] } : {}), ...(forgotten ? { forgottenAt: Date.now() } : {}) }
@@ -567,21 +578,21 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     noticesFor.set(note.chatId, [...(noticesFor.get(note.chatId) || []), note.text].slice(-8))
   }
 
-  function chatLogDays() {
+  function chatLogDays(pid) {
     try {
-      return readdirSync(dataDir('chatlog')).filter((n) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(n)).map((n) => n.slice(0, 10)).sort()
+      return readdirSync(chatDir(pid)).filter((n) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(n)).map((n) => n.slice(0, 10)).sort()
     } catch (error) {
       return []
     }
   }
 
-  function deleteChatLog(day) {
-    try { unlinkSync(join(dataDir('chatlog'), `${day}.jsonl`)); chatLogRevision++ } catch (error) {}
+  function deleteChatLog(day, pid) {
+    try { unlinkSync(join(chatDir(pid), `${day}.jsonl`)); chatLogRevision++ } catch (error) {}
   }
 
-  function chatLogOf(day) {
+  function chatLogOf(day, pid) {
     try {
-      const f = join(dataDir('chatlog'), `${day}.jsonl`)
+      const f = join(chatDir(pid), `${day}.jsonl`)
       if (!existsSync(f)) return []
       return readFileSync(f, 'utf8').split('\n').filter(Boolean).map((line) => {
         const row = JSON.parse(line)
@@ -627,7 +638,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     }
     let marked = 0
     for (const day of chatLogDays()) {
-      const path = join(dataDir('chatlog'), `${day}.jsonl`)
+      const path = join(chatDir(), `${day}.jsonl`)
       try {
         const rows = readFileSync(path, 'utf8').split('\n')
         let changed = false
@@ -677,13 +688,15 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
 
   function titleFor(chat) {
     const owner = getConfig().ownerName || '主人'
+    // 不在根目录的人格，标题里带上名字，侧栏里两个人格的会话才分得清；根目录人格保持老标题
+    const who = personaDataDir(getConfig(), pnow()) === dataDir() ? '' : `${selfName(getConfig())} · `
     if (chat.kind === 'system') {
       // 扩展模块传进来的 title 可能自带「QQ · 」前缀，别再拼一次
       const t = String(chat.title || '后台')
-      return t.startsWith('QQ · ') ? t : `QQ · ${t}`
+      return `QQ · ${who}${t.startsWith('QQ · ') ? t.slice(5) : t}`
     }
-    if (chat.kind === 'group') return `QQ 群 · ${groupNames.get(chat.groupId) || chat.groupId}`
-    return chat.userId === getConfig().ownerQQ ? `QQ · ${owner}私聊` : `QQ 私聊 · ${chat.nickname || chat.userId}`
+    if (chat.kind === 'group') return `QQ 群 · ${who}${groupNames.get(chat.groupId) || chat.groupId}`
+    return chat.userId === getConfig().ownerQQ ? `QQ · ${who}${owner}私聊` : `QQ 私聊 · ${who}${chat.nickname || chat.userId}`
   }
 
   // 后台会话点名 preset（自驱引擎 P0.2，docs/AUTOTELIC-PLAN.md §3/§4.2）：
@@ -755,7 +768,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     const failure = sessionFailure(chat.chatId)
     if (failure && Date.now() < failure.until) throw backoffError(chat.chatId, failure)
     // 同一个聊天里「正式」和「调试」是两条会话；按模式分开去重，切模式时不能被在途的旧创建挡住。
-    const key = chat.chatId + ':' + (getConfig().debug ? 'debug' : 'live')
+    const key = pnow() + '|' + chat.chatId + ':' + (getConfig().debug ? 'debug' : 'live')
     if (sessionCreating.has(key)) return sessionCreating.get(key)
     const task = Promise.resolve().then(() => createSessionNow(chat, level, turnToken))
     sessionCreating.set(key, task)
@@ -825,8 +838,9 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     throw Object.assign(new Error(e?.message || '恢复会话失败'), { code: e?.code })
   }
 
-  /** 拿到这个 QQ 会话对应的活 agent（没有就建，权限档位变了就换新会话）。 */
-  async function agentFor(chat, turnToken, assertMemoryCurrent) {
+  /** 拿到这个 QQ 会话对应的活 agent（没有就建，权限档位变了就换新会话）。整个过程用同一个人格的会话表。 */
+  const agentFor = (chat, turnToken, assertMemoryCurrent) => personaScope.run(pnow(), () => agentForPersona(chat, turnToken, assertMemoryCurrent))
+  async function agentForPersona(chat, turnToken, assertMemoryCurrent) {
     checkTurn(chat.chatId, turnToken)
     const failure = sessionFailure(chat.chatId)
     if (failure && Date.now() < failure.until) throw backoffError(chat.chatId, failure)
@@ -910,6 +924,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       }
     }
     sessionToChat.set(sessionKey(sid), chat.chatId)
+    sessionPersona.set(sessionKey(sid), pnow())
     if (target) sessionTarget.set(sessionKey(sid), { provider: target.provider, model: target.model })
     mount(agent, chat, level)
     sessionFailures.delete(chat.chatId)
@@ -1702,12 +1717,17 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     return message.content.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n').trim()
   }
 
+  // DSH 的回调，不在收消息那条异步链上：按这个会话所属的人格固定，回复和流水才记到对的人格
   function onSessionEvent(session, event) {
     const key = sessionKey(session && session.id)
     // 回合结束时内存映射可能已空（刚重启），退回持久化的映射，别把这一轮丢了（#159）。
     // 中间段也一样要兜底：重启后第一段正文可能早于 turn/end 到达，拿不到 chatId 就整段丢了。
-    const chatId = sessionToChat.get(key) || chatOfSession(key)
+    const found = sessionToChat.has(key) ? null : findSession(key)
+    const chatId = sessionToChat.get(key) || found?.chatId
     if (!chatId || !event) return
+    return personaScope.run(sessionPersona.get(key) || pnow(), () => onPersonaSessionEvent(key, chatId, event))
+  }
+  function onPersonaSessionEvent(key, chatId, event) {
     const st = turnState.get(key) || { lastTurn: -1, text: '', senders: new Set() }
     turnState.set(key, st)
     if (event.type === 'user/message') {
@@ -2185,7 +2205,11 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     return out
   }
 
-  async function onMessage(event) {
+  // 收消息时的当前人格贯穿这一条消息：合并等待、建会话、写流水都按它
+  function onMessage(event) {
+    return personaScope.run(pnow(), () => onPersonaMessage(event))
+  }
+  async function onPersonaMessage(event) {
     if (disposed) return
     selfId = String(event.self_id || selfId || getConfig().botQQ)
     const cfg = getConfig()
@@ -3269,6 +3293,9 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     // 是否真生效由 presetForChat 决定（noTools 压过它 + 主人的 ext.autotelic.presetIdOverride 开关）。
     const chat = { chatId: systemChatId(name, scope), kind: 'system', title, noTools: !!noTools, presetId: String(presetId || ''), level: String(levelName || '') }
     assertActive()
+    // 后台任务跨过了人格切换：剩下的步骤作废，不能用旧人格的会话替新人格做事
+    const pinned = personaScope.getStore()
+    if (pinned && pinned !== safeId(getConfig().persona?.current)) throw new Error('人格已切换，这次后台任务作废')
     if (systemStarting.has(chat.chatId)) throw new Error('这个后台会话的上一轮还没结束')
     systemStarting.add(chat.chatId)
     let result
@@ -3368,14 +3395,33 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     const key = sessionKey(sessionId)
     const live = sessionToChat.get(key)
     if (live) return live
-    // 重启后会话还没被第一条消息唤醒时，内存映射是空的：退回持久化的 聊天→会话 映射（#90 兜底要用）
-    try {
-      for (const [chatId, entry] of Object.entries(map().chats || {})) {
-        if (!entry) continue
-        if (entry.sessionId && sessionKey(entry.sessionId) === key) return chatId
-      }
-    } catch (error) {}
-    return ''
+    return findSession(key)?.chatId || ''
+  }
+
+  // 重启后会话还没被第一条消息唤醒时，内存映射是空的：退回持久化的 聊天→会话 映射（#90 兜底要用）。
+  // 各人格的会话表都要找：主人可能直接在 DSH 窗口里给不是当前人格的会话打字。
+  function findSession(key) {
+    for (const { id } of personaDataRoots(getConfig())) {
+      try {
+        for (const [chatId, entry] of Object.entries(map(id).chats || {})) {
+          if (!entry?.sessionId || sessionKey(entry.sessionId) !== key) continue
+          sessionPersona.set(key, id)
+          return { chatId, persona: id }
+        }
+      } catch (error) {}
+    }
+    return null
+  }
+
+  /** 这个 DSH 会话属于哪个人格（不是 aurabot 的会话时为空）。 */
+  function personaOf(sessionId) {
+    const key = sessionKey(sessionId)
+    return sessionPersona.get(key) || findSession(key)?.persona || ''
+  }
+
+  /** 有聊天或后台轮次在进行：这时切人格，旧人格的回复会被当成新人格的发出去。 */
+  function hubBusy() {
+    return [...busy.keys()].some(isBusy) || running.size > 0 || systemStarting.size > 0 || [...turnState.values()].some((st) => st.system && st.system.timedOutAt == null)
   }
 
   /**
@@ -3396,11 +3442,11 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     const entry = m.chats[chatId]
     if (!entry && !cutoff) return false
     const qq = chatId.slice(8)
-    if (cutoff) m.memoryCutoffs = { ...memoryCutoffs, [qq]: cutoff }
+    if (cutoff) m.memoryCutoffs = { ...memoryCutoffs(), [qq]: cutoff }
     delete m.chats[chatId]
     saveMap(m)
     if (cutoff) {
-      memoryCutoffs[qq] = cutoff
+      memoryCutoffs()[qq] = cutoff
       chatLogRevision++
     }
     const sessions = new Set([entry?.sessionId, ...(cutoff ? Object.values(entry?.sessions || {}) : [])].filter(Boolean))
@@ -3429,7 +3475,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
   function resetPersonChat(qq) {
     const chatId = `private:${qq}`
     if (isBusy(chatId) || running.has(chatId) || sendChain.has(chatId)
-      || sessionCreating.has(chatId + ':live') || sessionCreating.has(chatId + ':debug')) {
+      || sessionCreating.has(pnow() + '|' + chatId + ':live') || sessionCreating.has(pnow() + '|' + chatId + ':debug')) {
       return { ok: false, message: '该私聊正在回复，请等这轮结束后再清理' }
     }
     const cutoff = Date.now()
@@ -3453,7 +3499,25 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
   /** 重新开始：把现有的 QQ 会话都归档（侧栏里还能找回），下一条消息起开新会话。 */
   function resetSessions() {
     const reg = dsh.workspaceRegistry || dsh.get('workspaceRegistry')
-    const m = map()
+    let n = 0
+    // 所有人格的会话表都清空：留着不是当前人格的映射，切回去时会把刚归档的旧会话解归档接着用
+    for (const { id } of personaDataRoots(getConfig())) n += resetMap(reg, id)
+    // 专用工作区里其他零散的会话（比如手动点「新会话」留下的空白会话）也一起归档
+    try {
+      const norm = (p) => String(p || '').replace(/[\\/]+$/, '').toLowerCase()
+      const ws = (reg?.list?.() || []).find((w) => norm(w.path) === norm(workspaceDirOf(getConfig())))
+      for (const sid of ws?.sessionIds || []) {
+        if ((reg.archivedSessionIds || []).includes(sid)) continue
+        Promise.resolve(reg.archiveSession(sid)).catch(() => {})
+        n++
+      }
+    } catch (error) {}
+    log.info(`重新开始：归档了 ${n} 个 QQ 会话`)
+    return n
+  }
+
+  function resetMap(reg, pid) {
+    const m = map(pid)
     let n = 0
     for (const [chatId, e] of Object.entries(m.chats)) {
       try {
@@ -3468,18 +3532,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       delete m.chats[chatId]
       n++
     }
-    // 专用工作区里其他零散的会话（比如手动点「新会话」留下的空白会话）也一起归档
-    try {
-      const norm = (p) => String(p || '').replace(/[\\/]+$/, '').toLowerCase()
-      const ws = (reg?.list?.() || []).find((w) => norm(w.path) === norm(workspaceDirOf(getConfig())))
-      for (const sid of ws?.sessionIds || []) {
-        if ((reg.archivedSessionIds || []).includes(sid)) continue
-        Promise.resolve(reg.archiveSession(sid)).catch(() => {})
-        n++
-      }
-    } catch (error) {}
-    saveMap(m)
-    log.info(`重新开始：归档了 ${n} 个 QQ 会话`)
+    if (n) saveMap(m, pid)
     return n
   }
 
@@ -3718,6 +3771,8 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     joinTopic: (gid) => groupEngaged.set(String(gid), Date.now() + ENGAGE_MS),
     leaveTopic: (gid) => groupEngaged.delete(String(gid)),
     chatOfSession,
+    personaOf,
+    busy: hubBusy,
     isOwnedSession,
     canSeeImages: canSeeFor,
     resetSessions,

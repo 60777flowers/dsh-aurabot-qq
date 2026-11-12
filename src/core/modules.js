@@ -14,7 +14,7 @@ import { pathToFileURL, fileURLToPath } from 'node:url'
 import { dataDir } from './store.js'
 import { registerSecretField } from './config.js'
 import { defineTool } from '../tools/tools.js'
-import { selfName } from '../persona/personas.js'
+import { selfName, personaScope, personaNow } from '../persona/personas.js'
 
 /** 扩展接口版本：只加不改。哪天不得不改已有的东西才升到 2，并在更新说明里写清楚怎么迁移。 */
 export const API_VERSION = 1
@@ -587,17 +587,18 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
         return off
       },
       emit: writable('emit', (event, ...args) => emit(event, ...args)),
+      // 每次触发都按当时的当前人格固定（不沿用 setup 时的上下文）：这一趟写的记忆、流水、会话都归这个人格
       every: (ms, fn, label = '定时任务') => {
         const t = setInterval(() => {
           // 调试模式不跑定时任务：刷 B 站、逛空间、主动搭话、整理记忆这些都别在调试里自己动
           if (!active() || getConfig().debug) return
-          Promise.resolve().then(() => { if (active()) return fn() }).catch((error) => note(id, label, error))
+          personaScope.run(personaNow(getConfig()), () => Promise.resolve().then(() => { if (active()) return fn() }).catch((error) => note(id, label, error)))
         }, Math.max(1000, Number(ms) || 60_000))
         t.unref?.()
         return track(() => clearInterval(t))
       },
       later: (ms, fn) => {
-        const t = setTimeout(() => { Promise.resolve().then(() => { if (active()) return fn() }).catch((error) => note(id, '延时任务', error)) }, Math.max(0, Number(ms) || 0))
+        const t = setTimeout(() => { personaScope.run(personaNow(getConfig()), () => Promise.resolve().then(() => { if (active()) return fn() }).catch((error) => note(id, '延时任务', error))) }, Math.max(0, Number(ms) || 0))
         t.unref?.()
         return track(() => clearTimeout(t))
       },

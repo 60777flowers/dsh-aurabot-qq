@@ -29,7 +29,10 @@ const STORE_EXT = /\.(png|jpe?g|gif|webp|mp3|mp4|m4a|ogg|opus|webm|zip|7z|rar|pt
 const SKIP = ['backups', '.restore', '.restore-sessions', '.restore-pending.json', '.restore-modules.json', 'logs', 'tmp', 'voice-cache', 'archive-cache', 'douyin/edge-profile']
 // 仅配置备份：媒体不进包，但保留体积很小的聊天流水和当前工作区 DSH 会话
 const CONFIG_ONLY_SKIP = ['imagegen', 'stickers', 'bili-shots', 'douyin']
-const skipped = (rel) => SKIP.some((s) => rel === s || rel.startsWith(s + '/')) || rel.split('/').includes('node_modules') || rel.endsWith('.tmp') || rel === 'memory.sqlite-shm' || rel.startsWith('memory.sqlite.migrating')
+// 记忆库在根目录（数据归属人格），其他人格的在 persona-data/<id>/，两处一样对待
+const memoryPrefix = (rel) => rel.match(/^persona-data\/[^/]+\//)?.[0] || ''
+const memoryRel = (rel) => rel.slice(memoryPrefix(rel).length)
+const skipped = (rel) => SKIP.some((s) => rel === s || rel.startsWith(s + '/')) || rel.split('/').includes('node_modules') || rel.endsWith('.tmp') || memoryRel(rel) === 'memory.sqlite-shm' || memoryRel(rel).startsWith('memory.sqlite.migrating')
 
 // 旧版生活推进的暂存可能仍在数据目录。只在导出时排除，历史归档仍可导入。
 const LIFE_UUID = '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}'
@@ -211,9 +214,10 @@ export async function createBackup({ version = '', workspaceDir = '', now = new 
   await walk(data, '', walked, skippedFiles, market, configOnly ? CONFIG_ONLY_SKIP : [])
   // 在同一个同步临界区取主库、WAL 和 JSON 回退状态，后续异步打包只读快照。
   // 记忆快照失败必须让备份失败，不能把缺一半的记忆库当成功交给用户。
-  for (const rel of MEMORY_FILES) checkPath(data, rel)
-  const memoryFiles = captureMemoryBackup(data.root)
-  const files = walked.filter(({ rel }) => !MEMORY_FILES.includes(rel) && !LEGACY_LIFE_TEMP.some((pattern) => pattern.test(rel)))
+  const memoryRoots = ['', ...new Set(walked.map(({ rel }) => memoryPrefix(rel)).filter(Boolean))]
+  for (const prefix of memoryRoots) for (const rel of MEMORY_FILES) checkPath(data, prefix + rel)
+  const memoryFiles = memoryRoots.flatMap((prefix) => [...captureMemoryBackup(join(data.root, prefix))].map(([rel, captured]) => [prefix + rel, captured]))
+  const files = walked.filter(({ rel }) => !MEMORY_FILES.includes(memoryRel(rel)) && !LEGACY_LIFE_TEMP.some((pattern) => pattern.test(rel)))
   const queue = files.map((entry) => ({ base: data, entry, name: 'data/' + entry.rel }))
   for (const [rel, captured] of memoryFiles) queue.push({ name: 'data/' + rel, captured })
   const sessionFiles = []
@@ -602,9 +606,11 @@ export function applyPendingRestore(now = Date.now()) {
   const files = listFiles(data, '.restore').map((file) => ({ file, rel: file.rel.slice('.restore/'.length) }))
   const config = files.find(({ rel }) => rel === 'config.json')
   if (!config) throw unsafePath('config.json')
-  const restoreMemory = files.some(({ rel }) => rel === 'memory.sqlite' || rel === 'memories.json')
+  // 备份里带了哪几个记忆库（根目录、persona-data/<id>/）：这些库的主库、WAL、SHM、JSON 整组换掉
+  const restoreMemory = new Set(files.filter(({ rel }) => ['memory.sqlite', 'memories.json'].includes(memoryRel(rel))).map(({ rel }) => memoryPrefix(rel)))
+  const restoredMemory = (rel) => MEMORY_FILES.includes(memoryRel(rel)) && restoreMemory.has(memoryPrefix(rel))
   const targets = new Set(files.map(({ rel }) => rel))
-  if (restoreMemory) for (const rel of MEMORY_FILES) targets.add(rel)
+  for (const prefix of restoreMemory) for (const rel of MEMORY_FILES) targets.add(prefix + rel)
   const modulesRel = '.restore-modules.json'
   if (info.market?.length) targets.add(modulesRel)
 
@@ -628,9 +634,9 @@ export function applyPendingRestore(now = Date.now()) {
         const current = originals.get(rel)
         if (current) move(data, current, data, keep + '/' + rel)
       }
-      if (restoreMemory) for (const rel of MEMORY_FILES) saveOriginal(rel)
+      for (const prefix of restoreMemory) for (const rel of MEMORY_FILES) saveOriginal(prefix + rel)
       for (const { file, rel } of files) {
-        if (!restoreMemory || !MEMORY_FILES.includes(rel)) saveOriginal(rel)
+        if (!restoredMemory(rel)) saveOriginal(rel)
         move(data, file, data, rel)
       }
       if (sessions?.target) {
