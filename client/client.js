@@ -7252,7 +7252,9 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         const actN = parts.filter(findAct).length
         return { act: actN, plain: parts.length - actN }
       }
-      // 选话题：活动 / 普通互斥；活动只能 1 个，普通最多 3 个
+      // 选话题：活动 / 普通不互斥，但一帖共享 3 个名额（活动最多 1 个）。
+      // 口径与模块侧 resolveHashtagItems 的 HASHTAG_TOTAL_CAP=3 一致，别在这边放宽。
+      const TOPIC_CAP = 3
       const toggleTopic = (i, name) => setDraft(function (d) {
         const hb = d.heybox || {}
         const list = (Array.isArray(hb.dailyPosts) ? hb.dailyPosts : []).slice()
@@ -7264,11 +7266,13 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         if (parts.includes(name)) {
           nextVals = parts.filter(function (x) { return x !== name })
         } else if (wantAct) {
-          nextVals = [name]
+          // 换活动：新的顶替旧的，普通话题保留但只留得下 2 个（活动占 1 席）
+          const plains = parts.filter(function (x) { return !isActIn(x) })
+          if (plains.length > TOPIC_CAP - 1) toast('活动占 1 个名额，普通话题只保留前 ' + (TOPIC_CAP - 1) + ' 个', 'err')
+          nextVals = [name].concat(plains.slice(0, TOPIC_CAP - 1))
         } else {
-          const plainOnly = parts.filter(function (x) { return !isActIn(x) })
-          if (plainOnly.length >= 3) { toast('普通话题最多选 3 个', 'err'); return d }
-          nextVals = plainOnly.concat([name])
+          if (parts.length >= TOPIC_CAP) { toast('一帖最多挂 ' + TOPIC_CAP + ' 个话题（活动、普通共享名额）', 'err'); return d }
+          nextVals = parts.concat([name])
         }
         item.hashtagsText = joinHashtags(nextVals)
         item.hashtags = nextVals.slice()
@@ -7283,12 +7287,13 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       }
       const renderSelSummary = function (i) {
         const c = countSel(i)
-        if (c.act > 0) return h('span', { className: 'ab-small', style: { whiteSpace: 'nowrap', color: 'var(--ab-ok)' } }, '已选创作活动 ' + c.act + '/1')
-        if (c.plain > 0) {
-          const color = c.plain >= 3 ? 'var(--ab-warn)' : 'var(--ab-ok)'
-          return h('span', { className: 'ab-small', style: { whiteSpace: 'nowrap', color: color } }, '已选普通话题 ' + c.plain + '/3')
+        const total = c.act + c.plain
+        if (total > 0) {
+          const color = total >= TOPIC_CAP ? 'var(--ab-warn)' : 'var(--ab-ok)'
+          const detail = c.act > 0 ? '活动 ' + c.act + '/1 + 普通 ' + c.plain : '普通 ' + c.plain
+          return h('span', { className: 'ab-small', style: { whiteSpace: 'nowrap', color: color } }, '已选话题 ' + total + '/' + TOPIC_CAP + '（' + detail + '）')
         }
-        return h('span', { className: 'ab-small ab-muted', style: { whiteSpace: 'nowrap' } }, '未选（活动 / 普通各选一种）')
+        return h('span', { className: 'ab-small ab-muted', style: { whiteSpace: 'nowrap' } }, '未选（活动、普通共享 ' + TOPIC_CAP + ' 个名额）')
       }
       // 搜索 + 分组渲染（创作活动在前）
       const renderTopicGroups = function (i) {
@@ -7582,7 +7587,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
                       f.num('heybox.dailyPosts.' + i + '.wordsMin', { min: 0, max: 2000 }), h('span', { className: 'ab-muted' }, '–'),
                       f.num('heybox.dailyPosts.' + i + '.wordsMax', { min: 0, max: 3000 }), h('span', { className: 'ab-muted' }, '字')),
                   ),
-                  h(Row, { label: '话题', hint: '创作活动和普通话题只能选一种：选活动会自动清掉普通（限 1 个），选普通会清掉活动（最多 3 个）' },
+                  h(Row, { label: '话题', hint: '创作活动和普通话题可以一起挂，但一帖共享 3 个名额：活动最多 1 个，占 1 席后普通话题还能选 2 个' },
                     h('div', { style: { width: '100%' } },
                       h('div', { className: 'ab-flex', style: { marginBottom: 6 } },
                         h('input', {
@@ -7642,7 +7647,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           right: h('div', { className: 'ab-flex' },
             h(Btn, { small: true, kind: 'primary', onClick: () => post('/heybox/acts/refresh').then((r) => { toast(r.message || '已刷新', r.ok === false ? 'err' : 'ok'); load() }).catch(() => toast('刷新失败', 'err')), disabled: !!busy }, busy === 'acts' ? '刷新中…' : '刷新话题'),
             h(Btn, { small: true, onClick: load }, '重新读')),
-          desc: '写帖要挂话题就从这里挑（带「活动」角标的优先，有奖励）。活动和普通话题**可以一起挂**：活动最多 1 个 + 普通最多 3 个（共 4 个）。她发帖时话题是以**纯文本名字**提交的，服务端自己匹配成话题；传对象（name+hashtag_id）会让发帖直接失败。',
+          desc: '写帖要挂话题就从这里挑（带「活动」角标的优先，有奖励）。活动和普通话题**可以一起挂**，但一帖**共享 3 个名额**：活动最多 1 个，剩下的给普通话题（和排期里的话题勾选、模块侧截断同一口径）。她发帖时话题是以**纯文本名字**提交的，服务端自己匹配成话题；传对象（name+hashtag_id）会让发帖直接失败。',
         },
           (() => {
             const acts = s && (s.actsList || [])
