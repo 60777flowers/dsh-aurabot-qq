@@ -13,7 +13,7 @@ import { ownerAuthorizationRevision } from '../core/config.js'
 import { dataDir, readJson, writeJson } from '../core/store.js'
 import { isDefiniteFailure } from '../onebot/client.js'
 import { parseMessageEvent, gifFrames, segmentsOf } from './inbound.js'
-import { parseReply, bubbleDelay, wantsVoice, itemsToLine, cleanOutboundText, cleanOutboundSegments, clockLabel } from './reply.js'
+import { parseReply, bubbleDelay, wantsVoice, itemsToLine, cleanOutboundText, cleanOutboundSegments, capOutboundSegments, clockLabel } from './reply.js'
 import { decideGroupReply, engagedHint, pickAutoReply, pickDirectRequester, policyFor, sameNameNote, topicRelevance } from './group-policy.js'
 import { checkAllowed, levelFor, presetFor, isOwner, groupOwnerTools } from './access.js'
 import { fetchImage, segmentBytes } from '../core/net.js'
@@ -1149,6 +1149,13 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     }
     // 钩子可能重新写入工具标记；最终网关出口仍使用同一份清洗。
     message = cleanOutboundSegments(message, cleaning)
+    // 熔断：模型失控时别把整段原样交给 OneBot（2026-11-13 08:02 那 48263 字「在吗」）。
+    const capped = capOutboundSegments(message)
+    if (capped.trimmed) {
+      const kept = capped.message.filter((seg) => seg.type === 'text').reduce((n, seg) => n + String(seg.data?.text || '').length, 0)
+      log.warn(`出站正文超长，已截断 → ${chatId}：${capped.total} 字 → ${kept} 字`)
+      message = capped.message
+    }
     if (!message.length || disposed || (isCurrent && !isCurrent())) return settleOutboundFailed(verdict)
     const cap = captureStore.getStore()
     if (cap) {
