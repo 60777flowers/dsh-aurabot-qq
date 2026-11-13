@@ -1353,7 +1353,8 @@ export function apply(ctx) {
     } else {
       notice[kind] = value
     }
-    setConfig({ notice })
+    // 带上整份配置：保存时只和默认值合并，只传 notice 会把其他设置全重置
+    setConfig({ ...cfg, notice })
     return { ok: true, notice }
   })
   route('/panel/purpose/config', async (req) => {
