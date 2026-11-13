@@ -288,6 +288,8 @@ api.tool(({ chat, level, sessionId }) => {
 **自动表单**：写了 `settings`，面板会多一个这个模块的标签页，自动生成设置表单，用户改完点保存。
 定义里写了 `tab: '内置标签页'`（`voice` `stickers` `imagegen` `diary` `speakup` `mood` `song` `bili` `local` `group` `model` `persona` `access` `connect` `overview`），设置和面板就放进那一页的最下面，不单独占一页。比如给翻唱加功能的模块写 `tab: 'song'`。
 
+定义里写 `navGroup: 'market'`，模块会在「模块」分组显示独立标签，和「已安装」「本地接口」并排。可用分组为 `home`、`self`、`express`、`platform`、`system`、`market`。同时填写 `tab` 时，支持 `navGroup` 的宿主优先使用独立标签，旧宿主仍使用 `tab`。
+
 ```js
 settings: [
   { key: 'city', label: '城市', type: 'text', hint: '下面的小字说明', placeholder: '北京' },
