@@ -914,7 +914,9 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     ]
     // 自己写的模块：名字像逛平台的放「平台」，其余放「系统」（排在「日志」前面）
     const PLATFORM_EXT = /逛|刷|B站|抖音|小红书|闲鱼|淘宝|微博|知乎|贴吧|快手|触站|小黑盒/
-    const navGroupOf = (t) => NAV_GROUPS.find((g) => g.tabs.includes(t.id)) || (t.ext && PLATFORM_EXT.test(t.label) ? NAV_GROUPS[3] : NAV_GROUPS[4])
+    const navGroupById = (id) => NAV_GROUPS.find((group) => group.id === id)
+    const navGroupOf = (t) => NAV_GROUPS.find((g) => g.tabs.includes(t.id)) || navGroupById(t.navGroup) ||
+      (t.ext && PLATFORM_EXT.test(t.label) ? NAV_GROUPS[3] : NAV_GROUPS[4])
     const navOrder = (g, t) => { const i = g.tabs.indexOf(t.id); return i >= 0 ? i : g.tabs.length - (g.tabs.includes('logs') ? 1.5 : 0) }
     const NAV_ALIAS = {
       overview: '首页 状态', connect: 'qq 网关 snowluma onebot 登录 工作区', character: '人设 性格 设定 头像', persona: '人物 画像 小档案 群印象 梗概 时间轴 相处经验 说话方式', access: '主人 白名单 权限 群管 改资料',
@@ -8661,9 +8663,19 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         : m.running === 'builtin' && Boolean(m.panel))
       // 写了 tab 的模块嵌进那个内置标签页；没写（或写的页不存在）的单独一页
       // 旧模块的 tab: 'persona' 原本嵌在「人格」，继续放回原页。
-      const tabOf = (m) => m.tab === 'persona' ? 'character' : m.tab
+      const tabOf = (m) => {
+        if (navGroupById(m.navGroup) || NAV_GROUPS.some((group) => group.tabs.includes('ext:' + m.id))) return ''
+        return m.tab === 'persona' ? 'character' : m.tab
+      }
       const intoTab = (m) => Boolean(tabOf(m) && TABS.some((t) => t.id === tabOf(m)))
-      const extTabs = mods.filter((m) => hasUi(m) && !intoTab(m)).map((m) => ({ id: 'ext:' + m.id, label: m.name, ext: m.id, flag: m.flag ? `ext.${m.id}.${m.flag}` : '', flagDefault: getPath(m.defaults || {}, m.flag || '') }))
+      const extTabs = mods.filter((m) => hasUi(m) && !intoTab(m)).map((m) => ({
+        id: 'ext:' + m.id,
+        label: m.name,
+        ext: m.id,
+        navGroup: m.navGroup,
+        flag: m.flag ? `ext.${m.id}.${m.flag}` : '',
+        flagDefault: getPath(m.defaults || {}, m.flag || ''),
+      }))
       const tabs = TABS.filter((t) => !TAB_MODS[t.id] || TAB_MODS[t.id].some(running))
       tabs.splice(tabs.findIndex((t) => t.id === 'logs'), 0, ...extTabs)
       const curTab = tabs.find((t) => t.id === tab) || tabs[0]
