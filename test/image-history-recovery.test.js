@@ -6,6 +6,7 @@ const image = (offloaded = false) => ({ type: 'image', attachment: { attachmentI
 const text = { type: 'text', text: '保留的文字' }
 const rejection = (seq = 3, message = "lhub-minimax-lite: input new_sensitive, messages[456]'s content[5] image is sensitive, please check your input (1026)") =>
   ({ seq, type: 'turn/end', data: { turn: 1, reason: { kind: 'error', error: { code: 'PI_AI_ERROR', message } } } })
+const gatewayMessage = 'gateway: the content of image_url.url field is unsafe'
 const user = (seq, content) => ({ seq, type: 'user/message', data: { role: 'user', content } })
 const end = { seq: 4, type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } }
 const settle = async () => { for (let i = 0; i < 10; i++) await new Promise(setImmediate) }
@@ -48,10 +49,67 @@ function fixture(events = [user(0, [text, image(true), image()]), rejection()], 
 
 test('only the observed explicit input-image moderation error qualifies', () => {
   assert.equal(isImageRejection(rejection()), true)
-  for (const msg of ['network timeout', '500 server error', 'text is sensitive (1026)', 'output new_sensitive, image is sensitive (1026)']) assert.equal(isImageRejection(rejection(3, msg)), false)
+  assert.equal(isImageRejection(rejection(3, gatewayMessage)), true)
+  for (const msg of ['network timeout', '500 server error', 'text is sensitive (1026)', 'text content is sensitive', 'account blocked', 'content policy violation', 'unsafe', 'image_url.url download blocked', 'the content of image_url.url field is not unsafe', 'output new_sensitive, image is sensitive (1026)']) assert.equal(isImageRejection(rejection(3, msg)), false, msg)
+  const wrongCode = rejection(3, gatewayMessage)
+  wrongCode.data.reason.error.code = 'TRANSPORT'
+  assert.equal(isImageRejection(wrongCode), false)
+  assert.equal(isImageRejection({ type: 'assistant/message', data: rejection(3, gatewayMessage).data }), false)
   assert.equal(isImageRejection(end), false)
   assert.equal(lastImageRejection([rejection(), end]), null)
   assert.equal(lastImageRejection([rejection(), { type: 'turn/start' }]), null)
+})
+
+test('legacy gateway rejection restores an idle failed session while preserving text and raw history', async () => {
+  const f = fixture([user(0, [text, image()]), rejection(3, gatewayMessage)])
+  const original = JSON.stringify(f.events), service = definition.setup(f.api)
+  await settle()
+  assert.deepEqual(f.appended, [{ targets: [{ seq: 0, imageIndexes: [0] }] }])
+  assert.equal(JSON.stringify(f.events), original)
+  assert.equal(f.messages.get(0).content[0].text, text.text)
+  assert.deepEqual(service.status(), { recovered: 1, omitted: 1, pending: 0 })
+  assert.deepEqual(f.counts(), { released: 1, flushed: 1 })
+  f.stop()
+})
+
+test('live gateway rejection also accepts reason.failure and excludes later images', async () => {
+  const f = fixture([user(0, [text, image()]), end]), service = definition.setup(f.api)
+  await settle()
+  const error = rejection(6, gatewayMessage)
+  error.data.reason.failure = error.data.reason.error
+  delete error.data.reason.error
+  f.events.push(error); f.emit(error)
+  const fresh = user(7, [image()]); f.events.push(fresh)
+  f.messages.set(7, structuredClone(fresh.data)); f.session.surface.nodes.push(7)
+  await settle()
+  assert.deepEqual(f.appended, [{ targets: [{ seq: 0, imageIndexes: [0] }] }])
+  assert.equal(f.messages.get(7).content[0].offloaded, undefined)
+  f.emit(error); await settle()
+  assert.equal(f.appended.length, 1)
+  assert.deepEqual(service.status(), { recovered: 1, omitted: 1, pending: 0 })
+  f.stop()
+})
+
+test('text moderation and account blocks never drop images even when images are present', async () => {
+  for (const message of ['text content is sensitive', 'account blocked', 'content policy violation', 'image_url.url download blocked']) {
+    const f = fixture([user(0, [text, image()]), end])
+    definition.setup(f.api); await settle()
+    const error = rejection(6, message); f.events.push(error); f.emit(error); await settle()
+    assert.equal(f.appended.length, 0, message)
+    assert.equal(f.messages.get(0).content[1].offloaded, undefined)
+    f.stop()
+  }
+})
+
+test('gateway rejection without retained images is a no-op', async () => {
+  for (const content of [[text], [text, image(true)]]) {
+    const f = fixture([user(0, content), rejection(3, gatewayMessage)])
+    const service = definition.setup(f.api); await settle()
+    assert.equal(f.appended.length, 0)
+    assert.deepEqual(service.status(), { recovered: 0, omitted: 0, pending: 0 })
+    assert.deepEqual(f.counts(), { released: 1, flushed: 0 })
+    f.stop()
+  }
 })
 
 test('target only current input images before failure; preserve image indexes and new input', () => {

@@ -4,8 +4,13 @@ export function isImageRejection(event) {
   const reason = event?.data?.reason
   if (event?.type !== 'turn/end' || reason?.kind !== 'error') return false
   const error = reason.error || reason.failure
-  return error?.code === 'PI_AI_ERROR' && /\binput new_sensitive\b/i.test(error.message || '') &&
-    /\bimage is sensitive\b/i.test(error.message || '') && /\(1026\)/.test(error.message || '')
+  if (error?.code !== 'PI_AI_ERROR') return false
+  const message = error.message || ''
+  // Match known input-image errors, never generic "blocked"/"sensitive":
+  // those may describe text moderation or an account restriction instead.
+  return /\bthe content of image_url\.url field is unsafe\b/i.test(message) ||
+    (/\binput new_sensitive\b/i.test(message) &&
+      /\bimage is sensitive\b/i.test(message) && /\(1026\)/.test(message))
 }
 
 export function lastImageRejection(events) {
@@ -39,7 +44,7 @@ export function imageTargets(session, events, cutoff) {
 }
 
 export default {
-  id: 'image-recovery', name: '图片上下文恢复', version: '1.0.0', api: 1,
+  id: 'image-recovery', name: '图片上下文恢复', version: '1.0.1', api: 1,
   description: '旧图片被上游拒绝后保留文字历史，避免后续聊天一直无回复',
   setup(api) {
     const query = api.dsh.get('sessionQuery')
