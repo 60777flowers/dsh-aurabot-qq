@@ -670,8 +670,13 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     }
 
     // ---------------- 基础控件 ----------------
-    function Switch({ on, onChange, disabled, title }) {
-      return h('button', { type: 'button', className: cx('ab-switch', on && 'on'), onClick: () => !disabled && onChange(!on), disabled, title, role: 'switch', 'aria-checked': !!on })
+    // 两种写法都认：内置表单用 on，自己写的模块（panel.js）习惯按受控 input 写 checked。
+    // 只认 on 的时候，模块面板里的开关会永远显示「关」：on 是 undefined，点了也不变色，
+    // 看着就像点了没反应（dsh-image 的「用 DSH 已接入的模型生图」就是踩这个坑）。
+    // label 同理：模块面板习惯写 label，这里当 title 兜住，不至于丢失提示。
+    function Switch({ on, checked, onChange, disabled, title, label }) {
+      const value = on === undefined ? checked : on
+      return h('button', { type: 'button', className: cx('ab-switch', value && 'on'), onClick: () => !disabled && onChange(!value), disabled, title: title || label, role: 'switch', 'aria-checked': !!value })
     }
     function Row({ label, hint, children }) {
       return h('div', { className: 'ab-row' }, h('div', { className: 'ab-label' }, h('b', null, label), hint ? h('small', null, hint) : null), h('div', { className: 'ab-ctl' }, children))
@@ -7023,7 +7028,10 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       static getDerivedStateFromError(error) { return { error } }
       render() { return this.state.error ? h('div', { className: 'ab-note err' }, '这个模块的面板出错了：' + String((this.state.error && this.state.error.message) || this.state.error)) : this.props.children }
     }
-    function ExtPanel({ m, settings, draftSettings, setSettings, toast, reload }) {
+    // saveOverride：不传就照旧直接 POST 保存（模块自己的面板页）；传了就用调用方的保存流程。
+    // 「生图」页把 dsh-image 嵌进「接口格式」时传草稿保存：那里的一切改动都要跟着「保存设置」一起落盘，
+    // 否则同一个面板在两处行为不一致（一处即时生效，一处等保存）。
+    function ExtPanel({ m, settings, draftSettings, setSettings, toast, reload, saveOverride }) {
       const [Comp, setComp] = useState(null)
       const [err, setErr] = useState('')
       useEffect(() => {
@@ -7042,7 +7050,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       }, [m.id, m.startedAt])
       if (err) return h('div', { className: 'ab-note err' }, '面板加载失败：' + err)
       if (!Comp) return h(Empty, { icon: '⏳', text: '加载中…' })
-      const save = async (patch) => { const r = await post('/save', { ext: { [m.id]: patch } }); toast(r.ok === false ? r.message : '保存好了', r.ok === false ? 'err' : 'ok'); reload() }
+      const save = async (patch) => { if (typeof saveOverride === 'function') return saveOverride(patch); const r = await post('/save', { ext: { [m.id]: patch } }); toast(r.ok === false ? r.message : '保存好了', r.ok === false ? 'err' : 'ok'); reload() }
       return h(PanelBoundary, null, h(Comp, { settings, draftSettings, setSettings, save, toast, reload }))
     }
     function ExtPage({ st, draft, setDraft, toast, reload, mod, embedded }) {
@@ -7959,9 +7967,19 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     const SPONSOR_BASE = 'https://ntmd.cn/v1'
     const SPONSOR_SITE = 'https://ntmd.cn'
 
-    function ImageGen({ draft, setDraft, toast }) {
+    function ImageGen({ st, draft, setDraft, toast, reload }) {
       const f = useField(draft, setDraft)
       const c = draft.imageGen
+      // 扩展模块「生图 · DSH 已接入模型」（id: dsh-image）自带面板和设置。以前它在同一个
+      // 「生图」页下面再单独占一张卡，等于同一个开关 / 模型下拉出现两遍；现在把它收进
+      // 「接口格式」当第五种接法，只在这一处出现（面板本身仍然由模块自己的 panel.js 画）。
+      const dshMod = ((st && st.modules) || []).find((m) => m.id === 'dsh-image' && m.running)
+      const dshDraft = { ...((dshMod && dshMod.defaults) || {}), ...(((draft.ext || {})['dsh-image']) || {}) }
+      const dshReady = Boolean(dshMod) && dshDraft.enabled === true && String(dshDraft.target || '') !== ''
+      // 模块设置写在 ext.dsh-image 里：跟着这个页面的草稿一起改，随「保存设置」落盘。
+      const setDshSettings = (patch) => setDraft((previous) => ({ ...previous, ext: { ...previous.ext, 'dsh-image': { ...((previous.ext || {})['dsh-image']), ...patch } } }))
+      // 模块面板里的保存也走草稿：面板自己不做 toast 提示，这里补一句，省得以为没生效。
+      const saveDsh = (patch) => { setDshSettings(patch); toast('已改，记得点「保存设置」'); return Promise.resolve({ ok: true }) }
       const [testing, setTesting] = useState('')
       const [results, setResults] = useState({})
       const snapshot = JSON.stringify(c); const current = useRef(snapshot); current.current = snapshot
@@ -7978,7 +7996,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const setFallback = (i, k, value) => setFallbacks(fallbacks.map((e, j) => j === i ? { ...e, [k]: value } : e))
       const moveFallback = (i, step) => { const next = fallbacks.slice(); const j = i + step; if (j < 0 || j >= next.length) return; [next[i], next[j]] = [next[j], next[i]]; setFallbacks(next) }
       const custom = c.custom || {}
-      const [tab, setTab] = useState(() => c.provider === 'codex' ? 'codex' : c.provider === 'custom' ? 'custom' : c.baseUrl === SPONSOR_BASE ? 'sponsor' : 'openai')
+      // 模块已经就绪（开着 + 选了模型）时优先停在它那页：实际生图就是它先接管，界面要和行为一致。
+      const [tab, setTab] = useState(() => dshReady ? 'dsh' : c.provider === 'codex' ? 'codex' : c.provider === 'custom' ? 'custom' : c.baseUrl === SPONSOR_BASE ? 'sponsor' : 'openai')
       const isCustom = tab === 'custom'
       const isCodex = tab === 'codex'
       const isPost = custom.method === 'POST'
@@ -7990,6 +8009,9 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const sponsorOptions = [{ value: SPONSOR_BASE, label: '国粹 · ntmd.cn · 0.04/张（官方推荐赞助商）' }]
       const changeTab = (v) => {
         setTab(v)
+        // DSH 模型这条路不写内置生图的 provider：它的开关和模型在模块自己的设置里，
+        // 切过去再切回来，原来填的服务地址 / Key 不该被顺手改掉。
+        if (v === 'dsh') return
         if (v === 'sponsor') {
           setDraft(setPath(draft, 'imageGen.provider', 'openai'))
           setSponsorHintClosed(false)
@@ -8003,12 +8025,13 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         toast('已选官方推荐地址，记得保存')
       }
       return h('div', { className: 'ab-grid' },
-        h(Card, { title: '让ta画图', right: f.sw('imageGen.enabled'), desc: '接上生图服务后，让ta「画一张……」就会画好发出来。可选 OpenAI 兼容接口、自定义接口，或登录 ChatGPT 使用实验性 Codex 订阅接法。本机 SD WebUI / ComfyUI 可在「本地接口」页接「生图」。也可以让ta照着最近发的图、引用消息里的图或自己的画作来改；服务不支持参考图时会明确告诉你。' },
+        h(Card, { title: '让ta画图', right: f.sw('imageGen.enabled'), desc: '接上生图服务后，让ta「画一张……」就会画好发出来。可选 OpenAI 兼容接口、自定义接口、登录 ChatGPT 使用实验性 Codex 订阅接法，或直接用 DSH 里已接入的生图模型（豆包 Seedream 等）。本机 SD WebUI / ComfyUI 可在「本地接口」页接「生图」。也可以让ta照着最近发的图、引用消息里的图或自己的画作来改；服务不支持参考图时会明确告诉你。' },
           h(Row, { label: '接口格式', hint: '第二个适合 pollinations 这类「GET 一个地址就出图」的服务' },
             h(Seg, {
               value: tab,
               onChange: changeTab,
-              options: [{ value: 'openai', label: 'OpenAI 格式' }, { value: 'custom', label: '自定义接口' }, { value: 'codex', label: 'Codex 订阅（实验性）' }, { value: 'sponsor', label: '官方推荐地址' }],
+              // 「DSH 已接入模型」只在模块真的装了并在跑时才出现：没装就别摆一个点进去是空的按钮。
+              options: [{ value: 'openai', label: 'OpenAI 格式' }, { value: 'custom', label: '自定义接口' }, { value: 'codex', label: 'Codex 订阅（实验性）' }, { value: 'sponsor', label: '官方推荐地址' }, ...((dshMod || tab === 'dsh') ? [{ value: 'dsh', label: 'DSH 已接入模型' }] : [])],
             })),
           tab === 'sponsor' ? h('div', null,
             sponsorSelected && !sponsorHintClosed ? h('div', { className: 'ab-note', style: { marginBottom: 10 } },
@@ -8021,6 +8044,10 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
               h(Select, { value: sponsorSelected ? SPONSOR_BASE : '', options: sponsorOptions, width: 320, ariaLabel: '赞助商服务地址', placeholder: '选择赞助商服务地址', onChange: pickSponsor })),
             h(Row, { label: 'API Key', hint: '只存在本机，不会显示出来' }, f.text('imageGen.apiKey', { type: 'password', placeholder: c.apiKeySet ? '已保存（不改就留空）' : '没有就留空' })),
             h(Row, { label: '模型' }, f.text('imageGen.model', { size: 'wide', placeholder: '例如 Kwai-Kolors/Kolors' })),
+          ) : tab === 'dsh' ? h('div', null,
+            dshMod
+              ? h(ExtPanel, { m: dshMod, settings: dshDraft, draftSettings: dshDraft, setSettings: setDshSettings, toast, reload, saveOverride: saveDsh })
+              : h('div', { className: 'ab-note err' }, '扩展模块 dsh-image 没在跑：去「已安装」里打开它，再回到这一页。'),
           ) : isCodex ? h(CodexSub, { draft, setDraft, toast }) : isCustom ? h('div', null,
             h(Row, { label: '请求方式', hint: 'GET 把参数都拼在地址上；POST 放进请求体' },
               h(Seg, {
@@ -8716,6 +8743,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const tabDirty = (id) => {
         if (!dirty) return false
         if (id.startsWith('ext:')) { const k = id.slice(4); return JSON.stringify((draft.ext || {})[k]) !== JSON.stringify((cfg.ext || {})[k]) }
+        // 「生图」页现在也管着 dsh-image 模块的设置（ext.dsh-image 存在草稿里），改没改要一起算。
+        if (id === 'imagegen' && JSON.stringify((draft.ext || {})['dsh-image']) !== JSON.stringify((cfg.ext || {})['dsh-image'])) return true
         return (TAB_KEYS[id] || []).some((k) => JSON.stringify(draft[k]) !== JSON.stringify(cfg[k]))
       }
       return h('div', { className: 'ab-root' },
@@ -8745,7 +8774,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           }),
           showWizard ? null : h(SnowLumaCompatBanner, { st, go }),
           showWizard ? null : h(TabBoundary, { key: curTab.id, onHome: () => go('overview') }, h(body, { ...props, mod: curTab.ext })),
-          showWizard || curTab.ext ? null : mods.filter((m) => hasUi(m) && tabOf(m) === curTab.id).map((m) => h('div', { key: 'embed-' + m.id, style: { marginTop: 14 } }, h(ExtPage, { ...props, mod: m.id, embedded: true }))),
+          // dsh-image 已经嵌进「生图」页的「接口格式」里了，这里再渲染一次就是同一张卡出现两遍。
+          showWizard || curTab.ext ? null : mods.filter((m) => hasUi(m) && tabOf(m) === curTab.id && !(curTab.id === 'imagegen' && m.id === 'dsh-image')).map((m) => h('div', { key: 'embed-' + m.id, style: { marginTop: 14 } }, h(ExtPage, { ...props, mod: m.id, embedded: true }))),
           dirty && !showWizard ? h('div', { className: 'ab-savebar' }, h('span', { className: 'msg' }, '有改动还没保存'),
             h('span', { className: 'ab-muted ab-small' }, h('span', { className: 'ab-kbd' }, 'Ctrl'), ' + ', h('span', { className: 'ab-kbd' }, 'S')),
             h(Btn, { kind: 'ghost', onClick: () => setDraft(clone(st.config)) }, '撤销'),
