@@ -1067,6 +1067,26 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             result.message, result.output ? '\n' + String(result.output).slice(-1200) : '') : null) : null)
     }
 
+    // 老用户升级后：根目录里攒下的记忆和会话还没认领给哪个人格。认领前所有人格照旧共用这一份
+    function ClaimBanner({ st, toast }) {
+      const [id, setId] = useState(() => ((st.personas || []).some((p) => p.id === 'dafeiyu') ? 'dafeiyu' : (st.personas || [])[0]?.id || ''))
+      const [done, setDone] = useState(false)
+      if (done || !st.persona?.claimPending) return null
+      const claim = async () => {
+        const name = ((st.personas || []).find((p) => p.id === id) || {}).name || id
+        if (!confirm('把升级前的记忆和会话认领给「' + name + '」？之后其他人格从下一轮起用自己的记忆和会话（一开始是空的）。只能认领一次。')) return
+        const r = await post('/persona/data-owner', { id })
+        toast(r.message || (r.ok ? '认领好了' : '没认领成功'), r.ok ? 'ok' : 'err')
+        if (r.ok) setDone(true)
+      }
+      return h('div', { className: 'ab-note warn' },
+        '现在每个人格可以有自己的记忆和会话了。升级前攒下的记忆和会话属于哪个人格？认领之前，所有人格照旧共用这一份。',
+        h('div', { className: 'ab-flex', style: { marginTop: 6, alignItems: 'center' } },
+          h('select', { className: 'ab-select', 'aria-label': '认领给哪个人格', value: id, onChange: (e) => setId(e.target.value) },
+            (st.personas || []).map((p) => h('option', { key: p.id, value: p.id }, p.name))),
+          h(Btn, { small: true, kind: 'primary', onClick: claim }, '认领')))
+    }
+
     function Overview({ st, toast, go }) {
       const [usage, setUsage] = useState(null)
       const [usageOpen, setUsageOpen] = useState(false)
@@ -1165,6 +1185,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h('div', { className: 'ab-muted ab-small' }, '还没读到用量数据…'))
       return h('div', { className: 'ab-grid' },
         h(UpdateNotes, { st, toast }),
+        h(ClaimBanner, { st, toast }),
         !cfg.enabled ? h('div', { className: 'ab-note warn' }, '总开关是关着的：大肥鱼现在不会收也不会发任何 QQ 消息。准备好了就在右上角打开。') : null,
         cfg.enabled && cfg.debug ? h('div', { className: 'ab-note warn' },
           '现在是调试：她会照常思考回复，但既不发到 QQ，也不写任何记忆和聊天流水 —— 只出现在日志里。调试期间的对话不会被明天的记忆整理吸收，也不会影响正式上线后的她。',
@@ -1689,7 +1710,13 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         edit ? h(Card, { title: '编辑人格', desc: '人格写在系统提示词的最前面，按节写更好改。离开不会自动保存；切标签/切页面会先记住草稿，下次进来会问你要不要恢复；输入框里 Ctrl+Z 可撤回。保存后大肥鱼下一轮回复起就按新的来。',
           right: h('div', { className: 'ab-flex' },
             edit.id !== current ? h(Btn, { small: true, onClick: async () => { const r = await post('/persona/use', { id: edit.id }); toast(r.message); refresh(); reload() } }, '设为当前') : null,
-            edit.id !== current ? h(Btn, { small: true, kind: 'danger', onClick: async () => { if (!confirm('删掉这个人格？')) return; const r = await post('/persona/delete', { id: edit.id }); if (r.ok) { try { localStorage.removeItem(personaDraftKey(edit.id)) } catch (e) {} setList(r.list); setSel(current) } else toast(r.message) } }, '删除') : null) },
+            edit.id !== current ? h(Btn, { small: true, kind: 'danger', onClick: async () => {
+              if (!confirm('删掉这个人格？')) return
+              // 有自己目录的人格（不是根目录那个，也不在待认领）才有单独的记忆和会话可删
+              const own = !st.persona?.claimPending && edit.id !== st.persona?.dataOwner
+              const withData = own && confirm('这个人格的记忆和会话记录也一起删掉吗？删了找不回来。\n选「取消」只删人格，记忆留着，以后用同一个 id 新建人格还能接上。')
+              const r = await post('/persona/delete', { id: edit.id, withData })
+              if (r.ok) { try { localStorage.removeItem(personaDraftKey(edit.id)) } catch (e) {} setList(r.list); setSel(current) } else toast(r.message) } }, '删除') : null) },
           restore ? h('div', { className: 'ab-flex', style: { marginTop: 12, padding: '8px 10px', border: '1px solid #4a4a55', borderRadius: 8, background: 'rgba(255,255,255,.04)' } },
             h('span', { className: 'ab-small' }, '发现上次没保存的人格改动（' + String(restore.body || '').length + ' 字' + (restore.at ? '，' + new Date(restore.at).toLocaleString() : '') + '）。要恢复吗？'),
             h('div', { className: 'ab-spacer' }),
@@ -4209,6 +4236,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           summary: (stats ? stats.count : '–') + ' 条 · ' + (last ? '上次整理 ' + new Date(last.at).toLocaleDateString() : '还没整理过'),
           right: f.sw('memory.enabled') },
           h('p', { className: 'ab-desc', style: { marginTop: 0 } }, '长期记忆：ta聊天时自己记的、每天从聊天里整理出来的、写过的空间日记、你手动加的。每一轮回复前，ta会按对方正在说的话翻出最相关的几条。'),
+          st.persona && !st.persona.claimPending ? h('p', { className: 'ab-muted ab-small', style: { marginTop: 0 } }, '这里是「' + (((st.personas || []).find((p) => p.id === st.persona.current) || {}).name || st.persona.current) + '」的记忆。每个人格的记忆分开存，切换人格后这里显示新人格的。') : null,
           h('div', { className: 'ab-grid ab-g4', style: { marginBottom: 12 } },
             h('div', { className: 'ab-card ab-stat' }, h('div', { className: 'n' }, stats ? stats.count : '–'), h('div', { className: 'l' }, '条长期记忆')),
             h('div', { className: 'ab-card ab-stat' }, h('div', { className: 'n' }, stats ? stats.auto : '–'), h('div', { className: 'l' }, '条来自每日整理' + (stats && stats.outdated ? '（另有 ' + stats.outdated + ' 条已过时）' : ''))),

@@ -13,6 +13,7 @@
 // - 常驻的人物小档案（Letta 的 memory block）：每个人一小段印象，聊天时一直带着，不靠关键词碰运气。
 
 import { createHash, randomUUID } from 'node:crypto'
+import { join } from 'node:path'
 import { dataDir, readJson, writeJson } from '../core/store.js'
 import { askModel, lastEmptyInfo } from '../core/llm.js'
 import { clipText } from '../core/text.js'
@@ -827,12 +828,16 @@ export function checkAbstractText (text, sourceTexts = []) {
   return { ok: true, text: t }
 }
 
-export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConfig = null }) {
+/**
+ * directory：这个人格的记忆放在哪（记忆库、向量索引、召回日志），默认数据目录根下（见 personas.js 的 personaDataDir）。
+ * blocked(qq)：别的人格里设了「不再记住」的人，这里也不记。
+ */
+export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConfig = null, directory = dataDir(), blocked = null }) {
   // 用 ByMode：beta 的 createVectorIndex 只会走在线服务，本地 bge-small 模型完全用不上，
   // 「检索方式 = 本地」时联想就永远是 0 条。ByMode 会在本地模型没就绪时返回 null（降级成关键词）。
-  const vector = createVectorIndexByMode({ getConfig, log, fetchImpl })
+  const vector = createVectorIndexByMode({ getConfig, log, fetchImpl, directory })
   const reranker = createReranker({ getConfig, log, fetchImpl })
-  const storage = createMemoryStorage({ log })
+  const storage = createMemoryStorage({ directory, log })
   let transaction = null // 一批记忆和流水进度一起落盘，避免中断后重复提炼
   const load = () => transaction ? structuredClone(transaction) : storage.load()
   const save = (s) => {
@@ -859,7 +864,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
   const isOwner = (qq) => Boolean(getConfig().ownerQQ) && String(qq) === String(getConfig().ownerQQ)
   // 不再记住只有画像上的这一个标记；主人即使读到旧脏数据也不会被屏蔽。
   function remembers(qq, state = load()) {
-    return !qq || isOwner(qq) || state.profiles?.[String(qq)]?.noMemory !== true
+    return !qq || isOwner(qq) || (state.profiles?.[String(qq)]?.noMemory !== true && !blocked?.(String(qq)))
   }
   function rememberedItem(item, state = load()) {
     return remembers(item.about, state) && (!String(item.chatId || '').startsWith('private:') || remembers(String(item.chatId).slice(8), state))
@@ -1266,7 +1271,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
     return { ok: true }
   }
 
-  const recallFile = () => dataDir('recall-log.json')
+  const recallFile = () => join(directory, 'recall-log.json')
   const RECALL_KEEP = 200
   const recallLog = readJson(recallFile(), () => []) // 最近想起了什么：给面板看，也留着查回归问题
   const saveRecalls = () => { try { writeJson(recallFile(), recallLog) } catch (error) { log.debug?.('记不下召回日志：', error.message) } }
@@ -3588,6 +3593,10 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
   }
 
   return {
+    /** 设了「不再记住」的 QQ 号：别的人格据此也不记这些人。 */
+    noMemoryIds: () => Object.entries(load().profiles || {}).filter(([, p]) => p?.noMemory === true).map(([qq]) => qq),
+    /** 关掉记忆库文件（删除人格数据前要先关，不然 Windows 上删不掉打开着的 SQLite）。 */
+    close: () => storage.close(),
     dueFollowUp, markFollowUpAsked,
     noteVia, contextVia, recallHint, recallHintAsync, handleCommand, vectorHits, shouldAutoRecall,
     rerankStatus: () => ({ configured: reranker.configured(), ...(reranker.settings() || {}) }),

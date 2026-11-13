@@ -9,7 +9,7 @@
 //
 // ⚠ 安全默认：总开关关、试运行开。不手动打开，一句都不会真的发到 QQ。
 
-import { readFileSync, existsSync, writeFileSync, unlinkSync, statSync, mkdirSync } from 'node:fs'
+import { readFileSync, existsSync, writeFileSync, unlinkSync, statSync, mkdirSync, rmSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
@@ -38,7 +38,7 @@ import { parseCommand, runCommand, createMutes, commandList } from './chat/comma
 import { isOwner } from './chat/access.js'
 import { changePermissions, changePrivateWhitelist, privatePermissionCatalog } from './chat/permission-policy.js'
 import { canUseDelegatedCommand, delegatedCommandKey, runPersonalModelCommand } from './chat/delegated-commands.js'
-import { listPersonas, readPersona, savePersona, deletePersona, currentPersonaText, rulesText, seedPersonas } from './persona/personas.js'
+import { listPersonas, readPersona, savePersona, deletePersona, currentPersonaText, rulesText, seedPersonas, safeId, dataOwner, claimPending, hasRootData, personaDataDir } from './persona/personas.js'
 import { createModules, API_VERSION } from './core/modules.js'
 import { createCommunity, REGISTRY_URL, GITEE_MIRROR } from './core/community.js'
 import { createApprovalRelay } from './security/approval.js'
@@ -148,6 +148,11 @@ export function apply(ctx) {
   if (cfg.ownerQQ && !ownerAuthorizationRevision(cfg)) {
     try { cfg = saveConfig(cfg, cfg) }
     catch { log.warn('初始化主人授权记录失败，本次启动使用会话授权') }
+  }
+  // 全新安装（根目录还没有记忆、会话和流水）：当前人格直接认领根目录。老用户升级要主人在面板里认领。
+  if (!dataOwner(cfg) && !hasRootData()) {
+    try { cfg = saveConfig({ ...cfg, persona: { ...cfg.persona, dataOwner: safeId(cfg.persona.current) || 'dafeiyu' } }, cfg) }
+    catch { log.warn('记录数据归属人格失败，本次启动所有人格共用根目录') }
   }
   let mods = null
   let bridge = null
@@ -1191,6 +1196,7 @@ export function apply(ctx) {
       workspaceDir: workspaceDirOf(cfg),
       workspaceReal: realWorkspace(workspaceDirOf(cfg)),
       personas: listPersonas(),
+      persona: { current: cfg.persona.current, dataOwner: dataOwner(cfg), claimPending: claimPending(cfg) },
       modules: mods.status(),
       bridge: { dshTools: cfg.bridge.dshTools, http: cfg.bridge.http, hasToken: Boolean(cfg.bridge.token), tools: bridge.deniedTools(), toolsService: Boolean(ctx.get?.('tools')) },
     }
@@ -2085,7 +2091,7 @@ export function apply(ctx) {
   })
 
   // 人格
-  route('/personas', async () => ({ ok: true, list: listPersonas(), current: cfg.persona.current }))
+  route('/personas', async () => ({ ok: true, list: listPersonas(), current: cfg.persona.current, dataOwner: dataOwner(cfg), claimPending: claimPending(cfg) }))
   route('/persona/get', async (req) => {
     const p = readPersona(query(req).id)
     return p ? { ok: true, persona: p } : { ok: false, message: '没有这个人格' }
@@ -2098,16 +2104,39 @@ export function apply(ctx) {
   })
   route('/persona/delete', async (req) => {
     const b = await readBody(req)
-    if (b.id === cfg.persona.current) return { ok: false, message: '正在用的人格不能删' }
-    deletePersona(b.id)
+    const id = safeId(b.id)
+    if (id === safeId(cfg.persona.current)) return { ok: false, message: '正在用的人格不能删' }
+    deletePersona(id)
+    // 连数据一起删：只删 persona-data/<id>/。根目录归数据归属人格（还没认领时大家共用），不能删。
+    const dir = personaDataDir(cfg, id)
+    if (b.withData && id && dir !== dataDir()) {
+      use('memory')?.closePersona?.(id)
+      try { rmSync(dir, { recursive: true, force: true }) } catch (error) {
+        return { ok: false, list: listPersonas(), message: '人格删掉了，但它的数据没删干净：' + error.message }
+      }
+    }
     return { ok: true, list: listPersonas() }
   })
   route('/persona/use', async (req) => {
     const b = await readBody(req)
-    if (!readPersona(b.id)) return { ok: false, message: '没有这个人格' }
-    setConfig({ ...cfg, persona: { current: b.id } })
-    log.info(`切换人格 → ${b.id}`)
-    return { ok: true, current: b.id, message: '切换好了，下一轮回复起生效' }
+    const id = safeId(b.id)
+    if (!readPersona(id)) return { ok: false, message: '没有这个人格' }
+    // 正在回复或在忙后台的事：切过去会把旧人格的回复当成新人格的发出去
+    if (id !== safeId(cfg.persona.current) && hub.busy()) return { ok: false, message: '她正在回复或在忙后台的事，等这一轮结束再切' }
+    setConfig({ ...cfg, persona: { ...cfg.persona, current: id } })
+    log.info(`切换人格 → ${id}`)
+    return { ok: true, current: id, message: '切换好了，下一轮回复起生效' }
+  })
+  // 老用户升级后认领根目录的数据：只能认领一次，之后其他人格用 persona-data/<id>/ 里自己的记忆和会话
+  route('/persona/data-owner', async (req) => {
+    const b = await readBody(req)
+    const id = safeId(b.id)
+    if (dataOwner(cfg)) return { ok: false, message: '根目录的数据已经认领过了' }
+    if (!readPersona(id)) return { ok: false, message: '没有这个人格' }
+    if (hub.busy()) return { ok: false, message: '她正在回复或在忙后台的事，等这一轮结束再认领' }
+    setConfig({ ...cfg, persona: { ...cfg.persona, dataOwner: id } })
+    log.info(`根目录的记忆和会话归给人格 ${id}`)
+    return { ok: true, dataOwner: id, message: '认领好了，其他人格从下一轮起用自己的记忆和会话' }
   })
   // 人格页「AI 润色」：只改面板上这一节的文字，不保存；用不用由主人在面板里选
   route('/persona/polish', async (req) => {
