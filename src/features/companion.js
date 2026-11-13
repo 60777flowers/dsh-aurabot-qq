@@ -6,7 +6,7 @@ import { cleanText, clipText } from '../core/text.js'
 import { shouldDeferBackground } from '../core/offpeak.js'
 import { followUpHint } from './memory.js'
 import { moodReason } from './mood-context.js'
-import { selfName } from '../persona/personas.js'
+import { selfName, personaDataDir, personaNow } from '../persona/personas.js'
 
 // ---------------- 心情 ----------------
 // 0~100，基线 60。聊天里的话按关键词推一推，随时间按半衰期回到基线。
@@ -74,7 +74,8 @@ export function parseMoodJudge(out) {
 
 export function createMood({ getConfig, dsh, log }) {
   let judgeDeferLogged = false
-  const file = () => dataDir('mood.json')
+  // 心情是她自己的，跟着人格走（根目录人格还是老位置，见 personas.js）；主动搭话的次数是对主人的打扰频率，仍共用
+  const file = () => personaDataDir(getConfig(), personaNow(getConfig()), 'mood.json')
   /** 当前配置的基线：衰减、初始值、兜底、判断提示词四处统一读它。 */
   const base = () => {
     const v = Number(getConfig().mood?.base)
