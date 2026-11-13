@@ -402,6 +402,27 @@ export function cleanOutboundText(text, { warn, promptSources, fingerprint, user
   return clean
 }
 
+/** 出站正文上限：模型失控时（2026-11-13 08:02 一次吐出 48263 字「在吗」）别把整段原样甩给 OneBot。 */
+export const MAX_OUTBOUND_CHARS = 1500
+
+/** 超过上限就把文字段按顺序截断，引用/@/媒体段原样保留。 */
+export function capOutboundSegments (message, max = MAX_OUTBOUND_CHARS) {
+  const total = message.filter((seg) => seg.type === 'text').reduce((n, seg) => n + String(seg.data?.text || '').length, 0)
+  if (total <= max) return { message, trimmed: false, total }
+  let left = max
+  const out = []
+  for (const seg of message) {
+    if (seg.type !== 'text') { out.push(seg); continue }
+    if (left <= 0) continue
+    const text = String(seg.data?.text || '')
+    const keep = text.slice(0, left)
+    left -= keep.length
+    if (keep) out.push({ ...seg, data: { ...seg.data, text: keep } })
+  }
+  if (!out.some((seg) => seg.type === 'text')) return { message: [], trimmed: true, total }
+  return { message: out, trimmed: true, total }
+}
+
 /** 最终平台出口：合并检查整条消息的文字段，避免调用被拆段绕过；引用、@ 和媒体段原样保留。 */
 export function cleanOutboundSegments(message, options) {
   const texts = message.filter((seg) => seg.type === 'text')
