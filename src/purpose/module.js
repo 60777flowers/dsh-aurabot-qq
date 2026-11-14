@@ -601,14 +601,16 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
       try {
         const days = hub.chatLogDays?.() || []
         const rows = []
-        for (const day of days.slice(-1)) {
+        // 读两天：只看当天的话，凌晨刚过零点时最近 20 条会凑不满
+        for (const day of days.slice(-2)) {
           for (const e of hub.chatLogOf?.(day) || []) {
             if (!e || e.forgottenAt) continue
             if (String(e.chatId) !== ownerKey) continue
             rows.push(e)
           }
         }
-        const tail = rows.slice(-8)
+        // 20 条：决断要看得出「你们现在聊到哪、什么气氛」，8 条常常只够看到半截对话
+        const tail = rows.slice(-20)
         if (!tail.length) return ''
         // 顺便判断：主人私聊流水里，她最近有没有真的发过几乎一样的内容（这才是「说过了」的硬证据）
         const norm = (s) => String(s || '').replace(/[^\u4e00-\u9fa5a-zA-Z0-9]/g, '').slice(0, 120)

@@ -1062,3 +1062,38 @@ test('代发决断：决断为沉默 → 不发；改写 → 用改写文本；�
   assert.equal(r4.send, true)
   assert.equal(r4.text, '原文直发')
 })
+
+test('代发决断：最近 20 条私聊流水都喂进去（8 条看不全上下文）', async () => {
+  const hub = makeHub({ reply: '原样' })
+  const rows = Array.from({ length: 25 }, (_, i) => ({
+    chatId: `private:${OWNER}`,
+    who: i % 2 ? 'bot' : 'owner',
+    text: `第${i + 1}条消息`,
+    t: Date.now() - (25 - i) * 1000,
+  }))
+  hub.chatLogDays = () => ['d1']
+  hub.chatLogOf = (day) => (day === 'd1' ? rows : [])
+  const { p } = makePurpose(hub)
+  await p.brokerReview({ to: `private:${OWNER}`, text: '模块推来的消息', moduleId: 'bili' })
+  const prompt = hub.turns[0].prompt
+  assert.match(prompt, /第25条消息/, '最新一条要在')
+  assert.match(prompt, /第6条消息/, '倒数第 20 条要在（20 条窗口）')
+  assert.doesNotMatch(prompt, /第5条消息/, '更早的不要，控制 token')
+})
+
+test('代发决断：跨天也要凑够 20 条（零点刚过时只看当天会不够）', async () => {
+  const hub = makeHub({ reply: '原样' })
+  const yesterday = Array.from({ length: 15 }, (_, i) => ({
+    chatId: `private:${OWNER}`, who: 'owner', text: `昨天的第${i + 1}条`, t: Date.now() - (30 - i) * 1000,
+  }))
+  const today = Array.from({ length: 10 }, (_, i) => ({
+    chatId: `private:${OWNER}`, who: 'bot', text: `今天的第${i + 1}条`, t: Date.now() - (10 - i) * 1000,
+  }))
+  hub.chatLogDays = () => ['d1', 'd2']
+  hub.chatLogOf = (day) => (day === 'd1' ? yesterday : day === 'd2' ? today : [])
+  const { p } = makePurpose(hub)
+  await p.brokerReview({ to: `private:${OWNER}`, text: '模块推来的消息', moduleId: 'bili' })
+  const prompt = hub.turns[0].prompt
+  assert.match(prompt, /今天的第10条/, '今天最新的要有')
+  assert.match(prompt, /昨天的第11条/, '往前凑满 20 条时，昨天的也要读进来')
+})
