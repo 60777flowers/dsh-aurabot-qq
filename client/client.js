@@ -1734,10 +1734,10 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     }
 
     function Access(props) {
-      const [tab, setTab] = useState('people')
+      const [tab, setTab] = useState('global')
       return h('div', { className: 'ab-grid' },
         h('div', null, h(Seg, { value: tab, onChange: setTab, options: [
-          { value: 'people', label: '私聊用户' }, { value: 'groups', label: '群聊' }, { value: 'global', label: '全局设置' },
+          { value: 'global', label: '全局设置' }, { value: 'people', label: '私聊用户' }, { value: 'groups', label: '群聊' },
         ] })),
         tab === 'people' ? h(PrivatePermissions, props)
           : tab === 'groups' ? h(GroupPermissions, props) : h(GlobalAccess, props),
