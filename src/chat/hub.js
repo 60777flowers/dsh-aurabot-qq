@@ -1,3 +1,4 @@
+import { ignoredGroupMember } from './member-filter.js'
 // 消息中枢：QQ 会话 ↔ DSH 会话。
 //   收：OneBot 事件 → 白名单 / 群聊策略 → 拼好文案（带发言人、群上下文、图片、语音转写）→ 喂进对应 DSH 会话
 //   发：DSH 会话一轮结束 → 取最终正文 → 拆条 / 语音 / 表情 → 发回原来的 QQ 会话
@@ -2294,6 +2295,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     const cfg = getConfig()
     const msg = parseMessageEvent(event, selfId, { faceName: faces.nameOf })
     if (msg.userId === selfId) return
+    if (ignoredGroupMember(cfg, msg)) return
     const now = Date.now()
     const wasCleared = () => isBeforeMemoryReset(msg.chatId, msg.userId, now)
     const fromOwner = onCommand && isOwner(cfg, msg.userId)
@@ -2605,6 +2607,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
   /** 群文件是单独的通知，不是消息：转成一条文件消息走正常流程（白名单、头衔过滤都照旧）。 */
   async function onGroupFile(ev) {
     if (disposed || !ev.file?.name) return
+    if (ignoredGroupMember(getConfig(), { kind: 'group', groupId: ev.group_id, userId: ev.user_id })) return
     let nickname = String(ev.user_id)
     try {
       const m = await onebot.call('get_group_member_info', { group_id: ev.group_id, user_id: ev.user_id }, { timeoutMs: 5000 })
@@ -2621,6 +2624,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     if (disposed) return
     const self = String(ev.self_id || selfId || getConfig().botQQ)
     if (String(ev.target_id) !== self) return
+    if (ignoredGroupMember(getConfig(), { kind: ev.group_id ? 'group' : 'private', groupId: ev.group_id, userId: ev.user_id })) return
     if (hooks?.poke) {
       try { if (await hooks.poke(ev)) return } catch (error) {}
     }
