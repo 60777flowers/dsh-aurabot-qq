@@ -422,8 +422,8 @@ function governScopedCall(core, id, name, args, log) {
       // sendVoiceFile(chatId, file, note)
       return governedSend(core, id, { chatId }, () => core.hub.sendVoiceFile(chatId, a, b), log)
     case 'deliver': {
-      // deliver(chatId, text, opts)：引擎路径（opts.enginePolicy）由 hub 自己 reserve，跳过主动门闸
-      const opts = c && typeof c === 'object' ? c : {}
+      // deliver(chatId, text, opts)：第三个参数是 b，不能丢掉 voice / enginePolicy 等发送选项
+      const opts = b && typeof b === 'object' ? b : {}
       if (opts.enginePolicy) return core.hub.deliver(chatId, a, opts)
       return governedSend(core, id, { chatId, text: a }, (extra) => core.hub.deliver(chatId, a, { ...opts, ...extra }), log)
     }

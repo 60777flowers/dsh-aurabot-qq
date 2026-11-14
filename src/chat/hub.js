@@ -1108,6 +1108,13 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     return kind === 'group' ? { kind: 'group', id } : kind === 'private' ? { kind: 'private', id } : null
   }
 
+  function recordDeliveryTypes(chatId, message, queued = false) {
+    const scope = outputScope.getStore()
+    if (scope?.chatId !== chatId) return
+    const types = queued ? scope.queuedTypes : scope.sentTypes
+    for (const segment of message) types?.add(segment.type)
+  }
+
   // quiet：这一条是额外的（比如语音后面补发的表情），失败了不算到这一轮头上（deliver 按 failStore 里的条数判断整条有没有发出去）。
   // queueKind / queueTtlMs：网关短暂不可达时，确定没发出去的消息进入本地补发队列。
   async function sendSegments(chatId, message, note, opts = {}) {
@@ -1160,6 +1167,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     const cap = captureStore.getStore()
     if (cap) {
       cap.push({ chatId, note, message })
+      recordDeliveryTypes(chatId, message)
       if (outputScope.getStore()?.chatId === chatId) outputScope.getStore().sent++
       settleOutbound(verdict, 'sent')
       return { message_id: 'sim-' + cap.length }
@@ -1183,6 +1191,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
         if (sentIds.size > 500) sentIds.delete(sentIds.values().next().value)
       }
       bump('sent')
+      recordDeliveryTypes(chatId, message)
       if (outputScope.getStore()?.chatId === chatId) outputScope.getStore().sent++
       settleOutbound(verdict, 'sent')
       // 主动发出的话（模块/后台会话直接调 sendText）要在目标聊天留痕，不然下次接话会断片。
@@ -1196,6 +1205,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
         const q = outbox.add({ action, params, chatId, note, kind: queueKind, ttlMs: queueTtlMs })
         if (q.ok) {
           log.warn(`发到 ${chatId} 时网关还没就绪，已排队补发：${note || error.message}`)
+          recordDeliveryTypes(chatId, message, true)
           return { queued: true, queuedId: q.id }
         }
         log.warn(`发到 ${chatId} 失败，且无法入队（${q.message}）：`, error.message)
@@ -1316,6 +1326,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     if (!cfg.enabled || cfg.dryRun) return log.info(`试运行（没真戳）→ ${chatId}：戳了戳 ${target}`)
     try {
       await onebot.call('send_poke', { user_id: Number(target), ...(group ? { group_id: Number(group) } : {}) }, { timeoutMs: 10000 })
+      recordDeliveryTypes(chatId, [{ type: 'poke' }])
       log.info(`${chatId}：她戳了戳 ${target}`)
     } catch (error) {
       log.debug('戳一戳失败：', error.message)
@@ -1542,7 +1553,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     const active = currentPromptSources()
     const current = active || outputSources.get(chatId)
     const sources = current && { ...current, system: new Map(current.system), memory: [...current.memory] }
-    return outputScope.run({ chatId, sources, sent: 0, blocked: false, allowPromptEcho: false }, () => deliverWithEnginePolicy(chatId, text, opts))
+    return outputScope.run({ chatId, sources, sent: 0, sentTypes: new Set(), queuedTypes: new Set(), blocked: false, allowPromptEcho: false }, () => deliverWithEnginePolicy(chatId, text, opts))
   }
 
   /**
@@ -1612,7 +1623,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       }
       text = guarded.text
     }
-    const r = parseReply(text, cleaningFor(chatId))
+    const r = parseReply(text, { ...cleaningFor(chatId), voice: opts.voice === true })
     if (r.silent) return silenceTurn(chatId)
     let items = r.items
     // 分条发出的中间段（chat.everyStep）：只发她当时说的原话，不做语音转换、不补表情、不按概率改形态，
@@ -1695,7 +1706,8 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     if (outputScope.getStore().blocked && !outputScope.getStore().sent) return silenceTurn(chatId)
     if (opts.simulate) return items
     // 一条都没发出去：不记流水，她没说出口的话不能算说过
-    if (failures.length && failures.length >= items.filter((i) => i.kind !== 'poke').length) return { missedAt, failed: failures.length, errors: failures, sent: sentTexts.join(' ') }
+    const receipt = { sentTypes: [...outputScope.getStore().sentTypes], queuedTypes: [...outputScope.getStore().queuedTypes] }
+    if (failures.length && failures.length >= items.filter((i) => i.kind !== 'poke').length) return { missedAt, failed: failures.length, errors: failures, sent: sentTexts.join(' '), ...receipt }
     if (inGroup) {
       const gid = chatId.slice(6)
       const said = (groupSaid.get(gid) || []).filter((t) => Date.now() - t < 3600_000)
@@ -1715,7 +1727,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     if (chatId.startsWith('private:')) lastPrivateAt.set(chatId.slice(8), Date.now())
     if (chatId === `private:${cfg.ownerQQ}`) lastBotToOwner = { at: Date.now(), text: items.filter((i) => i.kind === 'text' || i.kind === 'voice').map((i) => i.value).join('\n') }
     onActivity?.({ kind: 'out', chatId, reply: text, userText: opts.userText || '' })
-    return { missedAt, failed: failures.length, errors: failures, sent: sentTexts.join(' ') }
+    return { missedAt, failed: failures.length, errors: failures, sent: sentTexts.join(' '), ...receipt }
   }
 
   // ---------- 盯 DSH 会话：一轮结束就发 ----------
