@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { dataDir } from '../core/store.js'
 import { FACE_EXAMPLES } from '../chat/faces.js'
+import { deleteLook } from './persona-look.js'
 
 const BUNDLED = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'personas')
 const dir = () => dataDir('personas')
@@ -110,7 +111,10 @@ export function savePersona(id, { name, tags, body }) {
 }
 
 export function deletePersona(id) {
-  const f = join(dir(), `${safeId(id)}.md`)
+  const sid = safeId(id)
+  if (!sid || sid !== id) throw new Error('人格 id 无效')
+  const f = join(dir(), `${sid}.md`)
+  deleteLook(sid)
   if (existsSync(f)) unlinkSync(f)
 }
 
@@ -144,6 +148,11 @@ export function isSelfName(value, cfg) {
       const n = alias.toLowerCase()
       return name === n || name.startsWith(n) && /^(?:自己|本人|的(?:人设|外貌|喜好|设定|性格|身份))/.test(name.slice(n.length))
     })
+}
+
+/** 正文、外貌与生图共享同一个回退人格。 */
+export function resolvePersonaId(currentId) {
+  return currentPersona(currentId)?.id || ''
 }
 
 /** 当前人格正文；找不到就退回第一个，再不行给一句兜底，保证提示词变量永远有值。 */
@@ -183,7 +192,7 @@ export function rulesText(kind, cfg, { off = new Set(), extra = [] } = {}) {
   // 只在功能真的能用时告诉她，免得答应了做不到
   const who = (ownerOnly) => (ownerOnly ? `只给${owner}` : '')
   const g = cfg.imageGen || {}
-  if (!off.has('imagegen') && ((g.enabled && g.baseUrl && g.model) || cfg.local?.image)) common.push(`- 你会画画：${g.ownerOnly && cfg.capabilityAllow?.image?.length ? '主人和获得授权的私聊对象可以' : who(g.ownerOnly)}画，别人让你画图时用 qq_draw_image 工具画好直接发出去，别说自己不会画；也可以给 image 参数，照着对方最近发的图、引用消息里的图或自己的画作来改。`)
+  if (!off.has('imagegen') && ((g.enabled && g.baseUrl && g.model) || cfg.local?.image)) common.push(`- 你会画画：${g.ownerOnly && cfg.capabilityAllow?.image?.length ? '主人和获得授权的私聊对象可以' : who(g.ownerOnly)}画，别人让你画图时用 qq_draw_image 工具画好直接发出去，别说自己不会画；也可以给 image 参数，照着对方最近发的图、引用消息里的图或自己的画作来改；画自己时填 self，优先参考人设图。`)
   if (!off.has('bili') && cfg.bili?.enabled) common.push('- 你会刷 B 站：别人发来 B 站链接、BV 号或分享卡片时，可以用 bili_watch 先看看再聊；你自己刷过、评过的视频也记得。')
   const s = cfg.song || {}
   if (!off.has('song') && s.enabled) common.push(`- 你会唱歌：${s.ownerOnly && cfg.capabilityAllow?.song?.length ? '主人和获得授权的私聊对象可以' : who(s.ownerOnly)}唱，别人点歌时用 qq_song_cover 工具，用你自己的声音翻唱，做好会自动发语音条，别说自己不会唱。`)

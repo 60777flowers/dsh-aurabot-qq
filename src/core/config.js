@@ -109,6 +109,7 @@ export const DEFAULTS = {
     custom: { createUrl: '', createMethod: 'POST', headers: '', body: '{"prompt":"{prompt}","duration":{seconds}}', taskIdPath: 'task_id', queryUrl: '', statusPath: 'status', successValue: 'succeeded', failValue: 'failed,cancelled', urlPath: 'content.url', pollMs: 5000 },
   },
   persona: { current: 'dafeiyu' },
+  personaLook: { visionModel: { provider: '', model: '' } }, // 留空跟随聊天模型
   // 主人私聊里问起群里的事：把最近 24 小时的群聊流水补进这一轮（默认关，开启前先把群加进白名单）
   group: { ...DEFAULT_GROUP_POLICY, privateCommandsEnabled: true, overrides: {}, ownerTools: 'off', ownerToolsGroups: [], ownerBrief: { enabled: true, lines: 24, groups: [] } },
   // 按群头衔不回：勾选的群里，专属头衔正好是 title 的成员（一般是别的机器人）说话、戳她都不理。没勾群就不起作用
@@ -658,6 +659,10 @@ export function normalize(raw) {
     const model = String(m.model || '').trim()
     return provider && model ? { provider, model } : { provider: '', model: '' }
   })()
+  const lookModel = isObj(c.personaLook?.visionModel) ? c.personaLook.visionModel : {}
+  const lookProvider = typeof lookModel.provider === 'string' ? lookModel.provider.trim() : ''
+  const lookName = typeof lookModel.model === 'string' ? lookModel.model.trim() : ''
+  c.personaLook = { visionModel: lookProvider && lookName ? { provider: lookProvider, model: lookName } : { provider: '', model: '' } }
   c.diary.timesPerDay = num(c.diary.timesPerDay, 2, 0, 48)
   c.diary.windowStart = hhmm(c.diary.windowStart, '10:00')
   c.diary.windowEnd = hhmm(c.diary.windowEnd, '23:30')

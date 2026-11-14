@@ -416,6 +416,18 @@ test('群聊：没人叫她时接话有上限，叫她就重新开始', () => {
   assert.equal(decideGroupReply({ ...o, policy: { ...DEFAULT_GROUP_POLICY, engagedMax: 0 } }).reply, false)
 })
 
+test('人设识图模型：旧配置、脏值、两半选择与面板合并', async () => {
+  const { normalize, publicConfig, mergeFromPanel } = await import('../src/core/config.js')
+  const empty = { provider: '', model: '' }
+  for (const raw of [{}, { personaLook: null }, { personaLook: { visionModel: [] } }, { personaLook: { visionModel: { provider: 'p' } } }, { personaLook: { visionModel: { provider: {}, model: 'm' } } }]) {
+    assert.deepEqual(normalize(raw).personaLook.visionModel, empty)
+  }
+  const cfg = normalize({ personaLook: { visionModel: { provider: ' p ', model: ' v ' } } })
+  assert.deepEqual(cfg.personaLook.visionModel, { provider: 'p', model: 'v' })
+  assert.deepEqual(publicConfig(cfg).personaLook, cfg.personaLook)
+  assert.deepEqual(mergeFromPanel(cfg, { personaLook: { visionModel: empty } }).personaLook.visionModel, empty)
+})
+
 test('群聊：接话提示告诉她连着说了几次，让她自己停', () => {
   assert.doesNotMatch(engagedHint(1), /连着接了/)
   assert.match(engagedHint(3), /连着接了 2 次/)
