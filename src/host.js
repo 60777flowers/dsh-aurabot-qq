@@ -884,7 +884,14 @@ export function apply(ctx) {
     ownerQQ: () => cfg.ownerQQ,
   })
   core.dangerGuard = dangerGuard
-  approvalRelay = createApprovalRelay({ getConfig, deliver: (chatId, text) => hub.sendText(chatId, text), chatOfSession: (id) => hub.chatOfSession(id), log })
+  approvalRelay = createApprovalRelay({
+    getConfig,
+    deliver: (chatId, text) => hub.sendText(chatId, text),
+    chatOfSession: (id) => hub.chatOfSession(id),
+    // 等主人回复「确认」多久：可配置（config.approvalTimeoutSec，秒），默认 5 分钟
+    timeoutMs: (Number(getConfig().approvalTimeoutSec) || 300) * 1000,
+    log,
+  })
   ctx.effect(() => {
     let off = null
     try { off = ctx.on('approval/request', (request, next) => approvalRelay.onRequest(request, next)) } catch (error) { log.debug('挂审批应答失败：', error.message) }
