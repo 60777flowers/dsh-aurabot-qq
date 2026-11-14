@@ -511,7 +511,8 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     const persona = (() => {
       try {
         const t = typeof personaText === 'function' ? String(personaText() || '').trim() : ''
-        return t.slice(0, 1500)
+        // 5000 字：人格卡后半段常是「怎么说话/怎么接话」的具体规则，截 1500 字会把最关键的判断依据切掉
+        return t.slice(0, 5000)
       } catch { return '' }
     })()
     const moodLine = (() => {

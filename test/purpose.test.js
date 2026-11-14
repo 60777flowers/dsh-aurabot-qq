@@ -1097,3 +1097,25 @@ test('代发决断：跨天也要凑够 20 条（零点刚过时只看当天会�
   assert.match(prompt, /今天的第10条/, '今天最新的要有')
   assert.match(prompt, /昨天的第11条/, '往前凑满 20 条时，昨天的也要读进来')
 })
+
+test('代发决断：人格卡整份喂进去（5000 字窗口，后半段说话规则也要能看到）', async () => {
+  // 前半段：身份设定；后半段：说话规则——截 1500 字会把后半段切掉
+  const head = '她是一条活泼爱玩又黏人的鱼。'.repeat(120)   // 约 1680 字，确保超过旧的 1500 截断线
+  const tail = '【说话规则】说人话，不用校准闭环这类词；不说应酬话。'
+  const persona = head + tail
+  const hub = makeHub({ reply: '原样' })
+  const { p } = makePurpose(hub, { persona })
+  await p.brokerReview({ to: `private:${OWNER}`, text: '模块推来的消息', moduleId: 'bili' })
+  const prompt = hub.turns[0].prompt
+  assert.match(prompt, /说人话/, '人格后半段的说话规则要在提示词里')
+  assert.ok(persona.length > 1500, '人格本身超过 1500 字，用来证明窗口放大了')
+})
+
+test('代发决断：人格超过 5000 字才截断（防止极端长卡把 prompt 撑爆）', async () => {
+  const long = '甲'.repeat(6000) + '结尾标记'
+  const hub = makeHub({ reply: '原样' })
+  const { p } = makePurpose(hub, { persona: long })
+  await p.brokerReview({ to: `private:${OWNER}`, text: '模块推来的消息', moduleId: 'bili' })
+  const prompt = hub.turns[0].prompt
+  assert.doesNotMatch(prompt, /结尾标记/, '超 5000 字的部分被截掉')
+})
