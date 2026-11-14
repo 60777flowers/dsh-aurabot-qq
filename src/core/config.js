@@ -1,3 +1,4 @@
+import { normalizeMemberFilter } from '../chat/member-filter.js'
 // 插件配置：默认值 + 归一化 + 读写。配置文件 ~/.dsh/plugins-data/aurabot/config.json
 
 import { randomUUID } from 'node:crypto'
@@ -112,6 +113,7 @@ export const DEFAULTS = {
   personaLook: { visionModel: { provider: '', model: '' } }, // 留空跟随聊天模型
   // 主人私聊里问起群里的事：把最近 24 小时的群聊流水补进这一轮（默认关，开启前先把群加进白名单）
   group: { ...DEFAULT_GROUP_POLICY, privateCommandsEnabled: true, overrides: {}, ownerTools: 'off', ownerToolsGroups: [], ownerBrief: { enabled: true, lines: 24, groups: [] } },
+  memberFilter: { enabled: true, rules: [] }, // 不回应的人：明确选择所有群或指定群；不影响私聊
   // 按群头衔不回：勾选的群里，专属头衔正好是 title 的成员（一般是别的机器人）说话、戳她都不理。没勾群就不起作用
   titleFilter: { enabled: true, groups: [], title: '大肥鱼' },
   voice: {
@@ -909,6 +911,7 @@ export function normalize(raw) {
   c.forward = c.forward && typeof c.forward === 'object' ? c.forward : {}
   c.forward.expandEarly = bool(c.forward.expandEarly, false)
   c.forward.expandHistory = bool(c.forward.expandHistory, false)
+  c.memberFilter = normalizeMemberFilter(c.memberFilter)
   c.titleFilter.enabled = bool(c.titleFilter.enabled, true)
   c.titleFilter.groups = qqList(c.titleFilter.groups) // 和群白名单同一套规则
   c.titleFilter.title = String(c.titleFilter.title ?? '').replace(/[​-‍﻿]/g, '').trim().slice(0, 30) || '大肥鱼'

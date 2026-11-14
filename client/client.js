@@ -926,7 +926,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     const navOrder = (g, t) => { const i = g.tabs.indexOf(t.id); return i >= 0 ? i : g.tabs.length - (g.tabs.includes('logs') ? 1.5 : 0) }
     const NAV_ALIAS = {
       overview: '首页 状态', connect: 'qq 网关 snowluma onebot 登录 工作区', character: '人设 性格 设定 头像', persona: '人物 画像 小档案 群印象 梗概 时间轴 相处经验 说话方式', access: '主人 白名单 权限 群管 改资料',
-      group: '群聊 发言 白名单 仅模块 主动 窗口 插话 旁听 静默 合并', model: 'ai 大模型 视觉 思考强度', voice: '语音 tts 说话 音色 edge', asr: '语音识别 听语音 转文字 asr 语音转文本', stickers: '表情 小黄脸 gif 商城表情',
+      group: '群聊 发言 白名单 仅模块 主动 窗口 插话 旁听 静默 合并 不回应 不理 屏蔽 黑名单', model: 'ai 大模型 视觉 思考强度', voice: '语音 tts 说话 音色 edge', asr: '语音识别 听语音 转文字 asr 语音转文本', stickers: '表情 小黄脸 gif 商城表情',
       imagegen: '画图 图片', video: '视频 生视频 拍视频', diary: '空间 说说 日记', speakup: '搭话 主动', autotelic: '自驱 自主 后台 账本 审计 做梦 立项', mood: '心情', memory: '记忆 星图 联想 翻一翻 向量 重排', song: '唱歌 翻唱 rvc 点歌',
       bili: 'b站 bilibili 视频', douyin: '抖音 短视频 私信', pet: '桌宠 宠物 悬浮窗 气泡 electron', local: '本地 接口 sd sovits', browser: '浏览器 侧边 侧边栏 ego 共享 独立窗口', security: '安全 防护 ssrf 内网 图片 下载', modules: '扩展 自己写 模板 安全模式', market: '模块 市场 插件 社区 下载 安装 桌宠 抖音 小黑盒 群管', logs: '日志 报错', about: '关于 关于我们 版本 许可 鸣谢 开源', backup: '备份 恢复 换电脑 迁移 导入 导出',
     }
@@ -2289,6 +2289,41 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         h('div', { className: 'ab-muted ab-small', style: { marginTop: 6 } }, 'ta只会当成自己最近在群里看到的，不会把群聊原文说成是主人发的。'))
     }
 
+    function MemberFilter({ draft, setDraft }) {
+      const value = draft.memberFilter || { enabled: true, rules: [] }
+      const rules = value.rules
+      const [input, setInput] = useState('')
+      const [selected, setSelected] = useState('')
+      const qq = input.trim()
+      const current = rules.find(r => r.userId === selected) || rules[0]
+      const saveRules = next => setDraft(setPath(draft, 'memberFilter', { ...value, rules: next }))
+      const change = patch => saveRules(rules.map(r => r.userId === current.userId ? { ...r, ...patch } : r))
+      const valid = /^[1-9]\d{4,11}$/.test(qq) && qq !== String(draft.ownerQQ)
+      return h(Card, { title: '不回应的人', right: h(Switch, { title: '启用不回应名单', on: value.enabled, onChange: enabled => setDraft(setPath(draft, 'memberFilter', { ...value, enabled })) }),
+        desc: '在所选群里不回应这些人，包括 @、引用、戳一戳和模块指令。私聊和主人不受影响。' },
+        !value.enabled ? h('p', { className: 'ab-note warn' }, '名单已暂停，下面的规则暂不生效。') : null,
+        h('div', { className: 'ab-flex', style: { marginBottom: 12 } },
+          h('input', { className: 'ab-input', 'aria-label': '添加不回应的 QQ 号', inputMode: 'numeric', placeholder: '输入一个 QQ 号', value: input, onChange: e => setInput(e.target.value) }),
+          h(Btn, { small: true, disabled: !valid || (rules.length >= 100 && !rules.some(r => r.userId === qq)), onClick: () => {
+            if (!rules.some(r => r.userId === qq)) saveRules([...rules, { userId: qq, scope: 'groups', groups: [] }])
+            setSelected(qq); setInput('')
+          } }, rules.some(r => r.userId === qq) ? '查看' : '添加')),
+        qq && !valid ? h('p', { className: 'ab-note warn' }, qq === String(draft.ownerQQ) ? '主人不会被屏蔽，无需添加。' : '请填一个 5～12 位数字 QQ 号。') : null,
+        h('div', { className: 'ab-flex', style: { flexWrap: 'wrap', maxHeight: 160, overflowY: 'auto' } }, rules.map(r =>
+          h('button', { type: 'button', key: r.userId, className: cx('ab-chip', current?.userId === r.userId && 'on'), 'aria-pressed': current?.userId === r.userId, onClick: () => setSelected(r.userId) },
+            r.userId, h('span', { className: 'n' }, r.scope === 'all' ? '所有群' : r.groups.length ? r.groups.length + ' 个群' : '待选群')))),
+        !current ? h('p', { className: 'ab-muted' }, '名单为空，没有按 QQ 号屏蔽任何人。') : h('div', { key: current.userId, style: { marginTop: 16 } },
+          h('div', { className: 'ab-flex' }, h('b', null, 'QQ ' + current.userId), h('div', { className: 'ab-spacer' }),
+            h(Btn, { small: true, kind: 'ghost', onClick: () => saveRules(rules.filter(r => r.userId !== current.userId)) }, '移出不回应名单')),
+          current.userId === String(draft.ownerQQ) ? h('p', { className: 'ab-note' }, '这是当前主人，规则不会拦截此人。') : null,
+          h(Row, { label: '在哪些群不回应' }, h(Select, { ariaLabel: 'QQ ' + current.userId + ' 不回应范围', value: current.scope,
+            options: [{ value: 'groups', label: '仅指定群' }, { value: 'all', label: '所有群（含以后加入的群）' }], onChange: scope => change({ scope }) })),
+          current.scope === 'groups' ? h(Row, { label: '指定群号', hint: '一行一个，也可用逗号分隔。留空不生效，不会自动变成所有群。' },
+            h(ListArea, { value: current.groups, numbers: true, placeholder: '填写要生效的群号', onChange: groups => change({ groups }) })) : null,
+          current.scope === 'groups' && !current.groups.length ? h('p', { className: 'ab-note' }, '还没选群，这个人暂时不会被屏蔽。') : null,
+          h('p', { className: 'ab-muted ab-small' }, '点底部「保存设置」后对新消息生效；已开始的回复和旧记忆保留。')))
+    }
+
     function GroupOverrides({ draft, setDraft, setSection }) {
       const overrides = draft.group.overrides || {}
       const groupIds = [...new Set([...draft.allow.groups, ...(draft.group.moduleOnlyGroups || []), ...Object.keys(overrides), ...(draft.memory.passiveGroups || [])])]
@@ -2359,6 +2394,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
                 h('div', { className: 'ab-flex', style: { flexWrap: 'wrap' } },
                   h(Btn, { small: true, kind: 'ghost', disabled: !Object.keys(o).length, onClick: () => { const n = { ...overrides }; delete n[gid]; setDraft(setPath(draft, 'group.overrides', n)) } }, '恢复本群接话默认'),
                   h(Btn, { small: true, kind: 'ghost', onClick: () => setSection('defaults') }, '查看默认接话规则'))),
+                h('div', { style: { marginTop: 12 } }, h(Btn, { small: true, kind: 'ghost', onClick: () => setSection('manage') },
+                  '管理不回应名单（本群 ' + (draft.memberFilter?.enabled ? (draft.memberFilter.rules || []).filter(r => r.userId !== String(draft.ownerQQ) && (r.scope === 'all' || r.groups.includes(gid))).length : 0) + ' 人）')),
                 h(Row, { label: '非白名单时旁听', hint: mode === 'off' ? '只记住之后收到的文字，不回复。' : '目前在白名单，记忆按原有规则处理；此开关仅在移出白名单后生效。' },
                   h(Switch, { title: '群 ' + gid + ' 非白名单时旁听', on: (draft.memory.passiveGroups || []).includes(gid), onChange: on => {
                     const ids = draft.memory.passiveGroups || []
@@ -2375,7 +2412,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const [section, setSection] = useState('groups')
       return h('div', { className: 'ab-grid' },
         h('div', { className: 'ab-flex', style: { flexWrap: 'wrap' } },
-          ...[{ id: 'groups', label: '按群设置' }, { id: 'defaults', label: '默认接话' }, { id: 'messages', label: '回复与消息' }, { id: 'manage', label: '管理与权限' }].map(x =>
+          ...[{ id: 'groups', label: '按群设置' }, { id: 'defaults', label: '默认接话' }, { id: 'messages', label: '回复与消息' }, { id: 'manage', label: '不回应与管理' }].map(x =>
             h('button', { key: x.id, type: 'button', className: cx('ab-btn', section === x.id && 'primary'), 'aria-pressed': section === x.id, onClick: () => setSection(x.id) }, x.label))),
         h('div', { hidden: section !== 'groups', className: 'ab-group-home' },
           h(GroupOverrides, { draft, setDraft, setSection }),
@@ -2431,6 +2468,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         ),
         ) : null,
         section === 'manage' ? h(Fragment, null,
+        h(MemberFilter, { draft, setDraft }),
         h(Card, { title: '主人私聊：群设置指令', right: f.sw('group.privateCommandsEnabled', { title: '群设置指令总开关' }),
           desc: '私聊发 /群设置 查看用法。直接执行，不经过模型；批量修改先预览，再确认。' },
           h('div', { className: 'ab-muted ab-small' }, '只控制 /群设置，不影响自然语言管理、/权限 或群内的 /quiet。关闭自然语言管理，可在「权限」页关闭「改白名单」。')),
@@ -9028,6 +9066,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         // 未编辑的群设置不回写；编辑过的带上草稿基线，避免悄悄撤销 QQ 命令。
         const baseline = draftBaseRef.current || st.config
         const expected = {}
+        if (JSON.stringify(body.memberFilter) === JSON.stringify(baseline.memberFilter)) delete body.memberFilter
+        else expected.memberFilter = baseline.memberFilter
         if (JSON.stringify(allow?.groups) !== JSON.stringify(baseline.allow?.groups)) {
           body.allow = { groups: allow.groups }
           expected.groups = baseline.allow.groups
@@ -9126,7 +9166,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         stickers: Stickers, imagegen: ImageGen, video: Video, diary: Diary, speakup: SpeakUp, autotelic: Autotelic, pet: PetPanel, mood: Mood, memory: MemoryPage, persona: PersonaMemory, song: Song, bili: Bili, douyin: Douyin, heybox: Heybox, local: LocalApi, browser: Browser, security: Security, market: Market, modules: Modules, logs: Logs, about: About, backup: Backup,
       }[curTab.id] || Overview
       // 哪些标签有没保存的改动
-      const TAB_KEYS = { character: ['personaLook'], connect: ['snowluma', 'botQQ'], access: ['ownerQQ', 'ownerName', 'ownerLevel', 'approvalNotify', 'approvalViaQQ', 'qqApi', 'longTasks', 'profilePerms', 'subagentBackground'], group: ['group', 'merge', 'titleFilter', 'chat'], model: ['model', 'chatModels'], voice: ['voice'], asr: ['voice'], stickers: ['stickers'], imagegen: ['imageGen'], video: ['video', 'local'], diary: ['diary', 'qzoneSocial'], speakup: ['speakUp'], autotelic: [], pet: [], mood: ['mood', 'memory'], song: ['song'], bili: ['bili'], douyin: ['douyin'], heybox: ['heybox'], local: ['local'], browser: ['browser'], security: ['security', 'update'] }
+      const TAB_KEYS = { character: ['personaLook'], connect: ['snowluma', 'botQQ'], access: ['ownerQQ', 'ownerName', 'ownerLevel', 'approvalNotify', 'approvalViaQQ', 'qqApi', 'longTasks', 'profilePerms', 'subagentBackground'], group: ['group', 'merge', 'titleFilter', 'memberFilter', 'chat'], model: ['model', 'chatModels'], voice: ['voice'], asr: ['voice'], stickers: ['stickers'], imagegen: ['imageGen'], video: ['video', 'local'], diary: ['diary', 'qzoneSocial'], speakup: ['speakUp'], autotelic: [], pet: [], mood: ['mood', 'memory'], song: ['song'], bili: ['bili'], douyin: ['douyin'], heybox: ['heybox'], local: ['local'], browser: ['browser'], security: ['security', 'update'] }
       const tabDirty = (id) => {
         if (!dirty) return false
         if (id.startsWith('ext:')) { const k = id.slice(4); return JSON.stringify((draft.ext || {})[k]) !== JSON.stringify((cfg.ext || {})[k]) }

@@ -1,3 +1,4 @@
+import { validMemberFilter } from './chat/member-filter.js'
 // Aurabot · 宿主半边（DSH 插件入口）
 //
 // 让 DSH 里的 AI 以独立 QQ 号「大肥鱼」住在 QQ 里：
@@ -1285,13 +1286,17 @@ export function apply(ctx) {
         ok: false, code: 'invalid_group_ids', message: '群号请填 5～12 位数字，不要混入文字。本次没有保存。',
       }
     }
+    if (body && Object.hasOwn(body, 'memberFilter') && !validMemberFilter(body.memberFilter)) return {
+      ok: false, code: 'invalid_member_filter', message: '不回应名单未保存：请填有效的 QQ 号和群号（5～12 位数字），每人只添加一次，并明确选择所有群或指定群；最多 100 人、每人 100 个群。',
+    }
     const expected = body?._groupSettingsBase
     if (body) delete body._groupSettingsBase
     if (expected && (
       (Object.hasOwn(expected, 'groups') && !isDeepStrictEqual(expected.groups, cfg.allow.groups)) ||
+      (Object.hasOwn(expected, 'memberFilter') && !isDeepStrictEqual(expected.memberFilter, cfg.memberFilter)) ||
       (Object.hasOwn(expected, 'group') && !isDeepStrictEqual(expected.group, cfg.group)) ||
       (Object.hasOwn(expected, 'passiveGroups') && !isDeepStrictEqual(expected.passiveGroups, cfg.memory.passiveGroups))
-    )) return { ok: false, code: 'group_settings_conflict', message: '群聊或旁听设置已在别处修改，本次没有保存。请记下要保留的改动，再点「读取最新设置」放弃草稿。' }
+    )) return { ok: false, code: 'group_settings_conflict', message: '群设置已在别处修改，本次没有保存。请记下要保留的改动，再点「读取最新设置」放弃草稿。' }
     const before = cfg
     // 控制台密码不能只改配置（SnowLuma 那边还是旧的）：拿出来单独去 SnowLuma 改
     const newPw = typeof body?.snowluma?.webuiPassword === 'string' ? body.snowluma.webuiPassword : ''
