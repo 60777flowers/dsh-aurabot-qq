@@ -13,7 +13,7 @@ import { dataDir, readJson, writeJson } from '../core/store.js'
 import { cleanOutboundText } from '../chat/reply.js'
 import { isSessionBackoff } from '../chat/session-backoff.js'
 import { followUpHint } from '../features/memory.js'
-import { selfName, selfNames } from '../persona/personas.js'
+import { selfName, selfNames, personaDataDir, personaNow } from '../persona/personas.js'
 import { normalizeSelection } from '../chat/chat-model.js'
 import {
   DEFAULT_PURPOSE_CONFIG, PURPOSE_NEEDS, NEED_LABELS, EMOTION_LABELS, EMOTION_PROFILES,
@@ -101,8 +101,11 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
   // 下面的 friend 是主动搭话白名单里的 QQ 号，不传就是主人。朋友各有各的状态，素材只看和这个人的私聊、关于这个人的记忆。
   const chatIdOf = (cfg, friend) => `private:${friend || cfg.ownerQQ}`
   const lastPrivateAt = (cfg, friend) => friend ? (hub?.lastPrivateAt?.(friend) || 0) : Math.max(hub?.lastOwnerChatAt || 0, hub?.lastBotToOwner?.at || 0)
-  const stateFile = (friend) => dataDir('purpose', ...(friend ? ['friends', `${friend}.json`] : ['purpose-state.json']))
-  const nudgeFile = () => dataDir('purpose', 'nudge.json')
+  // 内驱力、目标、惦记的事是她自己的，跟着人格走（根目录人格还是老位置，见 personas.js）。
+  // 人格卡片段做的目标依据也就只留在原人格的状态里，不会被换上的人格读到。出站额度在 outbound-policy，仍共用。
+  const purposeDir = (...parts) => personaDataDir(getConfig(), personaNow(getConfig()), 'purpose', ...parts)
+  const stateFile = (friend) => purposeDir(...(friend ? ['friends', `${friend}.json`] : ['purpose-state.json']))
+  const nudgeFile = () => purposeDir('nudge.json')
 
   // ---------- 状态 ----------
   function loadState(config, now = Date.now(), friend = '') {
@@ -188,9 +191,9 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     const list = materials.slice(0, 28)
     const lines = list.map((m, i) => `${i + 1}. ${formatMaterialLine(m, now)}`)
     const prompt = [
-      '下面是 AI 伙伴「大肥鱼」最近看到/经历的事情列表（已脱敏）。给每一条判断：',
+      `下面是 AI 伙伴「${selfName(getConfig())}」最近看到/经历的事情列表（已脱敏）。给每一条判断：`,
       `① 它最指向哪种内心需要（只能是：${PURPOSE_NEEDS.join('/')}）；`,
-      `② 它让大肥鱼产生什么情绪（只能是：${Object.keys(EMOTION_LABELS).join('/')}）。`,
+      `② 它让${selfName(getConfig())}产生什么情绪（只能是：${Object.keys(EMOTION_LABELS).join('/')}）。`,
       '只输出一个 JSON 数组，不要解释：[{"i":1,"need":"play","emotion":"curious"}, …]，i 对应条目序号。',
       '',
       ...lines,
