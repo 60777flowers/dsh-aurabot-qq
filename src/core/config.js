@@ -23,7 +23,7 @@ export const DEFAULTS = {
   approvalNotify: true, // DSH 要授权时把请求发到主人私聊
   // 什么情况往主人 QQ 上报：enabled 是总开关，approval = 工具要授权，question = 她要向人提问选选项。
   // workspaces 按工作区单独覆盖：{ "<工作区路径>": { approval?: bool, question?: bool } }，没写的项跟随总开关。
-  notice: { enabled: true, approval: true, question: true, workspaces: {} },
+  notice: { enabled: true, approval: true, question: true, windowSec: 8, workspaces: {} },
   qqApi: { enabled: true }, // 她能用 qq_api_call 调 QQ 接口：别人只能查当前群，写操作只听主人
   approvalViaQQ: true, // 主人私聊会话要授权时，在 QQ 回复「确认」直接批准这一次
   approvalTimeoutSec: 300, // 等主人回复「确认」多久（秒）：默认 300，范围 30 ~ 1800
@@ -458,7 +458,10 @@ const bodyText = (v) => {
 function normalizeNotice(v, legacyNotify) {
   const o = isObj(v) ? v : {}
   const approvalDefault = legacyNotify === false ? false : true
-  const out = { enabled: bool(o.enabled, true), approval: typeof o.approval === 'boolean' ? o.approval : approvalDefault, question: bool(o.question, true), workspaces: {} }
+  const out = { enabled: bool(o.enabled, true), approval: typeof o.approval === 'boolean' ? o.approval : approvalDefault, question: bool(o.question, true), windowSec: 8, workspaces: {} }
+  // 合并窗口：审批/选项请求到齐后等多久再推 QQ。范围 1 ~ 60 秒，默认 8（够几条一起到，又不至于太慢）
+  const winSec = Number(o.windowSec)
+  out.windowSec = Number.isFinite(winSec) ? Math.min(60, Math.max(1, Math.round(winSec))) : 8
   const ws = isObj(o.workspaces) ? o.workspaces : {}
   for (const [key, val] of Object.entries(ws)) {
     const path = String(key || '').trim()

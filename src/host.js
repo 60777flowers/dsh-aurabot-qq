@@ -1027,6 +1027,8 @@ export function apply(ctx) {
     getConfig,
     workspaceOf: workspaceOfSession,
     compose: noticeText,
+    // 合并窗口可配置（config.notice.windowSec，秒）：审批/选项请求到齐后等多久再推 QQ
+    windowMs: (Number(getConfig().notice?.windowSec) || 8) * 1000,
     log,
   })
   async function notifyApproval(session, event) {
