@@ -110,6 +110,22 @@ function codeRanges (raw) {
 }
 const insideCode = (code, start, end) => code.some((r) => start >= r.start && end <= r.end)
 
+/** 跨聊天工具的发送前校验：代码示例不算指令，残缺/嵌套/跨气泡的语音标签不直接外发。 */
+export function hasInvalidVoiceMarkup(text) {
+  const raw = String(text || '')
+  const code = codeRanges(raw)
+  let masked = raw
+  for (const r of [...code].sort((a, b) => b.start - a.start)) masked = masked.slice(0, r.start) + ' '.repeat(r.end - r.start) + masked.slice(r.end)
+  let open = false
+  for (const [token] of masked.matchAll(/<\/?voice\b[^>]*(?:>|$)|\|\|\|/gi)) {
+    if (token === '|||') { if (open) return true }
+    else if (token === '<voice>' && !open) open = true
+    else if (token === '</voice>' && open) open = false
+    else return true
+  }
+  return open
+}
+
 /** 只识别工具协议标签；普通的 <、|、HTML 和聊天控制标签不在这里处理。 */
 function toolTag (token) {
   let body = FULLWIDTH(stripZeroWidth(token)).slice(1).replace(/>$/, '').trim()
@@ -456,6 +472,11 @@ export function parseReply(text, options) {
   const code = codeRanges(cleaned)
   const raw = cleaned.replace(/<br\s*\/?>/gi, (tag, offset) => insideCode(code, offset, offset + tag.length) ? tag : '\n').trim()
   if (isSilence(raw)) return { silent: true, items: [] }
+  // 工具显式指定语音：仍经过同一份清洗，但正文不再当作媒体/气泡指令解析。
+  if (options?.voice === true) {
+    const value = stripMarkdown(raw)
+    return { silent: !value, items: value ? [{ kind: 'voice', value }] : [] }
+  }
   const items = []
   let replyTo = '' // 等着挂到下一条气泡上的「引用回复」编号
   const attach = (from) => {
