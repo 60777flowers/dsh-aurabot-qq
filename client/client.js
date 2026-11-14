@@ -1871,14 +1871,13 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h(Row, { label: '要授权时提醒', hint: '工具卡住、等你点批准的时候。' }, f.sw('notice.approval')),
           h(Row, { label: '要选选项时提醒', hint: '需要你选东西的时候。' }, f.sw('notice.question')),
           h(Row, { label: '合并等待（秒）', hint: '连着来几件事时先攒一会儿再提醒，免得刷屏。默认 8。' },
-            // 非受控：边打字边 setDraft 会被重渲染弹回旧值，改成失焦/回车时写回
+            // 非受控 + onChange：输入时不重渲染（不会弹回），但值实时写进 draft，不用失焦也不会丢
             h('input', {
               className: cx('ab-input', 'sm'),
               defaultValue: getPath(draft, 'notice.windowSec') ?? '',
               placeholder: '8',
               inputMode: 'numeric',
-              onBlur: (e) => setDraft(setPath(draft, 'notice.windowSec', e.target.value)),
-              onKeyDown: (e) => { if (e.key === 'Enter') e.target.blur() },
+              onChange: (e) => setDraft(setPath(draft, 'notice.windowSec', e.target.value)),
             }),
             h('span', { className: 'ab-muted' }, ' 秒')),
           h(NoticeWorkspaces, { toast }),
