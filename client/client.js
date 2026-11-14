@@ -1631,7 +1631,146 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     }
 
     const personaDraftKey = (id) => 'aurabot.persona.draft.' + id
-    function Persona({ st, toast, reload }) {
+    function PersonaImageSettings({ image, disabled, onSave }) {
+      const [note, setNote] = useState(image.note || '')
+      useEffect(() => { setNote(image.note || '') }, [image.id, image.note])
+      return h('div', { style: { marginTop: 12 } },
+        h('label', { className: 'ab-flex', style: { gap: 8, marginBottom: 10 } },
+          h('input', { type: 'checkbox', checked: image.reference !== false, disabled, onChange: (e) => onSave({ reference: e.target.checked }) }),
+          h('span', null, '用于生图参考')),
+        h('label', { className: 'ab-muted ab-small' }, '图片备注',
+          h('input', { className: 'ab-input', style: { width: '100%', marginTop: 6 }, value: note, maxLength: 120, disabled, placeholder: '如：工作服、常服、Q版形象', onChange: (e) => setNote(e.target.value) })),
+        h('div', { style: { marginTop: 8 } }, h(Btn, { small: true, disabled: disabled || note === (image.note || ''), onClick: async () => { const result = await onSave({ note }); if (result?.images) setNote(result.images.find((item) => item.id === image.id)?.note || '') } }, '保存备注')))
+    }
+
+    function PersonaLook({ edit, patch, look, setLook, saved, st, draft, setDraft, toast }) {
+      const [busy, setBusy] = useState('')
+      const [models, setModels] = useState(null)
+      const [modelError, setModelError] = useState('')
+      const modelRequest = useRef(0)
+      const userRevision = useRef(0)
+      const fileRef = useRef(null)
+      const replaceRef = useRef(null)
+      const replaceId = useRef(null)
+      const request = useRef(0)
+      const latest = useRef(null)
+      const model = draft.personaLook?.visionModel || { provider: '', model: '' }
+      const modelKey = model.provider && model.model ? model.provider + '::' + model.model : ''
+      const modelDirty = JSON.stringify(model) !== JSON.stringify(st.config.personaLook?.visionModel || { provider: '', model: '' })
+      latest.current = { id: edit.id, appearance: edit.appearance, modelKey, imageHash: look.imageHash }
+      const loadModels = async () => {
+        const token = ++modelRequest.current
+        setModels(null); setModelError('')
+        const r = await get('/models')
+        if (token !== modelRequest.current) return
+        setModels(r.list || [])
+        if (r.ok === false) setModelError(r.message || '模型列表读取失败')
+      }
+      useEffect(() => {
+        loadModels()
+        return () => { modelRequest.current++; request.current++ }
+      }, [])
+      const options = [{ value: '', label: '跟随聊天模型' }, ...(models || []).map((m) => ({ value: m.provider + '::' + m.model, label: m.name + (m.vision === true ? '（能看图）' : m.vision === false ? '（不看图）' : ''), group: m.provider }))]
+      if (modelKey && !options.some((m) => m.value === modelKey)) options.push({ value: modelKey, label: modelKey + '（当前配置）' })
+      const run = async (kind, action) => {
+        const token = ++request.current
+        setBusy(kind)
+        try { return await action(() => token === request.current) }
+        catch (e) { if (token === request.current) toast(e.message || '操作失败', 'err') }
+        finally { if (token === request.current) setBusy('') }
+      }
+      const images = look.images || (look.hasImage ? [{ id: 'legacy', hash: look.imageHash }] : [])
+      const maxImages = look.maxImages || 8
+      const upload = (files, imageId) => {
+        if (!files.length || busy || !saved) return
+        const replacing = imageId !== undefined
+        run('upload', async (valid) => {
+          if (!replacing && images.length + files.length > maxImages) throw new Error(`每个人格最多 ${maxImages} 张人设图，请减少选择数量`)
+          if (files.some((file) => file.size > 5 * 1024 * 1024)) throw new Error('每张人设图最多 5MB')
+          let completed = 0
+          for (const file of files) {
+            try {
+              const data = await new Promise((resolve, reject) => {
+                const reader = new FileReader()
+                reader.onload = () => resolve(reader.result)
+                reader.onerror = () => reject(new Error('图片读取失败'))
+                reader.onabort = () => reject(new Error('图片读取已取消'))
+                reader.readAsDataURL(file)
+              })
+              if (!valid()) return
+              const r = await post('/persona/look/upload', { id: edit.id, data, ...(replacing ? { imageId } : { append: true }) })
+              if (!valid()) return
+              if (!r.ok) throw new Error(r.message)
+              setLook(r.look)
+              completed++
+            } catch (error) {
+              throw new Error(`${completed ? `已保存 ${completed} 张；` : ''}${error.message}`)
+            }
+          }
+          toast(replacing ? '这张人设图已替换' : `已新增 ${completed} 张人设图`, 'ok')
+        })
+      }
+      const describe = () => run('describe', async (valid) => {
+        const snapshot = { ...latest.current }
+        const rev = userRevision.current
+        const r = await post('/persona/look/describe', { id: edit.id })
+        if (!valid()) return
+        if (!r.ok) throw new Error(r.message)
+        if (rev !== userRevision.current || JSON.stringify(snapshot) !== JSON.stringify(latest.current) || r.imageHash !== snapshot.imageHash) {
+          toast('图片、描述或模型已变化，本次解析结果未填入，请重新解析')
+          return
+        }
+        patch({ appearance: r.text, appearanceSource: 'vision', appearanceDirty: true })
+        toast('描述已填入，确认后点击「保存人格」', 'ok')
+      })
+      return h('div', { className: 'ab-persona-look', style: { marginTop: 16, padding: 20, border: '1px solid var(--ab-line)', borderRadius: 12 } },
+        h('strong', null, '人设图与外貌'),
+        h('p', { className: 'ab-muted ab-small' }, '人设图只供识图与画自己时参考，不直接进入聊天上下文；与左侧「面板头像」分别保存。上传和删图立即生效，外貌文字随「保存人格」保存。'),
+        !saved ? h('p', { className: 'ab-muted' }, '请先保存新人格，再上传人设图。') : null,
+        h('p', { className: 'ab-muted ab-small' }, `最多 ${maxImages} 张，每张 5MB。生成外貌描述时综合全部图片；生图仅使用已开启的参考图，并按服务支持的数量传入。`),
+        h('p', { className: 'ab-muted ab-small' }, '参考开关即时保存；备注点「保存备注」后生效，并随实际使用的图片加入生图提示。只支持单图时取已开启的第一张，不支持参考图时使用外貌文字，工具会说明实际使用情况。'),
+        h('div', { className: 'ab-look-grid', style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 190px), 1fr))', gap: 16, margin: '16px 0' } },
+          images.map((image, index) => h('div', { key: image.id || 'legacy', className: 'ab-look-image', style: { padding: 14, border: '1px solid var(--ab-line)', borderRadius: 10, minWidth: 0 } },
+            h('img', { src: API + '/persona/look/image?id=' + encodeURIComponent(edit.id) + (image.id ? '&imageId=' + encodeURIComponent(image.id) : '') + '&v=' + encodeURIComponent(image.hash || ''), alt: `人设图 ${index + 1}`, style: { display: 'block', width: '100%', height: 180, objectFit: 'contain' } }),
+            h('div', { className: 'ab-muted ab-small', style: { marginTop: 10 } }, `人设图 ${index + 1} · ${image.reference === false ? '未用于生图' : '已开启生图参考'}`),
+            h(PersonaImageSettings, { key: image.id, image, disabled: !!busy || !saved, onSave: (settings) => run('configure', async (valid) => {
+              const r = await post('/persona/look/configure', { id: edit.id, imageId: image.id, ...settings })
+              if (!valid()) return
+              if (!r.ok) throw new Error(r.message)
+              setLook(r.look)
+              toast(settings.note !== undefined ? '图片备注已保存' : '生图参考选择已保存', 'ok')
+              return r.look
+            }) }),
+            h('div', { className: 'ab-flex ab-look-actions', style: { gap: 10, paddingTop: 12, paddingBottom: 4, flexWrap: 'wrap' } },
+              h(Btn, { small: true, disabled: !!busy || !saved, onClick: () => { replaceId.current = image.id; replaceRef.current?.click() } }, '替换这张'),
+              h(Btn, { small: true, kind: 'danger', disabled: !!busy || !saved, onClick: () => run('delete', async (valid) => {
+                const r = await post('/persona/look/delete', { id: edit.id, imageId: image.id })
+                if (!valid()) return
+                if (!r.ok) throw new Error(r.message)
+                setLook(r.look)
+                toast('已删除这张人设图，其他图片和外貌文字保留', 'ok')
+              }) }, '删除这张'))))),
+        h('input', { ref: fileRef, type: 'file', multiple: true, accept: 'image/png,image/jpeg,image/gif,image/webp', style: { display: 'none' }, onChange: (e) => { const files = Array.from(e.target.files || []); e.target.value = ''; upload(files) } }),
+        h('input', { ref: replaceRef, type: 'file', accept: 'image/png,image/jpeg,image/gif,image/webp', style: { display: 'none' }, onChange: (e) => { const files = Array.from(e.target.files || []).slice(0, 1); e.target.value = ''; upload(files, replaceId.current) } }),
+        h('div', { className: 'ab-flex', style: { padding: '4px 0 18px', gap: 12, flexWrap: 'wrap' } },
+          h(Btn, { small: true, disabled: !saved || !!busy || images.length >= maxImages, onClick: () => fileRef.current?.click() }, busy === 'upload' ? '上传中…' : '添加人设图'),
+          h('span', { className: 'ab-muted ab-small' }, `${images.length} / ${maxImages} 张 · ${images.filter((image) => image.reference !== false).length} 张已开启生图参考`)),
+        h(Row, { label: '外貌解析模型', hint: '仅用于读取人设图，生成外貌描述。' }, h(Select, { value: modelKey, options, onChange: (value) => {
+          userRevision.current++
+          const [provider, ...rest] = String(value).split('::')
+          setDraft((previous) => setPath(previous, 'personaLook.visionModel', { provider: value ? provider : '', model: value ? rest.join('::') : '' }))
+        } })),
+        h('div', { className: 'ab-muted ab-small', style: { margin: '0 0 14px', lineHeight: 1.7 } },
+          h('div', null, '点击「从人设图生成描述」时，才会把全部人设图发送给这个模型。需要支持看图的模型。'),
+          h('div', null, '这项选择只影响外貌解析，不会更换聊天模型或生图模型。所有人格共用此设置；更换后先点页面底部「保存设置」。')),
+        models === null ? h('p', { className: 'ab-muted ab-small' }, '正在读取模型列表…') : null,
+        modelError ? h('div', { className: 'ab-flex' }, h('span', { className: 'ab-muted ab-small' }, modelError), h(Btn, { small: true, onClick: loadModels }, '重试模型列表')) : null,
+        h(Row, { label: '外貌描述', hint: '最多 2000 字，可直接手写或修改生成结果。点击「保存人格」后，她在聊天和画自己时会采用这段外貌设定。' }, h('textarea', { className: 'ab-textarea', value: edit.appearance || '', maxLength: 2000, onChange: (e) => { userRevision.current++; patch({ appearance: e.target.value, appearanceSource: 'manual', appearanceDirty: true }) } })),
+        h('div', { className: 'ab-flex', style: { padding: '14px 0 4px', gap: 12, flexWrap: 'wrap' } }, h(Btn, { small: true, disabled: !saved || !look.hasImage || !!busy || modelDirty, onClick: describe }, busy === 'describe' ? '正在生成描述…' : '从人设图生成描述'),
+          h('span', { className: 'ab-muted ab-small' }, modelDirty ? '外貌解析模型已更换，请先点页面底部「保存设置」。' : look.stale ? '图片已更新，可重新生成描述，也可手动修改后保存人格。' : edit.appearanceDirty ? '描述尚未保存，请确认后点「保存人格」。' : '生成结果先填入文本框，确认后点「保存人格」才生效。')))
+    }
+
+    function Persona({ st, toast, reload, draft, setDraft }) {
       const [list, setList] = useState(st.personas)
       const [current, setCurrent] = useState(st.config.persona.current)
       // 记住上次编辑的人格：切走标签页再回来还编辑同一个，而不是跳回正在用的那个
@@ -1642,30 +1781,41 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const [whole, setWhole] = useState(() => { try { return localStorage.getItem('aurabot.persona.whole') === '1' } catch (e) { return false } })
       // 上次没保存的草稿：进来时只提示「要不要恢复」，不自动覆盖当前内容
       const [restore, setRestore] = useState(null)
+      const [look, setLook] = useState({})
+      const [saving, setSaving] = useState(false)
+      const [loadError, setLoadError] = useState('')
+      const loadSeq = useRef(0)
+      const revision = useRef(0)
+      const editRef = useRef(edit)
+      editRef.current = edit
+      useEffect(() => () => { loadSeq.current++; revision.current++ }, [])
       useEffect(() => { try { localStorage.setItem('aurabot.persona.sel', sel) } catch (e) {} }, [sel])
       const load = async (id) => {
+        const token = ++loadSeq.current
+        setLoadError('')
         const r = await get('/persona/get?id=' + encodeURIComponent(id))
-        if (!r.ok) return
-        const server = { id: r.persona.id, name: r.persona.name, tags: (r.persona.tags || []).join('，'), secs: splitPersona(r.persona.body) }
-        let draft = null
-        try { const raw = localStorage.getItem(personaDraftKey(id)); if (raw) { const d = JSON.parse(raw); if (d && d.id === id && typeof d.body === 'string' && d.body !== r.persona.body) draft = d } } catch (e) {}
+        if (token !== loadSeq.current) return
+        if (!r.ok) { setLoadError(r.message || '人格读取失败'); return }
+        const server = { id: r.persona.id, name: r.persona.name, tags: (r.persona.tags || []).join('，'), secs: splitPersona(r.persona.body), appearance: r.look?.appearance || '', appearanceSource: r.look?.source || 'manual', appearanceDirty: false }
+        let localDraft = null
+        try { const raw = localStorage.getItem(personaDraftKey(id)); if (raw) { const d = JSON.parse(raw); if (d && d.id === id && typeof d.body === 'string' && (d.body !== r.persona.body || d.name !== server.name || d.tags !== server.tags || (typeof d.appearance === 'string' && d.appearance !== server.appearance))) localDraft = d } } catch (e) {}
+        revision.current++
         setEdit(server)
+        setLook(r.look || {})
         setDirty(false)
-        setRestore(draft ? { body: draft.body, name: draft.name, tags: draft.tags, at: draft.at || 0 } : null)
+        setRestore(localDraft)
         setPending({})
       }
-      useEffect(() => { load(sel) }, [sel])
+      useEffect(() => { load(sel); return () => { loadSeq.current++ } }, [sel])
       // 编辑中的草稿只写 localStorage（不动磁盘）；切标签/刷新后在下次进来时提示是否恢复
       useEffect(() => {
         if (!edit || !dirty) return
-        const t = setTimeout(() => {
-          try { localStorage.setItem(personaDraftKey(edit.id), JSON.stringify({ id: edit.id, name: edit.name, tags: edit.tags, body: joinPersona(edit.secs), at: Date.now() })) } catch (e) {}
-        }, 200)
-        return () => clearTimeout(t)
+        try { localStorage.setItem(personaDraftKey(edit.id), JSON.stringify({ id: edit.id, name: edit.name, tags: edit.tags, body: joinPersona(edit.secs), appearance: edit.appearance, appearanceSource: edit.appearanceSource, at: Date.now() })) } catch (e) {}
       }, [edit, dirty])
       const restoreDraft = () => {
         if (!restore) return
-        setEdit({ ...edit, name: restore.name ?? edit.name, tags: restore.tags ?? edit.tags, secs: splitPersona(restore.body) })
+        revision.current++
+        setEdit({ ...edit, name: restore.name ?? edit.name, tags: restore.tags ?? edit.tags, secs: splitPersona(restore.body), appearance: restore.appearance ?? edit.appearance, appearanceSource: restore.appearanceSource || 'manual', appearanceDirty: typeof restore.appearance === 'string' })
         setDirty(true)
         setRestore(null)
         toast('已恢复上次的改动（还没保存，确认后点「保存人格」）', 'ok')
@@ -1679,11 +1829,24 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const body = edit ? joinPersona(edit.secs) : ''
       const waiting = Object.keys(pending).length
       const save = async () => {
-        const r = await post('/persona/save', { id: edit.id, name: edit.name, tags: edit.tags.split(/[,，\s]+/).filter(Boolean), body })
+        if (saving) return
+        const rev = revision.current
+        const id = edit.id
+        setSaving(true)
+        const r = await post('/persona/save', { id, name: edit.name, tags: edit.tags.split(/[,，\s]+/).filter(Boolean), body, ...(edit.appearanceDirty ? { appearance: edit.appearance || '', appearanceSource: edit.appearanceSource } : {}) })
+        setSaving(false)
         toast(r.message || (r.ok ? '保存好了' : '没保存成功'))
-        if (r.ok) { setDirty(false); setRestore(null); try { localStorage.removeItem(personaDraftKey(edit.id)) } catch (e) {} refresh() }
+        if (r.ok) {
+          if (editRef.current?.id === id && revision.current === rev) {
+            setDirty(false); setRestore(null)
+            setEdit((previous) => ({ ...previous, appearanceDirty: false }))
+            setLook((previous) => previous.imageHash === r.look?.imageHash ? { ...previous, stale: r.look.stale } : previous)
+            try { localStorage.removeItem(personaDraftKey(id)) } catch (e) {}
+          }
+          refresh()
+        }
       }
-      const patch = (p) => { setEdit({ ...edit, ...p }); setDirty(true) }
+      const patch = (p) => { revision.current++; setEdit((previous) => ({ ...previous, ...p })); setDirty(true) }
       const setSecs = (secs) => patch({ secs })
       const updSec = (k, p) => setSecs(edit.secs.map((s) => (s.k === k ? { ...s, ...p } : s)))
       const moveSec = (i, d) => { const n = edit.secs.slice(); const [x] = n.splice(i, 1); n.splice(i + d, 0, x); setSecs(n) }
@@ -1707,10 +1870,10 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const suggest = PSEC_SUGGEST.filter((t) => !titles.includes(t))
       return h('div', { className: 'ab-persona' },
         h('div', { className: 'ab-plist' },
-          list.map((p) => h('button', { key: p.id, type: 'button', className: cx('ab-pitem', sel === p.id && 'on'), onClick: () => setSel(p.id) },
+          list.map((p) => h('button', { key: p.id, type: 'button', className: cx('ab-pitem', sel === p.id && 'on'), onClick: () => { if (p.id === sel) return; loadSeq.current++; revision.current++; setEdit(null); setSel(p.id) } },
             h('div', { className: 'nm' }, p.name, p.id === current ? h('span', { className: 'ab-badge' }, '正在用') : null),
             h('div', { className: 'tg' }, (p.tags || []).join(' · ') || p.id + ' · ' + p.chars + ' 字'))),
-          h(Btn, { kind: 'ghost', onClick: () => { const id = 'persona-' + Date.now().toString(36); setEdit({ id, name: '新人格', tags: '', secs: splitPersona('你是……\n\n【打字习惯】\n- 短句、口语，一次只说一两句。') }); setSel(id); setDirty(true); setPending({}) } }, '＋ 新建人格'),
+          h(Btn, { kind: 'ghost', onClick: () => { const id = 'persona-' + Date.now().toString(36); loadSeq.current++; revision.current++; setEdit({ id, name: '新人格', tags: '', appearance: '', appearanceSource: 'manual', appearanceDirty: false, secs: splitPersona('你是……\n\n【打字习惯】\n- 短句、口语，一次只说一两句。') }); setLook({}); setRestore(null); setSel(id); setDirty(true); setPending({}) } }, '＋ 新建人格'),
           h(AvatarCard, { st, toast, reload }),
         ),
         edit ? h(Card, { title: '编辑人格', desc: '人格写在系统提示词的最前面，按节写更好改。离开不会自动保存；切标签/切页面会先记住草稿，下次进来会问你要不要恢复；输入框里 Ctrl+Z 可撤回。保存后大肥鱼下一轮回复起就按新的来。',
@@ -1730,6 +1893,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             h(Btn, { small: true, kind: 'ghost', onClick: discardDraft }, '丢弃')) : null,
           h(Row, { label: '名字' }, h('input', { className: 'ab-input', value: edit.name, onChange: (e) => patch({ name: e.target.value }) })),
           h(Row, { label: '标签', hint: '用逗号隔开' }, h('input', { className: 'ab-input', value: edit.tags, onChange: (e) => patch({ tags: e.target.value }) })),
+          h(PersonaLook, { key: edit.id, edit, patch, look, setLook, saved: list.some((p) => p.id === edit.id), st, draft, setDraft, toast }),
           h('div', { className: 'ab-flex', style: { marginTop: 14 } },
             h(Seg, { value: whole ? 'whole' : 'secs', onChange: (v) => setMode(v === 'whole'), options: [{ value: 'secs', label: '分节' }, { value: 'whole', label: '整段' }] }),
             h('div', { className: 'ab-spacer' }),
@@ -1749,8 +1913,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h('div', { className: 'ab-flex', style: { marginTop: 14 } },
             waiting ? h('span', { className: 'ab-muted ab-small' }, '还有 ' + waiting + ' 节 AI 润色没选定，选好再保存') : null,
             h('div', { className: 'ab-spacer' }),
-            h(Btn, { kind: 'primary', disabled: !dirty || !!waiting, onClick: save }, dirty ? '保存人格' : '已保存')),
-        ) : h(Card, null, h(Empty, { icon: '⏳', text: '加载中…' })),
+            h(Btn, { kind: 'primary', disabled: !dirty || !!waiting || saving, onClick: save }, saving ? '保存中…' : dirty ? '保存人格' : '已保存')),
+        ) : h(Card, null, loadError ? h('div', null, h('p', { className: 'ab-muted' }, loadError), h(Btn, { onClick: () => load(sel) }, '重试加载人格')) : h(Empty, { icon: '⏳', text: '加载中…' })),
       )
     }
 
@@ -8913,7 +9077,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         stickers: Stickers, imagegen: ImageGen, video: Video, diary: Diary, speakup: SpeakUp, autotelic: Autotelic, pet: PetPanel, mood: Mood, memory: MemoryPage, persona: PersonaMemory, song: Song, bili: Bili, douyin: Douyin, heybox: Heybox, local: LocalApi, browser: Browser, security: Security, market: Market, modules: Modules, logs: Logs, about: About, backup: Backup,
       }[curTab.id] || Overview
       // 哪些标签有没保存的改动
-      const TAB_KEYS = { connect: ['snowluma', 'botQQ'], access: ['ownerQQ', 'ownerName', 'ownerLevel', 'approvalNotify', 'approvalViaQQ', 'qqApi', 'longTasks', 'profilePerms', 'subagentBackground'], group: ['group', 'merge', 'titleFilter', 'chat'], model: ['model', 'chatModels'], voice: ['voice'], asr: ['voice'], stickers: ['stickers'], imagegen: ['imageGen'], video: ['video', 'local'], diary: ['diary', 'qzoneSocial'], speakup: ['speakUp'], autotelic: [], pet: [], mood: ['mood', 'memory'], song: ['song'], bili: ['bili'], douyin: ['douyin'], heybox: ['heybox'], local: ['local'], browser: ['browser'], security: ['security', 'update'] }
+      const TAB_KEYS = { character: ['personaLook'], connect: ['snowluma', 'botQQ'], access: ['ownerQQ', 'ownerName', 'ownerLevel', 'approvalNotify', 'approvalViaQQ', 'qqApi', 'longTasks', 'profilePerms', 'subagentBackground'], group: ['group', 'merge', 'titleFilter', 'chat'], model: ['model', 'chatModels'], voice: ['voice'], asr: ['voice'], stickers: ['stickers'], imagegen: ['imageGen'], video: ['video', 'local'], diary: ['diary', 'qzoneSocial'], speakup: ['speakUp'], autotelic: [], pet: [], mood: ['mood', 'memory'], song: ['song'], bili: ['bili'], douyin: ['douyin'], heybox: ['heybox'], local: ['local'], browser: ['browser'], security: ['security', 'update'] }
       const tabDirty = (id) => {
         if (!dirty) return false
         if (id.startsWith('ext:')) { const k = id.slice(4); return JSON.stringify((draft.ext || {})[k]) !== JSON.stringify((cfg.ext || {})[k]) }

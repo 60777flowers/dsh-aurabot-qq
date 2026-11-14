@@ -39,7 +39,8 @@ import { parseCommand, runCommand, createMutes, commandList } from './chat/comma
 import { isOwner, groupResponseMode } from './chat/access.js'
 import { changePermissions, changePrivateWhitelist, privatePermissionCatalog } from './chat/permission-policy.js'
 import { canUseDelegatedCommand, delegatedCommandKey, runPersonalModelCommand } from './chat/delegated-commands.js'
-import { listPersonas, readPersona, savePersona, deletePersona, currentPersonaText, rulesText, seedPersonas, safeId, dataOwner, claimPending, hasRootData, personaDataDir } from './persona/personas.js'
+import { listPersonas, readPersona, savePersona, deletePersona, currentPersonaText, resolvePersonaId, rulesText, seedPersonas, safeId, dataOwner, claimPending, hasRootData, personaDataDir, personaNow } from './persona/personas.js'
+import { readLook, lookImage, lookImages, lookReferences, configureLookImage, lookMime, saveLookImage, deleteLookImage, saveAppearance, appearanceBlock, describeLook } from './persona/persona-look.js'
 import { createModules, API_VERSION } from './core/modules.js'
 import { createCommunity, REGISTRY_URL, GITEE_MIRROR } from './core/community.js'
 import { createApprovalRelay } from './security/approval.js'
@@ -193,7 +194,10 @@ export function apply(ctx) {
   const rulesOpts = (kind) => (mods ? { off: mods.builtinOff(), extra: mods.rules(kind) } : {})
   // 扩展模块能整段改写人格和规则（同步：提示词变量不能等）
   const rewrite = (event, text, ...args) => { const r = mods ? mods.filterSync(event, text, ...args) : text; return typeof r === 'string' ? r : r === null ? '' : text }
-  variable('aurabot_persona', () => rewrite('persona', currentPersonaText(cfg.persona.current)))
+  variable('aurabot_persona', () => {
+    const id = resolvePersonaId(personaNow(cfg))
+    return rewrite('persona', currentPersonaText(id) + appearanceBlock(id))
+  })
   variable('aurabot_rules_private', () => {
     const base = rewrite('rules', rulesText('private', cfg, rulesOpts('private')), 'private')
     // 危险命令确认开着时补一句：被拦下要如实告诉主人，别绕着写
@@ -772,7 +776,14 @@ export function apply(ctx) {
     defaultModel: () => defaultModel(ctx, { model: {} }),
     http: { body: readBody, raw: readRaw, query, send },
     media: createMediaAccess({ root: ROOT, use, config: getConfig }),
-    personas: { list: listPersonas, read: readPersona, current: () => currentPersonaText(cfg.persona.current) },
+    personas: {
+      list: listPersonas, read: readPersona, current: () => currentPersonaText(cfg.persona.current),
+      look: (sessionId) => {
+        const id = resolvePersonaId((sessionId && hub.personaOf(sessionId)) || personaNow(cfg))
+        const references = id ? lookReferences(id, { lazy: true }) : []
+        return { get image() { return references[0]?.image || null }, references, appearance: id ? readLook(id).appearance : '' }
+      },
+    },
     getConfig, setConfig,
   }
   mods = createModules({ ctx, core, getConfig, setConfig, logger, version: VERSION, builtins: BUILTINS })
@@ -2123,17 +2134,69 @@ export function apply(ctx) {
     return { ok: true, message: n ? `归档了 ${n} 个会话，下一条消息起她会重新开始` : '本来就没有会话' }
   })
 
-  // 人格
+  // 人格：新增写操作显式限制 POST，避免 GET 绕过 CSRF 方法检查。
+  const personaPost = (req, res) => {
+    if (req.method === 'POST') return true
+    send(res, 405, { ok: false, message: '请使用 POST' })
+    return false
+  }
+  const savedLookId = (id) => {
+    readLook(id) // 严格检查 id，不接受清洗后指向另一人格
+    if (!readPersona(id)) throw new Error('请先保存人格')
+    return id
+  }
+  route('/persona/look', async (req) => ({ ok: true, look: readLook(savedLookId(query(req).id)) }))
+  route('/persona/look/image', async (req, res) => {
+    const q = query(req)
+    const buf = lookImage(savedLookId(q.id), q.imageId)
+    if (!buf) { send(res, 404, { ok: false, message: '还没有人设图' }); return }
+    res.setHeader?.('x-content-type-options', 'nosniff')
+    send(res, 200, buf, lookMime(buf))
+  })
+  route('/persona/look/upload', async (req, res) => {
+    if (!personaPost(req, res)) return
+    const b = JSON.parse((await readRaw(req, 8 * 1024 * 1024)).toString('utf8'))
+    const id = savedLookId(b?.id)
+    const match = typeof b.data === 'string' && b.data.match(/^data:image\/(?:png|jpeg|jpg|gif|webp);base64,([A-Za-z0-9+/]+={0,2})$/)
+    if (!match || match[1].length % 4 !== 0) throw new Error('请选择有效的图片 data URL')
+    return { ok: true, look: saveLookImage(id, Buffer.from(match[1], 'base64'), { imageId: b.imageId, append: b.append === true }) }
+  })
+  route('/persona/look/delete', async (req, res) => {
+    if (!personaPost(req, res)) return
+    const b = await readBody(req)
+    return { ok: true, look: deleteLookImage(savedLookId(b.id), b.imageId) }
+  })
+  route('/persona/look/configure', async (req, res) => {
+    if (!personaPost(req, res)) return
+    const b = JSON.parse((await readRaw(req, 16 * 1024)).toString('utf8'))
+    return { ok: true, look: configureLookImage(savedLookId(b.id), b.imageId, { reference: b.reference, note: b.note }) }
+  })
+  route('/persona/look/describe', async (req, res) => {
+    if (!personaPost(req, res)) return
+    const b = await readBody(req)
+    const id = savedLookId(b.id)
+    const buffers = lookImages(id)
+    if (!buffers.length) throw new Error('请先上传人设图')
+    const imageHash = readLook(id).imageHash
+    const text = await describeLook({ dsh: ctx, cfg: getConfig(), buffers })
+    // 在途解析不覆盖换图后的状态；描述仍由面板确认保存。
+    if (!readPersona(id) || readLook(id).imageHash !== imageHash) throw new Error('人设图已变化，请重新解析')
+    return { ok: true, text, imageHash }
+  })
   route('/personas', async () => ({ ok: true, list: listPersonas(), current: cfg.persona.current, dataOwner: dataOwner(cfg), claimPending: claimPending(cfg) }))
   route('/persona/get', async (req) => {
     const p = readPersona(query(req).id)
-    return p ? { ok: true, persona: p } : { ok: false, message: '没有这个人格' }
+    return p ? { ok: true, persona: p, look: readLook(p.id) } : { ok: false, message: '没有这个人格' }
   })
-  route('/persona/save', async (req) => {
+  route('/persona/save', async (req, res) => {
+    if (!personaPost(req, res)) return
     const b = await readBody(req)
+    readLook(b.id)
+    if (b.appearance !== undefined && typeof b.appearance !== 'string') throw new Error('外貌描述须为文字')
     const p = savePersona(b.id, b)
+    if (b.appearance !== undefined) saveAppearance(p.id, b.appearance, b.appearanceSource)
     bridge.refresh()
-    return { ok: true, persona: p, message: '人格已保存，下一轮起生效' }
+    return { ok: true, persona: p, look: readLook(p.id), message: '人格已保存，下一轮起生效' }
   })
   route('/persona/delete', async (req) => {
     const b = await readBody(req)
