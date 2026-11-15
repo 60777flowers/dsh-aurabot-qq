@@ -1,4 +1,5 @@
 import { ignoredGroupMember } from './member-filter.js'
+import { hasReplyStickerKeywords } from './sticker-policy.js'
 // 消息中枢：QQ 会话 ↔ DSH 会话。
 //   收：OneBot 事件 → 白名单 / 群聊策略 → 拼好文案（带发言人、群上下文、图片、语音转写）→ 喂进对应 DSH 会话
 //   发：DSH 会话一轮结束 → 取最终正文 → 拆条 / 语音 / 表情 → 发回原来的 QQ 会话
@@ -1012,7 +1013,8 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     const parsed = parseReply(text, cleaningFor(chatId))
     if (parsed.silent) return
     const cfg = getConfig()
-    const items = cfg.stickers.limitTagged && parsed.items.some((i) => i.kind === 'sticker') && random() >= cfg.stickers.autoChance
+    const items = cfg.stickers.limitTagged && parsed.items.some((i) => i.kind === 'sticker')
+      && !(cfg.stickers.keywordExemption && hasReplyStickerKeywords(parsed.items)) && random() >= cfg.stickers.autoChance
       ? parsed.items.filter((i) => i.kind !== 'sticker') : parsed.items
     for (const item of items) {
       if (!isCurrent()) return
@@ -1669,7 +1671,8 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     // 新开关默认关，保留旧的「标签直发、自动补图受心情影响」行为。
     let stickerAllowed
     const allowReplySticker = () => (stickerAllowed ??= random() < cfg.stickers.autoChance * (cfg.stickers.limitTagged ? 1 : mood().sticker))
-    const limitReplyStickers = (list) => cfg.stickers.limitTagged && list.some((i) => i.kind === 'sticker') && !allowReplySticker()
+    const limitReplyStickers = (list) => cfg.stickers.limitTagged && list.some((i) => i.kind === 'sticker')
+      && !(cfg.stickers.keywordExemption && hasReplyStickerKeywords(list)) && !allowReplySticker()
       ? list.filter((i) => i.kind !== 'sticker') : list
     // 对方明确要语音、她却只打了字：整段改成语音发（模型偶尔会忘，这里兜底）
     if (!interim && opts.wantVoice && cfg.voice.enabled && !items.some((i) => i.kind === 'voice')) {
