@@ -388,7 +388,7 @@ export const DEFAULTS = {
     neteaseCookie: '', // 网易云 Cookie（MUSIC_U），下会员歌用
     separatorModel: 'model_bs_roformer_ep_317_sdr_12.9755.ckpt', // 人声分离模型
     maxVoiceSec: 120, // 语音条最长多少秒，歌更长就截一段
-    clipStart: 'auto', // auto = 从副歌附近截；head = 从头截
+    clipStart: 'auto', // auto = 自动分析音频定位副歌入口（分析失败回退 30%）；head = 从头截
     vocalVolume: 1,
     instVolume: 0.8,
     ownerOnly: true, // 只有主人能点歌
