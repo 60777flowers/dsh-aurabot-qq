@@ -77,6 +77,44 @@ export async function resolveDrawImage(image, { hub, chat }) {
   return buf
 }
 
+/**
+ * OpenAI 兼容服务：按服务地址拉一次 /models（面板「获取模型」用）。
+ * 返回模型 id 数组；地址不对 / 没 Key / 连不上都给一句能看懂的错误。
+ * 这是给面板按钮用的诊断请求，允许连本机服务（Ollama / LM Studio 这类常见），
+ * 所以不像下载图片那样走 SSRF 闸；地址来自本机面板，最终请求仍受超时约束。
+ */
+export async function fetchOpenAIModels ({ baseUrl, apiKey, fetchImpl, timeoutMs = 20000 } = {}) {
+  const base = String(baseUrl || '').trim().replace(/\/+$/, '')
+  if (!base) throw new Error('请先填服务地址（一般以 /v1 结尾）')
+  if (!/^https?:\/\//i.test(base)) throw new Error('服务地址要以 http:// 或 https:// 开头')
+  const doFetch = fetchImpl || ((...args) => globalThis.fetch(...args))
+  let r
+  try {
+    r = await doFetch(`${base}/models`, {
+      method: 'GET',
+      headers: apiKey ? { authorization: `Bearer ${apiKey}` } : {},
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+  } catch (error) {
+    const detail = error?.name === 'TimeoutError' ? '连接超时' : (error?.cause?.code || error?.message || '连接失败')
+    throw new Error(`连接不上服务地址：${detail}`)
+  }
+  const raw = await r.text().catch(() => '')
+  let j = null
+  try { j = JSON.parse(raw) } catch {}
+  if (!r.ok) {
+    if (r.status === 401 || r.status === 403) throw new Error(`API Key 没填或不对（HTTP ${r.status}）`)
+    if (r.status === 404) throw new Error('这个地址没有 /models 接口（HTTP 404），确认服务地址一般以 /v1 结尾')
+    const reason = j?.error?.message || j?.message
+    throw new Error(`获取模型列表失败：HTTP ${r.status}${reason ? '：' + String(reason).slice(0, 200) : ''}`)
+  }
+  const items = Array.isArray(j) ? j : Array.isArray(j?.data) ? j.data : Array.isArray(j?.models) ? j.models : null
+  if (!items) throw new Error('接口返回的不是模型列表')
+  const models = [...new Set(items.map((it) => (typeof it === 'string' ? it : it?.id || it?.model || it?.name)).map((s) => String(s || '').trim()).filter(Boolean))]
+  if (!models.length) throw new Error('接口没有返回任何模型')
+  return models
+}
+
 const UNSUPPORTED_REFERENCE = '这个生图服务不支持参考图'
 export const isUnsupportedReference = (error) => error?.message === UNSUPPORTED_REFERENCE
 
