@@ -68,7 +68,7 @@ function makePurpose(hub, overrides = {}) {
     hub,
     log: { info() {}, warn() {}, debug() {} },
     isMuted: () => false,
-    mood: () => ({ nudge: (d, r) => nudges.push({ d, r }) }),
+    mood: () => ({ nudge: (d, r, chatId) => nudges.push({ d, r, chatId }) }),
     memory: () => ({ list: () => (overrides.memories ?? DEFAULT_MEMORIES).map((m) => ({ id: m.id || 'm1', text: m.text, importance: m.importance ?? 0.8, at: Date.now() })) }),
     personaText: () => overrides.persona || '',
     use,
@@ -357,6 +357,7 @@ test('心情：sent 后按情绪 nudge mood；silent 不 nudge', async () => {
   const s = JSON.parse(readFileSync(stateFile(), 'utf8'))
   if (s.lastOutcome === 'sent') {
     assert.ok(nudges.length === 1 || (s.history.at(-1)?.emotion ?? '') === '', 'sent 时推了心情')
+    if (nudges.length) assert.equal(nudges[0].chatId, `private:${OWNER}`, '心情原因要记到主人私聊，不能变成全局原因')
   }
 })
 
@@ -976,6 +977,7 @@ test('代发决断：提示词注入人格、心情、相关记忆、人物档�
     { id: 'm3', text: '主人说别再半夜发消息吵他', importance: 0.7, about: OWNER },
   ]
   const nudges = []
+  const moodChats = []
   const p = createPurpose({
     getConfig: () => ({
       enabled: true, ownerQQ: OWNER, ownerName: '主人',
@@ -986,7 +988,7 @@ test('代发决断：提示词注入人格、心情、相关记忆、人物档�
     log: { info() {}, warn() {}, debug() {} },
     isMuted: () => false,
     // 心情：contextLine 有就用它（真实 mood 模块的形态）
-    mood: () => ({ contextLine: () => '（你现在有点低落，因为主人刚说要去睡。这会自然地影响你说话：话少一点、别太闹。）', nudge: (d, r) => nudges.push({ d, r }) }),
+    mood: () => ({ contextLine: chat => { moodChats.push(chat); return '（你现在有点低落，因为主人刚说要去睡。这会自然地影响你说话：话少一点、别太闹。）'; }, nudge: (d, r) => nudges.push({ d, r }) }),
     memory: () => ({
       list: (q) => memories,
       recall: () => memories.map((m) => ({ it: m, score: 0.8 })),
@@ -999,9 +1001,10 @@ test('代发决断：提示词注入人格、心情、相关记忆、人物档�
   // 人格
   assert.match(prompt, /大肥鱼/, '要带人格（她是谁）')
   assert.match(prompt, /软糯|撒娇/, '人格描述要进提示词')
-  // 心情
+  // 心情：代发决断只给主人私聊过目，contextLine 也必须按这个 chatId 取，不能把群里的原因带进来
   assert.match(prompt, /有点低落/, '心情 contextLine 要进提示词')
   assert.match(prompt, /别太闹|话少/, '心情对说话风格的影响要进提示词')
+  assert.deepEqual(moodChats, [{ chatId: `private:${OWNER}` }])
   // 记忆（按内容检索）
   assert.match(prompt, /面试|爸爸|半夜/, '相关记忆要进提示词')
   // 人物档案
