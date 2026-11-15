@@ -43,13 +43,16 @@ window.__ModuleLoader__.load({
       return next
     }
     // ---------------- token 用量显示 ----------------
-    /** token 数量用 K / M / B 表示：1234 → 1.2K；1234567 → 1.23M；1234567890 → 1.23B */
+    // Compact display only; accounting always retains the original integers.
     const fmtTokens = (n) => {
-      const v = Math.round(Number(n) || 0)
-      if (v < 1000) return String(v)
-      if (v < 1_000_000) return (v / 1000).toFixed(v < 100_000 ? 1 : 0) + 'K'
-      if (v < 1_000_000_000) return (v / 1_000_000).toFixed(v < 10_000_000 ? 2 : 1) + 'M'
-      return (v / 1_000_000_000).toFixed(2) + 'B'
+      const v = Math.max(0, Math.round(Number(n) || 0))
+      const units = ['', 'K', 'M', 'B']
+      let unit = 0
+      while (unit < units.length - 1 && v >= 1000 ** (unit + 1)) unit++
+      let scaled = Number((v / 1000 ** unit).toFixed(2))
+      // Rounding at a boundary should read 1M, not 1000K.
+      if (scaled >= 1000 && unit < units.length - 1) { scaled = Number((scaled / 1000).toFixed(2)); unit++ }
+      return String(scaled) + units[unit]
     }
     /**
      * 花费：「0.05 元」——「元」放后面（中文习惯），货币符号（¥ / $）才放前面。
@@ -1095,6 +1098,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     function UsageSummary({ sessions = {} }) {
       const [report, setReport] = useState(null)
       const [open, setOpen] = useState(false)
+      const [precise, setPrecise] = useState(false)
       const [range, setRange] = useState('all')
       const [busy, setBusy] = useState(false)
       const [failed, setFailed] = useState(false)
@@ -1112,6 +1116,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       }, [])
       useEffect(() => { load(range); return () => request.current?.abort() }, [range, load])
       const exact = n => Number(n || 0).toLocaleString('zh-CN')
+      const tokens = n => precise ? exact(n) : fmtTokens(n)
+      const tokenTitle = n => exact(n) + ' Tokens'
       const hit = r => r?.promptTokens ? (r.cacheHitRate * 100).toFixed(2) + '%' : '—'
       const money = r => typeof r?.cost === 'number' ? ' · 约 ' + fmtCost(r.cost, report.currency) : ''
       const total = report?.ranges.all
@@ -1127,15 +1133,15 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             h('thead', null, h('tr', null, ['对话 / 来源', '已上报调用', '输入 Tokens', '输出 Tokens', '合计 Tokens', '缓存命中率', ...(priced ? ['估算费用'] : [])].map(x => h('th', { key: x }, x)))),
             h('tbody', null, rows.map(r => h('tr', { key: r.key },
               h('td', null, nameOf(r.key)), h('td', null, exact(r.runs)),
-              h('td', null, exact(r.promptTokens)), h('td', null, exact(r.completionTokens)),
-              h('td', null, exact(r.totalTokens)), h('td', null, hit(r)),
+              h('td', { title: tokenTitle(r.promptTokens) }, tokens(r.promptTokens)), h('td', { title: tokenTitle(r.completionTokens) }, tokens(r.completionTokens)),
+              h('td', { title: tokenTitle(r.totalTokens) }, tokens(r.totalTokens)), h('td', null, hit(r)),
               priced ? h('td', null, typeof r.cost === 'number' ? fmtCost(r.cost, report.currency) : '—') : null)))))
       }
       const cur = report?.current
       return h('div', { className: 'ab-grid ab-usage' },
         h('button', { type: 'button', className: 'ab-card ab-usage-summary', 'aria-expanded': open, onClick: () => { setOpen(!open); if (!open) load(range) } },
           h('span', { className: 'ab-section-title' }, 'Tokens 用量'),
-          h('strong', { className: 'ab-usage-number' }, total ? exact(total.totalTokens) : busy ? '读取中…' : '暂时无法读取'),
+          h('strong', { className: 'ab-usage-number', title: total ? tokenTitle(total.totalTokens) : undefined }, total ? tokens(total.totalTokens) : busy ? '读取中…' : '暂时无法读取'),
           h('span', null, '已记录合计 · 输入缓存命中率 ' + hit(total) + money(total)),
           h('span', { className: 'ab-muted' }, open ? '收起明细 ↑' : '查看各对话用量 →')),
         open ? h(Card, { title: '用量明细', right: h(Btn, { small: true, onClick: () => load(range), disabled: busy }, busy ? '读取中…' : '刷新'),
@@ -1143,12 +1149,15 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h('div', { className: 'ab-flex', style: { flexWrap: 'wrap', gap: 6 } },
             [['all','已记录（近 90 天）'],['today','今天'],['yesterday','昨天'],['7','近 7 天'],['30','近 30 天']].map(([value,name]) =>
               h('button', { key: value, type: 'button', className: cx('ab-btn',range === value && 'primary'), 'aria-pressed': range === value, onClick: () => setRange(value) }, name))),
+          h('div', { className: 'ab-flex', style: { flexWrap: 'wrap', gap: 8, alignItems: 'center', marginTop: 8 } },
+            h('span', { className: 'ab-muted ab-small' }, 'K = 千 · M = 百万 · B = 十亿'),
+            h('button', { type: 'button', className: 'ab-btn', 'aria-pressed': precise, onClick: () => setPrecise(!precise) }, precise ? '使用简写' : '显示精确数字')),
           failed ? h('div', { className: 'ab-note warn', role: 'alert' }, '暂时没能读取最新用量，请点刷新重试。' + (report ? '当前仍显示上次结果。' : '')) : null,
           report?.writeFailed ? h('div', { className: 'ab-note warn', role: 'alert' }, '用量暂未保存成功；重启可能丢失最近的记录。') : null,
           busy || report?.range !== range ? h('p', { className: 'ab-muted', role: 'status' }, busy ? '正在读取所选时段…' : '请刷新以读取所选时段。') : cur ? h(Fragment, null,
-            h('div', { className: 'ab-note' }, '合计 ' + exact(cur.totalTokens) + ' Tokens · 命中率 ' + hit(cur) + money(cur)),
+            h('div', { className: 'ab-note', title: tokenTitle(cur.totalTokens) }, '合计 ' + tokens(cur.totalTokens) + ' Tokens · 命中率 ' + hit(cur) + money(cur)),
             table(cur.byChat, label),
-            cur.background?.runs ? h('div', { className: 'ab-note' }, '未归入具体对话的后台用量：' + exact(cur.background.totalTokens) + ' Tokens · 命中率 ' + hit(cur.background) + money(cur.background) + '。已包含在合计中。') : null,
+            cur.background?.runs ? h('div', { className: 'ab-note', title: tokenTitle(cur.background.totalTokens) }, '未归入具体对话的后台用量：' + tokens(cur.background.totalTokens) + ' Tokens · 命中率 ' + hit(cur.background) + money(cur.background) + '。已包含在合计中。') : null,
             h('details', { style: { marginTop: 12 } }, h('summary', null, '按来源和模型查看'),
               table(cur.byModule, k => k), table(cur.byModel, k => k))) : null,
           h('p', { className: 'ab-muted ab-small' },
