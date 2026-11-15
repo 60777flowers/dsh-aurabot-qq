@@ -2689,6 +2689,16 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
   const EXTRACT_LIMIT = 12 // 每次整理最多提炼多少批，剩下的留到下次
   const BAD_BATCH_LIMIT = 3 // 同一批连续几次提炼不出来就跳过，别让它卡住后面的记忆
 
+  // 提炼调度排序：私聊优先，其次积压少的小群，再按最久没发言的。谁也不能把一次 tick 的
+  // 12 批全吃光——否则一个活跃千人群的流水会永远挡在私聊前面（#31 / issue #376）。
+  function extractRank(chatId, pendingLines, lastAt = 0) {
+    return [String(chatId).startsWith('private:') ? 0 : 1, Number(pendingLines) || 0, Number(lastAt) || 0, String(chatId)]
+  }
+  function compareExtractRank(a, b) {
+    for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] - b[i]
+    return a[3].localeCompare(b[3])
+  }
+
   const isIdleDone = (progress, i) => (progress?.idle || []).some(([start, end]) => i >= start && i < end)
   function markIdle(progress, indices) {
     const ranges = [...(progress.idle || []), ...indices.map((i) => [i, i + 1])].sort((a, b) => a[0] - b[0])
@@ -3090,7 +3100,12 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
             byChat.get(l.chatId).push({ line: l, index: i })
           }
           let stopped = false
-          for (const [chatId, lines] of byChat) {
+          // 同一窗口里也按来源优先级排队：私聊、小群先，别让窗口开头的大群把整轮预算吃光。
+          const byChatOrdered = [...byChat.entries()].sort((a, b) => compareExtractRank(
+            extractRank(a[0], a[1].length, a[1].at(-1)?.line?.t),
+            extractRank(b[0], b[1].length, b[1].at(-1)?.line?.t),
+          ))
+          for (const [chatId, lines] of byChatOrdered) {
             let n = progress.chats[chatId] || 0
             while (n < lines.length) {
               if (snapshotVersion !== forgetVersion) throw new Error('聊天中有新的忘记请求，稍后重新提炼')
@@ -3323,45 +3338,76 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
           days.get(day).push({ line: l, index: i })
         }
       }
-      for (const [chatId, days] of pending) {
-        const count = [...days.values()].reduce((n, rows) => n + rows.length, 0)
-        if (count < (getConfig().memory.extractMinLines ?? 20)) continue
-        if (!latest.get(chatId) || startedAt - latest.get(chatId) < (getConfig().memory.extractIdleMinutes ?? 30) * 60_000) continue
-        for (const [day, rows] of days) {
-          for (let n = 0; n < rows.length; n += EXTRACT_LINES) {
-            let last = 0
-            for (const d of hub.chatLogDays()) for (const l of hub.chatLogOf(d)) if (l.chatId === chatId && !l.forgottenAt) last = Math.max(last, Number(l.t) || 0)
-            if (Date.now() - last < (getConfig().memory.extractIdleMinutes ?? 30) * 60_000) break
-            const current = hub.chatLogOf(day)
-            const part = rows.slice(n, n + EXTRACT_LINES).flatMap(({ index }) => {
+      const idleMs = (getConfig().memory.extractIdleMinutes ?? 30) * 60_000
+      const minLines = getConfig().memory.extractMinLines ?? 20
+      // 先按来源排好队：私聊 → 小群 → 大群。同一来源内部仍按天、按 80 行切批。
+      const queues = [...pending.entries()]
+        .map(([chatId, days]) => {
+          const count = [...days.values()].reduce((n, rows) => n + rows.length, 0)
+          const chunks = []
+          for (const [day, rows] of days) for (let n = 0; n < rows.length; n += EXTRACT_LINES) chunks.push({ day, rows: rows.slice(n, n + EXTRACT_LINES) })
+          return { chatId, count, lastAt: latest.get(chatId) || 0, chunks, cursor: 0, stopped: false }
+        })
+        .filter((q) => q.count >= minLines && q.lastAt && startedAt - q.lastAt >= idleMs)
+        .sort((a, b) => compareExtractRank(extractRank(a.chatId, a.count, a.lastAt), extractRank(b.chatId, b.count, b.lastAt)))
+
+      // 每个来源一轮只发一批，轮着来：私聊再少也先轮到，大群再大也不能一次把 12 批吃光。
+      let lastActivityRevision = hub?.chatLogRevision?.()
+      const lastActivity = (chatId) => {
+        const revision = hub?.chatLogRevision?.()
+        if (revision !== undefined && revision === lastActivityRevision) return latest.get(chatId) || 0
+        // 提炼期间流水有变化（或宿主没提供 revision）：重扫最近发言时间，聊天刚又热闹起来就先放下它。
+        latest.clear()
+        for (const d of hub.chatLogDays()) for (const l of hub.chatLogOf(d)) {
+          const id = String(l.chatId || '')
+          if (!/^(private|group):/.test(id) || l.forgottenAt) continue
+          const t = Number(l.t) || 0
+          if (t > (latest.get(id) || 0)) latest.set(id, t)
+        }
+        lastActivityRevision = revision
+        return latest.get(chatId) || 0
+      }
+      let progressed = true
+      while (batches < EXTRACT_LIMIT && progressed) {
+        progressed = false
+        for (const q of queues) {
+          if (batches >= EXTRACT_LIMIT) break
+          while (!q.stopped && q.cursor < q.chunks.length) {
+            const last = lastActivity(q.chatId)
+            if (!last || Date.now() - last < idleMs) { q.stopped = true; break }
+            const task = q.chunks[q.cursor++]
+            const current = hub.chatLogOf(task.day)
+            const part = task.rows.flatMap(({ index }) => {
               const line = current[index]
-              return line?.chatId === chatId && !line.forgottenAt ? [{ index, line }] : []
+              return line?.chatId === q.chatId && !line.forgottenAt ? [{ index, line }] : []
             })
-            if (!part.length) continue
-            if (batches >= EXTRACT_LIMIT || !takeBatch()) return { ok: true, batches }
+            if (!part.length) { progressed = true; continue }
+            if (!takeBatch()) return { ok: true, batches }
             const version = forgetVersion
             const checkpoint = () => {
-              if (extractionStale(day, part.filter((x) => !x.line.forgottenAt).map((x) => x.index), version)) throw new Error('聊天中有新的忘记请求，稍后重新提炼')
+              if (extractionStale(task.day, part.filter((x) => !x.line.forgottenAt).map((x) => x.index), version)) throw new Error('聊天中有新的忘记请求，稍后重新提炼')
               const s = load()
               s.processed = s.processed || {}
-              const saved = s.processed[day]
+              const saved = s.processed[task.day]
               const progress = saved && typeof saved === 'object' ? saved : { offset: 0, end: 0, chats: {} }
-              s.processed[day] = { ...progress, idle: markIdle(progress, part.map((x) => x.index)) }
+              s.processed[task.day] = { ...progress, idle: markIdle(progress, part.map((x) => x.index)) }
               save(s)
             }
-            const r = await extractLines(chatId, part.map((x) => x.line), checkpoint)
+            const r = await extractLines(q.chatId, part.map((x) => x.line), checkpoint)
             if (!r.ok) {
-              const key = `idle:${day}:${chatId}:${part[0].index}`
+              const key = `idle:${task.day}:${q.chatId}:${part[0].index}`
               const s = load()
               s.badBatches = s.badBatches || {}
               const fails = (s.badBatches[key] || 0) + 1
               s.badBatches[key] = fails
               save(s)
               if (!String(r.message).includes(NO_ARRAY) || fails < BAD_BATCH_LIMIT) throw new Error(r.message || '提炼记忆失败')
-              log.warn(`${chatId} 的空闲批次连续 ${fails} 次提炼不出来，跳过（流水还在）`)
+              log.warn(`${q.chatId} 的空闲批次连续 ${fails} 次提炼不出来，跳过（流水还在）`)
               checkpoint()
             }
             batches++
+            progressed = true
+            break // 这个来源这轮先让出，下一圈再轮到它
           }
         }
       }
