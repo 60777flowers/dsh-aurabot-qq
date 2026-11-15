@@ -72,13 +72,14 @@ for (const stop of ['dispose', 'turn/end']) test(`慢工具在 ${stop} 后不再
   assert.equal(sent.some((x) => x.includes('进度探针')), false)
 })
 
-test('慢工具 slow=true 时优先发她自己写的话', async (t) => {
+for (const [limitTagged, autoChance, sendsSticker] of [[false, 0, true], [true, 0, false], [true, 1, true]]) test(`慢工具优先发她自己写的话，标签概率限制 ${limitTagged}/${autoChance}`, async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const work = deferred()
   t.after(() => work.resolve({ ok: true }))
   let fake
   const sent = []
   const s = setup(t, {
+    cfg: config({ stickers: { enabled: true, limitTagged, autoChance } }),
     brain: async ({ callTool }) => {
       const agent = [...fake.agents.values()][0]
       fake.emit('session/event', agent.session, { type: 'assistant/message', data: { turn: 1, message: { content: [
@@ -98,7 +99,7 @@ test('慢工具 slow=true 时优先发她自己写的话', async (t) => {
   t.mock.timers.tick(1501)
   await settle()
   assert.equal(sent.some((x) => x.includes('等我一下，我去画')), true)
-  assert.equal(sent.some((x) => x.includes('[表情] 开心')), true)
+  assert.equal(sent.some((x) => x.includes('[表情] 开心')), sendsSticker)
   assert.equal(sent.some((x) => x.includes('sticker:开心')), false)
 })
 
