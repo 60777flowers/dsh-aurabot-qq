@@ -596,17 +596,61 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     try { unlinkSync(join(chatDir(pid), `${day}.jsonl`)); chatLogRevision++ } catch (error) {}
   }
 
+  // 聊天流水是整份 JSONL：一天几千到几万行，readFileSync + 逐行 JSON.parse 是大头。
+  // 记忆 tick / 空闲提炼 / 自驱 / 目的引擎会反复读同一天的文件（有的地方还按批重扫所有天），
+  // 因此按文件指纹缓存解析结果：文件大小 / mtime / 记忆截止时间没变就直接复用；
+  // logChat 只追加当天文件，其他天仍能命中，不会因为一条新消息就全部重解析。
+  // 总大小和行数都设上限，避免极端大文件把内存吃穿。
+  const CHATLOG_CACHE_MAX_BYTES = 32 * 1024 * 1024
+  const CHATLOG_CACHE_MAX_FILE_BYTES = 32 * 1024 * 1024
+  const CHATLOG_CACHE_MAX_ROWS = 120_000
+  const chatLogCache = new Map() // `${persona}|${day}` → { rows, bytes, count, size, mtimeMs, cutoff }
+  let chatLogCacheBytes = 0
+  let chatLogCacheRows = 0
   function chatLogOf(day, pid) {
+    const who = pid || pnow()
+    const key = who + '|' + day
     try {
       const f = join(chatDir(pid), `${day}.jsonl`)
-      if (!existsSync(f)) return []
-      return readFileSync(f, 'utf8').split('\n').filter(Boolean).map((line) => {
+      if (!existsSync(f)) {
+        const stale = chatLogCache.get(key)
+        if (stale) {
+          chatLogCache.delete(key)
+          chatLogCacheBytes -= stale.bytes
+          chatLogCacheRows -= stale.count
+        }
+        return []
+      }
+      const stat = statSync(f)
+      // 清理记忆（memoryResetAt）会让旧行需要重新按 cutoff 过滤；cutoff 变了即使文件没动也要重解析。
+      const cutoff = JSON.stringify(memoryCutoffs(who))
+      const cached = chatLogCache.get(key)
+      if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs && cached.cutoff === cutoff) return cached.rows
+      const rows = readFileSync(f, 'utf8').split('\n').filter(Boolean).map((line) => {
         const row = JSON.parse(line)
         // 保留行位置，让每日整理仍能使用原有流水进度。
-        const cutoff = chatMemoryCutoff(String(row.chatId || ''), row.uid)
-        if (cutoff && (Number(row.t) || 0) <= cutoff) return { ...row, text: '', forgottenAt: row.forgottenAt || cutoff }
+        const rowCutoff = chatMemoryCutoff(String(row.chatId || ''), row.uid)
+        if (rowCutoff && (Number(row.t) || 0) <= rowCutoff) return { ...row, text: '', forgottenAt: row.forgottenAt || rowCutoff }
         return row
       })
+      // 单文件过大或总预算不够就不缓存，下一次重读；小文件按插入顺序淘汰最旧的。
+      if (stat.size <= CHATLOG_CACHE_MAX_FILE_BYTES && rows.length <= CHATLOG_CACHE_MAX_ROWS) {
+        if (cached) {
+          chatLogCacheBytes -= cached.bytes
+          chatLogCacheRows -= cached.count
+          chatLogCache.delete(key)
+        }
+        while (chatLogCache.size && (chatLogCacheBytes + stat.size > CHATLOG_CACHE_MAX_BYTES || chatLogCacheRows + rows.length > CHATLOG_CACHE_MAX_ROWS)) {
+          const [oldKey, old] = chatLogCache.entries().next().value
+          chatLogCache.delete(oldKey)
+          chatLogCacheBytes -= old.bytes
+          chatLogCacheRows -= old.count
+        }
+        chatLogCache.set(key, { rows, bytes: stat.size, count: rows.length, size: stat.size, mtimeMs: stat.mtimeMs, cutoff })
+        chatLogCacheBytes += stat.size
+        chatLogCacheRows += rows.length
+      }
+      return rows
     } catch (error) {
       return []
     }
