@@ -2,6 +2,7 @@
 // 定时看别人回她的评论并接着回；你在 QQ 里发链接，她也能点进去看完再聊。看过的、评过的都记成她的经历。
 
 import { dataDir, readJson, writeJson } from '../core/store.js'
+import { isPeak } from '../core/offpeak.js'
 import { createBiliApi, findVideoId, parseCookie } from './api.js'
 import { loginSessionKey, recoverLoginPause } from './login-pause.js'
 import { isSessionBackoff } from '../chat/session-backoff.js'
@@ -16,6 +17,17 @@ import { reallySent } from '../chat/hub.js'
 const FACE_MAX = 2 * 1024 * 1024 // B 站头像上限（api.js 里也有一份，这里给缩图判断用）
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 const link = (bvid) => `https://www.bilibili.com/video/${bvid}`
+
+/**
+ * 「只在谷时刷」的跳过原因（纯函数，测试友好）。
+ * 开关关着 → ''（照常跑）；开着且现在是 DeepSeek 峰时 → 返回中文原因。
+ * 峰谷口径同 src/core/offpeak.js：北京时间工作日 09:00–12:00、14:00–18:00 为峰时，周末和法定节假日全天谷价。
+ */
+export function offpeakSkipReason(cfg, now = new Date()) {
+  if (cfg?.bili?.offpeak !== true) return ''
+  const holidays = Array.isArray(cfg?.cost?.offPeakHolidays) ? cfg.cost.offPeakHolidays : []
+  return isPeak(now, { holidays }) ? '峰时（北京时间工作日 09:00–12:00、14:00–18:00），等谷时再刷' : ''
+}
 
 /** 从模型输出里取 JSON（对象或数组），取不到返回 fallback。 */
 export function pickJson(out, fallback) {
@@ -48,9 +60,9 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
   const api = injected || createBiliApi({ getCookie: () => cfg().cookie, log })
   const shots = createShotStore({ max: () => getConfig().bili.shotLibrary })
   const file = () => dataDir('bili.json')
-  const load = () => readJson(file(), () => ({ day: '', runs: 0, comments: 0, replies: 0, lastRun: 0, lastReplyCheck: 0, seen: [], repliedFeed: [], history: [] }))
+  const load = () => readJson(file(), () => ({ day: '', runs: 0, comments: 0, replies: 0, lastRun: 0, lastReplyCheck: 0, lastSkipReason: '', lastSkipAt: 0, seen: [], repliedFeed: [], history: [] }))
   const save = (s) => writeJson(file(), s)
-  const today = (s) => { if (s.day !== dayKey()) Object.assign(s, { day: dayKey(), runs: 0, comments: 0, replies: 0 }) ; return s }
+  const today = (s) => { if (s.day !== dayKey()) Object.assign(s, { day: dayKey(), runs: 0, comments: 0, replies: 0, lastSkipReason: '', lastSkipAt: 0 }) ; return s }
   let busy = false
   let stopped = false
   let login = { at: 0, key: '', value: { isLogin: false, uname: '' } }
@@ -228,6 +240,8 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
     if (cooldown) return { ok: false, skipped: true, retryAt: cooldown.retryAt, message: '后台会话冷却中' }
     busy = true
     const s = today(load())
+    s.lastSkipReason = ''
+    s.lastSkipAt = 0
     try {
       const seen = new Set(s.seen)
       const kws = await chooseKeywords()
@@ -479,6 +493,18 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
     const h = new Date().getHours()
     if (h < g.speakUp.awakeFrom || h >= g.speakUp.awakeTo) return
     const s = today(load())
+    // 只在谷时刷：峰时跳过整个定时流程（刷视频 + 看回复），把原因记进状态给面板看，不占额度
+    const skipReason = offpeakSkipReason(g)
+    if (skipReason) {
+      if (s.lastSkipReason !== skipReason) {
+        s.lastSkipReason = skipReason
+        s.lastSkipAt = Date.now()
+        save(s)
+        log.info(`B 站定时刷跳过：${skipReason}`)
+      }
+      return
+    }
+    if (s.lastSkipReason) { s.lastSkipReason = ''; s.lastSkipAt = 0; save(s) }
     if (c.reply && Date.now() - (s.lastReplyCheck || 0) > 20 * 60_000 && (await account()).isLogin) await checkReplies()
     if (!hub.systemSessionCooldown?.('bili') && c.autoBrowse && s.runs < c.maxRunsPerDay && Date.now() - (s.lastRun || 0) > c.intervalHours * 3600_000) await run()
   }
@@ -489,7 +515,7 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
     dispose() { stopped = true },
     state: () => {
       const s = today(load())
-      return { runs: s.runs, comments: s.comments, replies: s.replies, lastRun: s.lastRun, history: s.history.slice(0, 20), canPost: canPost(s), pauseReason: s.pauseDay === dayKey() ? s.pauseReason : '', vision: visionState(cfg()), shots: { count: shots.count() } }
+      return { runs: s.runs, comments: s.comments, replies: s.replies, lastRun: s.lastRun, lastSkipReason: s.lastSkipReason || '', lastSkipAt: s.lastSkipAt || 0, history: s.history.slice(0, 20), canPost: canPost(s), pauseReason: s.pauseDay === dayKey() ? s.pauseReason : '', vision: visionState(cfg()), shots: { count: shots.count() } }
     },
   }
 }

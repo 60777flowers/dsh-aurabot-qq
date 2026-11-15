@@ -214,6 +214,7 @@ export const DEFAULTS = {
     ownerName: '', // 主人的 B 站昵称：她写 @主人 时 @ 这个号
     cookie: '', // 由上面几个拼出来给接口用；老配置的整串会自动拆到上面几个里
     autoBrowse: true, // 定时自己去刷
+    offpeak: false, // 只在谷时刷：默认关；峰时跳过定时刷和看回复（省 token）
     intervalHours: 4, // 多久刷一轮
     maxRunsPerDay: 3,
     perRun: 3, // 一轮看几个视频
@@ -715,7 +716,7 @@ export function normalize(raw) {
   c.local.videoTimeoutMin = num(c.local.videoTimeoutMin, 20, 1, BIG)
   const b = c.bili
   Object.assign(b, splitBiliCookie(b))
-  for (const k of ['enabled', 'autoBrowse', 'comment', 'reply', 'shareToOwner', 'like', 'vision', 'danmakuEnabled', 'autoDanmaku']) b[k] = bool(b[k], DEFAULTS.bili[k])
+  for (const k of ['enabled', 'autoBrowse', 'offpeak', 'comment', 'reply', 'shareToOwner', 'like', 'vision', 'danmakuEnabled', 'autoDanmaku']) b[k] = bool(b[k], DEFAULTS.bili[k])
   b.visionFrames = Math.round(num(b.visionFrames, 6, 1, 100))
   b.ffmpegPath = String(b.ffmpegPath || '').trim()
   b.shotChance = num(b.shotChance, 0.35, 0, 1)
