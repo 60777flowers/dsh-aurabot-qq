@@ -82,6 +82,37 @@ export function stripModelArtifacts(text) {
 }
 
 const SILENCE_MARK_SOURCE = '\\[沉默\\]|［沉默］|\\(沉默\\)|（沉默）'
+
+// 模型内部状态标签：<state> / </state>（2026-11-08 群友反馈消息结尾带 <state></state>）。
+// 仓库里的提示词没有要求输出这个标签，属于模型自身内部格式漏进正文；无论来源，出站都不能露出。
+// 只认完整标签名 state（后面必须是空白、/ 或 >），<statement>、<stateful> 这类正常文字不误伤；
+// 代码块/行内代码里的示例保留。
+const STATE_TAG = /<\/?\s*state(?=[\s/>])[^<>]*>/gi
+
+/** 收集 state 标签的删除区间：成对的开闭标签连中间内容一起删，孤立标签只删标签本身。 */
+function stateTagRanges(raw) {
+  const code = codeRanges(raw)
+  const tokens = []
+  for (const m of raw.matchAll(STATE_TAG)) {
+    if (insideCode(code, m.index, m.index + m[0].length)) continue
+    tokens.push({ start: m.index, end: m.index + m[0].length, closing: /^<\s*\//.test(m[0]), selfClose: /\/\s*>$/.test(m[0]) })
+  }
+  const ranges = []
+  const stack = []
+  for (const t of tokens) {
+    if (t.closing) {
+      const open = stack.pop()
+      ranges.push({ start: open ? open.start : t.start, end: t.end })
+    } else if (t.selfClose) {
+      ranges.push({ start: t.start, end: t.end })
+    } else {
+      stack.push(t)
+    }
+  }
+  for (const open of stack) ranges.push({ start: open.start, end: open.end })
+  return ranges
+}
+
 /** 是不是「这次不说话」：整条只由沉默标记、空白、标点组成才算。 */
 const SILENCE_MARK = new RegExp(SILENCE_MARK_SOURCE, 'g')
 // 标记周边通常还跟着空格：一起带走，免得剥完正文留下「嗯  我在」这种多空格。
@@ -389,7 +420,7 @@ export function stripToolText(text) {
 
 function visibleContent(text) {
   const content = stripMarkdown(text)
-    .replace(/<\/?(?:voice|reply|at|poke|sticker|face)\b[^>]*>/gi, '')
+    .replace(/<\/?(?:voice|reply|at|poke|sticker|face|state)\b[^>]*>/gi, '')
     .replace(/[@＠][^\s@＠<>|｜]+/g, '')
     .replace(/\|\|\|/g, '')
     .trim()
@@ -404,11 +435,13 @@ export function cleanOutboundText(text, { warn, promptSources, fingerprint, user
   // 先剥 HTML 残片：它们和工具调用、提示词复读互不重叠，按原文坐标并进同一份区间表。
   const { cuts: htmlCuts } = stripHtmlFragments(raw)
   // time-context 注入不是提示词复读，主人私聊的复读豁免不该放过它，这里直接并进必删区间。
-  const required = [...toolTextRanges(raw, { ownerPrivate }), ...contextInjectionRanges(raw)]
+  const toolRanges = toolTextRanges(raw, { ownerPrivate })
+  const contextRanges = contextInjectionRanges(raw)
   // 沉默标记也按区间删：turn/end 之外（空间说说、模块代发等）同样不能把标记当正文发出去。
   const silence = silenceMarkRanges(raw)
-  const noiseCount = required.length + htmlCuts.length
-  const tools = [...required, ...silence]
+  const stateRanges = stateTagRanges(raw)
+  const noiseCount = toolRanges.length + contextRanges.length + htmlCuts.length
+  const tools = [...toolRanges, ...contextRanges, ...silence, ...stateRanges]
     .sort((a, b) => a.start - b.start || b.end - a.end)
   const baseRanges = mergeRanges([...tools, ...htmlCuts])
   const toolClean = withoutToolRanges(raw, baseRanges)
@@ -431,7 +464,7 @@ export function cleanOutboundText(text, { warn, promptSources, fingerprint, user
     ranges = mergeRanges([...baseRanges, ...prompts.map((p) => ({ start: offsets[p.start], end: offsets[p.end - 1] + 1 }))])
   }
   let clean = withoutToolRanges(raw, ranges)
-  // 只有沉默标记时属于正常「不想说话」，不要误报成工具调用/提示词复读。
+  // 只有沉默标记或 state 标签时属于正常沉默/模型内部标签漏出，不要误报成工具调用/提示词复读。
   if ((noiseCount > 0 || removePrompts) && isSilence(visibleContent(clean))) {
     warn?.(removePrompts ? '模型输出整段都是提示词复读，已拦下并按沉默处理' : '模型输出整段都是工具调用文字，已拦下并按沉默处理')
     clean = ''
