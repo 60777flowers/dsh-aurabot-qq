@@ -7105,6 +7105,33 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     const CAP_LABEL = { network: '联网', filesystem: '读写本机文件', process: '启动其他程序', 'dynamic-code': '动态执行代码', 'plugin-config': '读写插件配置（含账号 Cookie）', 'plugin-internals': '使用插件内部接口' }
     const CATEGORY_LABEL = { platform: '逛平台', social: '聊天互动', creative: '创作', desktop: '桌面', manage: '管理', tool: '工具' }
     const capText = (m) => (m.capabilities || []).map((c) => CAP_LABEL[c] || c)
+    /**
+     * 模块排序（纯函数，测试可直接调用）：
+     * - default：保持索引里的原顺序
+     * - hot：按 GitHub 下载次数，同分按名字
+     * - latest：按发布时间（索引 publishedAt → GitHub Release 时间），没时间的保持原顺序排最后
+     * - updated：按最近更新时间（索引 updatedAt → publishedAt → Release 时间），同上
+     */
+    const marketTimeOf = (m, mode) => {
+      const fields = mode === 'latest' ? [m.publishedAt, m.releasedAt, m.updatedAt] : [m.updatedAt, m.publishedAt, m.releasedAt]
+      for (const value of fields) {
+        const t = Date.parse(String(value || ''))
+        if (Number.isFinite(t)) return t
+      }
+      return 0
+    }
+    const sortMarketModules = (list, mode) => {
+      const arr = Array.isArray(list) ? list.slice() : []
+      if (mode === 'hot') {
+        return arr.sort((a, b) => (Number(b.downloads) || 0) - (Number(a.downloads) || 0) || String(a.name || a.id).localeCompare(String(b.name || b.id), 'zh'))
+      }
+      if (mode === 'latest' || mode === 'updated') {
+        return arr.map((m, i) => ({ m, i, t: marketTimeOf(m, mode) }))
+          .sort((a, b) => b.t - a.t || a.i - b.i)
+          .map((x) => x.m)
+      }
+      return arr
+    }
     function Market({ st, toast, reload, go }) {
       const [data, setData] = useState(null)
       const [busy, setBusy] = useState('')
@@ -7112,12 +7139,12 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const [q, setQ] = useState('')
       const [show, setShow] = useState('all')
       const [cat, setCat] = useState('')
-      const [hot, setHot] = useState(true)
+      const [sort, setSort] = useState('hot') // hot | latest | updated | default
       // 分页：市场模块多了全量渲染会卡，一次只画一页
       const PAGE_SIZE = 12
       const [page, setPage] = useState(1)
-      // 筛选条件一变就回第一页，别停在可能超出范围的旧页码
-      useEffect(() => { setPage(1) }, [q, show, cat, hot])
+      // 筛选/排序条件一变就回第一页，别停在可能超出范围的旧页码
+      useEffect(() => { setPage(1) }, [q, show, cat, sort])
       const load = (force) => get('/modules/community' + (force ? '?force=1' : '')).then(setData)
       useEffect(() => { load() }, [])
       // 模块市场地址：下拉选官方源（GitHub / Gitee 镜像）或自定义。拉当前值与可选源，改完可保存或恢复默认。
@@ -7211,12 +7238,14 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const counts = { all: list.length, installed: list.filter((m) => m.installed).length, update: list.filter((m) => m.update).length }
       const word = q.trim().toLowerCase()
       const cats = [...new Set(list.map((m) => m.category).filter(Boolean))]
-      // 安装量只能从 GitHub 读，读不到时不按热度排，保持索引里的顺序
+      // 安装量只能从 GitHub 读，读不到时热度排序不可用；最新发布/最近更新不受影响
       const canHot = !stats.failed && list.some((m) => Number(m.downloads) > 0)
-      const byHot = (a, b) => (Number(b.downloads) || 0) - (Number(a.downloads) || 0) || String(a.name || a.id).localeCompare(String(b.name || b.id), 'zh')
-      const shown = list.filter((m) => (!cat || m.category === cat) && (show === 'all' || (show === 'installed' && m.installed) || (show === 'update' && m.update)) && (!word || (m.name + ' ' + m.id + ' ' + (m.description || '') + ' ' + (m.tags || []).join(' ')).toLowerCase().includes(word)))
-      // 关掉热度排序时保持索引里的原顺序，别悄悄改成按名字排
-      if (hot && canHot) shown.sort(byHot)
+      const effectiveSort = sort === 'hot' && !canHot ? 'default' : sort
+      const timeMode = effectiveSort === 'latest' || effectiveSort === 'updated' ? effectiveSort : ''
+      const filtered = list.filter((m) => (!cat || m.category === cat) && (show === 'all' || (show === 'installed' && m.installed) || (show === 'update' && m.update)) && (!word || (m.name + ' ' + m.id + ' ' + (m.description || '') + ' ' + (m.tags || []).join(' ')).toLowerCase().includes(word)))
+      const shown = sortMarketModules(filtered, effectiveSort)
+      const missingTimes = timeMode ? shown.filter((m) => !marketTimeOf(m, timeMode)).length : 0
+      const dateTextOf = (m) => { const t = marketTimeOf(m, timeMode || 'latest'); return t ? new Date(t).toISOString().slice(0, 10) : '' }
       const pages = Math.max(1, Math.ceil(shown.length / PAGE_SIZE))
       const cur = Math.min(page, pages) // 数据变少后旧页码可能越界，夹回来
       const pageShown = shown.slice((cur - 1) * PAGE_SIZE, cur * PAGE_SIZE)
@@ -7247,6 +7276,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h('h3', null, title, m.update ? h('span', { className: 'ab-badge' }, '可更新') : null),
           h('div', { className: 'ab-small ab-muted' }, 'v' + (m.installed || m.version) + (m.update ? ' → v' + m.version : '') + (CATEGORY_LABEL[m.category] ? ' · ' + CATEGORY_LABEL[m.category] : '') + (m.author ? ' · ' + m.author : '') + (m.license ? ' · ' + m.license : '')),
           canHot ? h('div', { className: 'ab-small ab-muted', style: { marginTop: 2 } }, '下载 ' + num(m.downloads) + ' 次' + (m.delisted ? '' : ' · 含更新')) : null,
+          timeMode && dateTextOf(m) ? h('div', { className: 'ab-small ab-muted', style: { marginTop: 2 } }, (timeMode === 'updated' ? '最近更新 ' : '发布于 ') + dateTextOf(m)) : null,
           h('p', { className: 'ab-desc', style: { margin: '8px 0' } }, m.description),
           capText(m).length ? h('div', { className: 'ab-small ab-muted', style: { marginBottom: 10 } }, '会用到：' + capText(m).join('、')) : null,
           note ? h('div', { className: 'ab-note warn', style: { marginBottom: 10 } }, note) : null,
@@ -7272,9 +7302,12 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h('div', { className: 'ab-flex' },
             h('input', { className: 'ab-input', placeholder: '搜模块', value: q, onChange: (e) => setQ(e.target.value) }),
             chip('all', '全部'), chip('installed', '已安装'), chip('update', '可更新'),
-            canHot ? h('button', { type: 'button', className: cx('ab-chip', hot && 'on'), onClick: () => setHot((v) => !v), title: '按模块安装包在 GitHub 上的下载次数排序' }, '按热度') : null),
+            canHot ? h('button', { type: 'button', className: cx('ab-chip', effectiveSort === 'hot' && 'on'), onClick: () => setSort((v) => (v === 'hot' ? 'default' : 'hot')), title: '按模块安装包在 GitHub 上的下载次数排序' }, '按热度') : null,
+            h('button', { type: 'button', className: cx('ab-chip', effectiveSort === 'latest' && 'on'), onClick: () => setSort((v) => (v === 'latest' ? 'default' : 'latest')), title: '按模块当前版本的发布时间排序（索引 publishedAt，缺失时用 GitHub Release 时间）' }, '最新发布'),
+            h('button', { type: 'button', className: cx('ab-chip', effectiveSort === 'updated' && 'on'), onClick: () => setSort((v) => (v === 'updated' ? 'default' : 'updated')), title: '按模块最近更新时间排序（索引 updatedAt，缺失时用发布时间）' }, '最近更新')),
           cats.length > 1 ? h('div', { className: 'ab-flex', style: { marginTop: 10 } }, [''].concat(cats).map((c) => h('button', { key: c || 'any', type: 'button', className: cx('ab-chip', cat === c && 'on'), onClick: () => setCat(c) }, c ? CATEGORY_LABEL[c] || c : '全部分类'))) : null,
-          stats.failed && list.length ? h('div', { className: 'ab-small ab-muted', style: { marginTop: 8 } }, '这次没读到下载次数（GitHub 接口连不上或额度用完了），先按上架顺序排。') : null,
+          stats.failed && list.length ? h('div', { className: 'ab-small ab-muted', style: { marginTop: 8 } }, '这次没读到下载次数（GitHub 接口连不上或额度用完了），按热度排不了，可以改用「最新发布 / 最近更新」。') : null,
+          missingTimes ? h('div', { className: 'ab-small ab-muted', style: { marginTop: 8 } }, '有 ' + missingTimes + ' 个模块没有发布时间/更新时间，按原顺序排在最后。') : null,
           ((data && data.revoked) || []).map((r) => h('div', { key: r.id, className: 'ab-note err', style: { marginTop: 10 } }, '「' + r.id + '」' + r.version + ' 已撤回：' + r.reason + '。建议关闭或卸载。'))),
         !data ? h(Empty, { icon: '⏳', text: '加载中…' }) : null,
         data && data.ok === false ? h('div', { className: 'ab-note warn' }, '市场打不开：' + data.message) : null,
