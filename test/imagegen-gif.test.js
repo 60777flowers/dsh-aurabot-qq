@@ -47,10 +47,10 @@ test('静态图片、单帧 GIF、截断文件不能假装生成成功',async()=
  const injected=Buffer.concat([GIF.subarray(0,boundary),Buffer.from([0x21,0xfe,4,0x21,0xf9,4,0,0]),GIF.subarray(boundary)])
  assert.equal(gifFrameCount(injected),2,'扩展内容不能被当成额外帧')
 })
-test('GIF 请求失败不会切换备用服务；兼容参数重试仍保留 GIF 选择',async()=>{
+test('GIF 请求失败不会切换备用服务；不添加静态接口兼容参数',async()=>{
  let n=0
  await assert.rejects(generator({fallbackEnabled:true,fallbacks:[{provider:'openai',baseUrl:'https://backup.example',model:'backup'}]},async()=>{n++;return new Response('{}',{status:500})}).generate('猫',{format:'gif'}));assert.equal(n,1)
- n=0;await generator({},async(url,init)=>{n++;const b=JSON.parse(init.body);assert.equal(b.output_format,'gif');assert.equal(b.frame_count,8);return n===1?new Response(JSON.stringify({error:{message:'Unknown parameter response_format'}}),{status:400}):response()}).generate('猫',{format:'gif'});assert.equal(n,2)
+ n=0;await generator({},async(url,init)=>{n++;const b=JSON.parse(init.body);assert.equal(b.output_format,'gif');assert.equal(b.frame_count,8);assert.equal(b.response_format,undefined);assert.equal(b.image_size,undefined);return response()}).generate('猫',{format:'gif'});assert.equal(n,1)
 })
 function sandbox(t){const old=process.env.AURABOT_DATA_DIR;const dir=mkdtempSync(join(tmpdir(),'aurabot-gif-'));process.env.AURABOT_DATA_DIR=dir;t.after(()=>{if(old==null)delete process.env.AURABOT_DATA_DIR;else process.env.AURABOT_DATA_DIR=old;rmSync(dir,{recursive:true,force:true})});return dir}
 function tool(t,{owner=true,extra={},fetchImpl=async()=>response()}={}){

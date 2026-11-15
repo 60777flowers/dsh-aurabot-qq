@@ -214,7 +214,10 @@ export function createImageGen({ getConfig, log, local, dsh, fetchImpl, codexAut
       }
       if (!buf) throw last
     }
-    if (gif && gifFrameCount(buf) < 2) throw gifError('接口没有返回有效的多帧 GIF 动图，已停止发送；不会把静态图当作动图')
+    if (gif && gifFrameCount(buf) < 2) {
+      const kind = ({ 'image/png': 'PNG 静态图', 'image/jpeg': 'JPEG 静态图', 'image/webp': 'WebP 图片', 'image/gif': '单帧或损坏的 GIF' })[mimeOf(buf)] || '无法识别的内容'
+      throw gifError(`接口没有返回有效的多帧 GIF 动图，实际返回${kind}；已停止发送，请检查接口或模型的 GIF 支持`)
+    }
     if (!buf || !buf.length) throw new Error('生图接口没有返回图片')
     if (!String(mimeOf(buf)).startsWith('image/')) throw new Error('生图接口返回的不是图片')
     log.info(`画好了一张图（${Math.round(buf.length / 1024)}KB，${Math.round((Date.now() - t) / 1000)}s）：${prompt.slice(0, 40)}`)
@@ -228,7 +231,7 @@ export function createImageGen({ getConfig, log, local, dsh, fetchImpl, codexAut
     const headers = image ? {} : { 'content-type': 'application/json' }
     if (c.apiKey) headers.authorization = `Bearer ${c.apiKey}`
     // response_format、image_size 不是每家都认（官方 OpenAI 就不认）：被拒了去掉再发。被拒的请求没出图，重发不会多画
-    const body = { model: c.model, prompt, size: c.size, n: 1, response_format: 'b64_json', image_size: c.size, ...(c.gif ? GIF_FIELDS : {}) }
+    const body = { model: c.model, prompt, size: c.size, n: 1, ...(c.gif ? GIF_FIELDS : { response_format: 'b64_json', image_size: c.size }) }
     let requestBody
     if (image) {
       requestBody = new FormData()
