@@ -1153,7 +1153,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
               table(cur.byModule, k => k), table(cur.byModel, k => k))) : null,
           h('p', { className: 'ab-muted ab-small' },
             '按北京时间分日，保留近 90 天的数字记录。没有上报用量的调用、搜索或生图等独立 API 费用不计入。',
-            report?.startedAt ? ' 后台用量从 ' + new Date(report.startedAt).toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' }) + ' 起记录；更早的未记录用量无法补算。' : '',
+            report?.startedAt ? ' 独立后台调用从 ' + new Date(report.startedAt).toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' }) + ' 起记录；更早的未记录用量无法补算。' : '',
             ' 没有可靠渠道价格时不显示金额；显示的金额也仅供参考，以账单为准。')) : null)
     }
 
