@@ -1041,7 +1041,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     if (parsed.silent) return
     const cfg = getConfig()
     const items = cfg.stickers.limitTagged && parsed.items.some((i) => i.kind === 'sticker')
-      && !(cfg.stickers.keywordExemption && hasReplyStickerKeywords(parsed.items)) && random() >= cfg.stickers.autoChance
+      && !(cfg.stickers.keywordExemption && preserveReplyStickers(parsed.items)) && random() >= cfg.stickers.autoChance
       ? parsed.items.filter((i) => i.kind !== 'sticker') : parsed.items
     for (const item of items) {
       if (!isCurrent()) return

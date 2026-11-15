@@ -72,7 +72,7 @@ for (const stop of ['dispose', 'turn/end']) test(`慢工具在 ${stop} 后不再
   assert.equal(sent.some((x) => x.includes('进度探针')), false)
 })
 
-for (const [limitTagged, autoChance, sendsSticker, keywordExemption = false] of [[false, 0, true], [true, 0, false], [true, 1, true], [true, 0, true, true]]) test(`慢工具优先发她自己写的话，标签概率限制 ${limitTagged}/${autoChance}/关键词${keywordExemption}`, async (t) => {
+for (const [limitTagged, autoChance, sendsSticker, keywordExemption = false, notice = '等我一下，我去画张图 <sticker:开心>'] of [[false, 0, true], [true, 0, false], [true, 1, true], [true, 0, true, true], [true, 0, true, true, '<sticker:开心>'], [true, 0, false, false, '<sticker:开心>']]) test(`慢工具优先发她自己写的话，标签概率限制 ${limitTagged}/${autoChance}/关键词${keywordExemption}/纯表情${notice === '<sticker:开心>'}`, async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const work = deferred()
   t.after(() => work.resolve({ ok: true }))
@@ -83,7 +83,7 @@ for (const [limitTagged, autoChance, sendsSticker, keywordExemption = false] of 
     brain: async ({ callTool }) => {
       const agent = [...fake.agents.values()][0]
       fake.emit('session/event', agent.session, { type: 'assistant/message', data: { turn: 1, message: { content: [
-        { type: 'text', text: '等我一下，我去画张图 <sticker:开心>' },
+        { type: 'text', text: notice },
         { type: 'tool-call', id: 'slow-auto-1', name: 'slow-auto', arguments: '{}' },
       ] } } })
       await callTool('slow-auto', {})
@@ -98,7 +98,7 @@ for (const [limitTagged, autoChance, sendsSticker, keywordExemption = false] of 
   await settle()
   t.mock.timers.tick(1501)
   await settle()
-  assert.equal(sent.some((x) => x.includes('等我一下，我去画')), true)
+  assert.equal(sent.some((x) => x.includes('等我一下，我去画')), notice.includes('我去画'))
   assert.equal(sent.some((x) => x.includes('[表情] 开心')), sendsSticker)
   assert.equal(sent.some((x) => x.includes('sticker:开心')), false)
 })
