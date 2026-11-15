@@ -79,7 +79,7 @@ export const DEFAULTS = {
   forward: { expandEarly: false, expandHistory: false }, // 合并转发：expandEarly=消息一进来就展开成文字存进上下文（哪怕这条不交给她，代价是每条转发多调一次 get_forward_msg）；expandHistory=交给她之前把缓冲里还没展开过的转发补展开（每条只拉一次）
   imageGen: {
     enabled: false,
-    provider: 'openai', // openai / custom；codex = 实验性订阅接法（需单独登录）
+    provider: 'openai', // openai / custom / minimax；codex = 实验性订阅接法（需单独登录）
     baseUrl: '',
     baseUrlOptions: [], // 面板「服务地址」下拉里用户自己添加的常用地址（官方推荐的赞助商地址固定第一项，不存这里）
     apiKey: '',
@@ -98,6 +98,9 @@ export const DEFAULTS = {
     custom: { method: 'GET', url: '', bodyType: 'json', responsePath: '', params: [] },
     // 实验性订阅接法；登录令牌独立保存在数据目录，不进入配置。
     codex: { model: 'gpt-image-2', quality: 'auto', background: 'auto' },
+    // MiniMax H3 Image：/v1/images/generations（文生图）、/v1/images/edits（1~16 张参考图改画）；
+    // apiKey 留空 = 复用 voice.minimax.apiKey（同一个开放平台 Key）。n 一次生成几张，area 是 1K/2K/4K。
+    minimax: { apiKey: '', baseUrl: 'https://api.minimax.cn', model: 'MiniMax-H3-Image', n: 1, area: '2K', enhance: true },
   },
   // 生视频：local（本地接口 video.mjs，默认）/ minimax（MiniMax H3 云端）/ custom（自定义异步任务接口）
   video: {
@@ -977,8 +980,8 @@ export function normalize(raw) {
     c.video.custom[k] = String(c.video.custom[k] || '').trim() || DEFAULTS.video.custom[k]
   }
 
-  // provider：custom = 自己填接口（GET/POST + 自定义参数），其它按 OpenAI 兼容
-  c.imageGen.provider = ['custom', 'codex'].includes(c.imageGen.provider) ? c.imageGen.provider : 'openai'
+  // provider：custom = 自己填接口（GET/POST + 自定义参数），minimax = MiniMax H3 Image，其它按 OpenAI 兼容
+  c.imageGen.provider = ['custom', 'codex', 'minimax'].includes(c.imageGen.provider) ? c.imageGen.provider : 'openai'
   // 「服务地址」下拉的用户自添地址：{ name, url }；只要 http(s) 链接，按地址去重，最多 20 条
   // （官方推荐的赞助商地址固定第一项，不存这里；旧版只存字符串的自动用域名当名字）
   c.imageGen.baseUrlOptions = (Array.isArray(c.imageGen.baseUrlOptions) ? c.imageGen.baseUrlOptions : [])
@@ -993,6 +996,15 @@ export function normalize(raw) {
   igx.quality = ['auto', 'low', 'medium', 'high', 'xhigh', 'max'].includes(igx.quality) ? igx.quality : 'auto'
   igx.background = ['auto', 'transparent', 'opaque'].includes(igx.background) ? igx.background : 'auto'
   if (!c.imageGen.custom || typeof c.imageGen.custom !== 'object') c.imageGen.custom = { ...DEFAULTS.imageGen.custom }
+  if (!isObj(c.imageGen.minimax || null)) c.imageGen.minimax = structuredClone(DEFAULTS.imageGen.minimax)
+  const igm = c.imageGen.minimax
+  igm.apiKey = String(igm.apiKey || '').trim().slice(0, 400)
+  // 允许按 OpenAI 习惯填到 /v1；内部拼接口时只保留一个版本前缀（/v1/images/...）。
+  igm.baseUrl = String(igm.baseUrl || '').trim().replace(/\/+$/, '').replace(/\/v1$/i, '').slice(0, 400) || DEFAULTS.imageGen.minimax.baseUrl
+  igm.model = ['MiniMax-H3-Image', 'MiniMax-H3-Image-Highspeed'].includes(String(igm.model)) ? String(igm.model) : DEFAULTS.imageGen.minimax.model
+  igm.n = num(igm.n, 1, 1, 10)
+  igm.area = ['1K', '2K', '4K'].includes(String(igm.area)) ? String(igm.area) : DEFAULTS.imageGen.minimax.area
+  igm.enhance = bool(igm.enhance, true)
   const igc = c.imageGen.custom
   igc.method = String(igc.method || 'GET').toUpperCase() === 'POST' ? 'POST' : 'GET'
   igc.bodyType = igc.bodyType === 'form' ? 'form' : 'json'
@@ -1049,7 +1061,7 @@ export function normalize(raw) {
 }
 
 // 面板里不回传原文的字段：路径（几层都行）
-const SECRETS = [['snowluma', 'webuiPassword'], ['snowluma', 'httpToken'], ['snowluma', 'wsToken'], ['imageGen', 'apiKey'], ['voice', 'asrApi', 'apiKey'], ['memory', 'vector', 'apiKey'], ['memory', 'rerank', 'apiKey'], ['song', 'neteaseCookie'], ['bili', 'cookie'], ['bili', 'sessdata'], ['bili', 'biliJct'], ['heybox', 'cookie'], ['bridge', 'token'], ['video', 'minimax', 'apiKey'], ['video', 'custom', 'headers'], ['voice', 'volcano', 'apiKey'], ['voice', 'breeze', 'key'], ['voice', 'breeze', 'password'], ['voice', 'minimax', 'apiKey'], ['backup', 'remote', 'token'], ['backup', 'remote', 'webdav', 'password']]
+const SECRETS = [['snowluma', 'webuiPassword'], ['snowluma', 'httpToken'], ['snowluma', 'wsToken'], ['imageGen', 'apiKey'], ['imageGen', 'minimax', 'apiKey'], ['voice', 'asrApi', 'apiKey'], ['memory', 'vector', 'apiKey'], ['memory', 'rerank', 'apiKey'], ['song', 'neteaseCookie'], ['bili', 'cookie'], ['bili', 'sessdata'], ['bili', 'biliJct'], ['heybox', 'cookie'], ['bridge', 'token'], ['video', 'minimax', 'apiKey'], ['video', 'custom', 'headers'], ['voice', 'volcano', 'apiKey'], ['voice', 'breeze', 'key'], ['voice', 'breeze', 'password'], ['voice', 'minimax', 'apiKey'], ['backup', 'remote', 'token'], ['backup', 'remote', 'webdav', 'password']]
 // 扩展模块设置里的密码类字段（模块加载时登记）：['ext', 模块id, 字段]
 const extraSecrets = new Map()
 export function registerSecretField(path) { extraSecrets.set(path.join('\u0000'), path) }

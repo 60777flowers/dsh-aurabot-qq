@@ -8424,9 +8424,11 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const moveFallback = (i, step) => { const next = fallbacks.slice(); const j = i + step; if (j < 0 || j >= next.length) return; [next[i], next[j]] = [next[j], next[i]]; setFallbacks(next) }
       const custom = c.custom || {}
       // 模块已经就绪（开着 + 选了模型）时优先停在它那页：实际生图就是它先接管，界面要和行为一致。
-      const [tab, setTab] = useState(() => dshReady ? 'dsh' : c.provider === 'codex' ? 'codex' : c.provider === 'custom' ? 'custom' : c.baseUrl === SPONSOR_BASE ? 'sponsor' : 'openai')
+      const [tab, setTab] = useState(() => dshReady ? 'dsh' : c.provider === 'codex' ? 'codex' : c.provider === 'custom' ? 'custom' : c.provider === 'minimax' ? 'minimax' : c.baseUrl === SPONSOR_BASE ? 'sponsor' : 'openai')
       const isCustom = tab === 'custom'
       const isCodex = tab === 'codex'
+      const isMinimax = tab === 'minimax'
+      const mm = c.minimax || {}
       const isPost = custom.method === 'POST'
       const params = Array.isArray(custom.params) ? custom.params : []
       const setParams = (next) => setDraft(setPath(draft, 'imageGen.custom.params', next))
@@ -8452,13 +8454,13 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         toast('已选官方推荐地址，记得保存')
       }
       return h('div', { className: 'ab-grid' },
-        h(Card, { title: '让ta画图', right: f.sw('imageGen.enabled'), desc: '接上生图服务后，让ta「画一张……」就会画好发出来。可选 OpenAI 兼容接口、自定义接口、登录 ChatGPT 使用实验性 Codex 订阅接法，或直接用 DSH 里已接入的生图模型（豆包 Seedream 等）。本机 SD WebUI / ComfyUI 可在「本地接口」页接「生图」。也可以让ta照着最近发的图、引用消息里的图或自己的画作来改；服务不支持参考图时会明确告诉你。' },
+        h(Card, { title: '让ta画图', right: f.sw('imageGen.enabled'), desc: '接上生图服务后，让ta「画一张……」就会画好发出来。可选 OpenAI 兼容接口、自定义接口、登录 ChatGPT 使用实验性 Codex 订阅接法、MiniMax H3（多图参考 / 一次多张），或直接用 DSH 里已接入的生图模型（豆包 Seedream 等）。本机 SD WebUI / ComfyUI 可在「本地接口」页接「生图」。也可以让ta照着最近发的图、引用消息里的图或自己的画作来改；服务不支持参考图时会明确告诉你。' },
           h(Row, { label: '接口格式', hint: '第二个适合 pollinations 这类「GET 一个地址就出图」的服务' },
             h(Seg, {
               value: tab,
               onChange: changeTab,
               // 「DSH 已接入模型」只在模块真的装了并在跑时才出现：没装就别摆一个点进去是空的按钮。
-              options: [{ value: 'openai', label: 'OpenAI 格式' }, { value: 'custom', label: '自定义接口' }, { value: 'codex', label: 'Codex 订阅（实验性）' }, { value: 'sponsor', label: '官方推荐地址' }, ...((dshMod || tab === 'dsh') ? [{ value: 'dsh', label: 'DSH 已接入模型' }] : [])],
+              options: [{ value: 'openai', label: 'OpenAI 格式' }, { value: 'custom', label: '自定义接口' }, { value: 'codex', label: 'Codex 订阅（实验性）' }, { value: 'minimax', label: 'MiniMax H3' }, { value: 'sponsor', label: '官方推荐地址' }, ...((dshMod || tab === 'dsh') ? [{ value: 'dsh', label: 'DSH 已接入模型' }] : [])],
             })),
           tab === 'sponsor' ? h('div', null,
             sponsorSelected && !sponsorHintClosed ? h('div', { className: 'ab-note', style: { marginBottom: 10 } },
@@ -8475,7 +8477,24 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             dshMod
               ? h(ExtPanel, { m: dshMod, settings: dshDraft, draftSettings: dshDraft, setSettings: setDshSettings, toast, reload, saveOverride: saveDsh })
               : h('div', { className: 'ab-note err' }, '扩展模块 dsh-image 没在跑：去「已安装」里打开它，再回到这一页。'),
-          ) : isCodex ? h(CodexSub, { draft, setDraft, toast }) : isCustom ? h('div', null,
+          ) : isCodex ? h(CodexSub, { draft, setDraft, toast }) : isMinimax ? h('div', null,
+            h(Row, { label: 'API Key', hint: '留空 = 复用「语音」页的 MiniMax Key（同一个开放平台 Key）；也可单独填一份' },
+              f.text('imageGen.minimax.apiKey', { type: 'password', placeholder: mm.apiKeySet ? '已保存（不改就留空）' : '可留空，复用语音里的 MiniMax Key' })),
+            h(Row, { label: '服务地址', hint: '国内平台 https://api.minimax.cn；海外平台 https://api.minimax.io' },
+              f.text('imageGen.minimax.baseUrl', { size: 'wide', placeholder: 'https://api.minimax.cn' })),
+            h(Row, { label: '模型' },
+              f.select('imageGen.minimax.model', [
+                { value: 'MiniMax-H3-Image', label: 'MiniMax-H3-Image' },
+                { value: 'MiniMax-H3-Image-Highspeed', label: 'MiniMax-H3-Image-Highspeed（更快）' },
+              ], { width: 300 })),
+            h(Row, { label: '一次生成几张', hint: '接口每次最多 10 张，按成功张数计费；说「画几张」时她也会按需填' },
+              f.select('imageGen.minimax.n', [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => ({ value: n, label: n + ' 张' })), { width: 160 })),
+            h(Row, { label: '输出面积', hint: '1K≈1024²、2K≈2048²、4K≈4096²；H3 原图约 16MP，2K 一般够用也更快' },
+              f.select('imageGen.minimax.area', ['1K', '2K', '4K'].map((v) => ({ value: v, label: v })), { width: 140 })),
+            h(Row, { label: '提示词增强', hint: '默认开启：短描述会先扩写成完整画面（官方 H3-Image-Context-IR）；关闭后按原提示词直接生成' },
+              f.sw('imageGen.minimax.enhance')),
+            h('div', { className: 'ab-note', style: { marginTop: 8 } }, 'MiniMax H3 支持拿 1~16 张参考图改画，也支持一次生成多张；参考图可用聊天里最近收到的图、引用图或图库画作。老配置不用改：只有把「接口格式」切到 MiniMax H3 才会走这个接法。'),
+          ) : isCustom ? h('div', null,
             h(Row, { label: '请求方式', hint: 'GET 把参数都拼在地址上；POST 放进请求体' },
               h(Seg, {
                 value: isPost ? 'POST' : 'GET',

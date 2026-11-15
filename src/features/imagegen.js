@@ -26,6 +26,103 @@ function dimsOf (size) {
   return m ? { width: m[1], height: m[2] } : { width: '', height: '' }
 }
 
+// ---------------- MiniMax H3 Image ----------------
+// 官方文档（2026-11）：
+//   文生图 POST {base}/v1/images/generations，编辑 POST {base}/v1/images/edits
+//   两张接口同一套 body：model / prompt / n(1~10) / size(WxH 或 auto) / aspect_ratio / area(1K|2K|4K) /
+//   response_format(url|b64_json)；编辑额外收 images: [{ image_url: 公网 URL 或 data:image/...;base64,... }]（1~16 张）。
+// 和语音共用一个 Key：生图这里没填就回落到 voice.minimax.apiKey。
+export const MINIMAX_IMAGE_MODELS = ['MiniMax-H3-Image', 'MiniMax-H3-Image-Highspeed']
+export const MINIMAX_IMAGE_AREAS = ['1K', '2K', '4K']
+
+/** MiniMax 生图的 Key：优先用生图自己的，留空就用语音里那个（同一个开放平台 Key）。 */
+export function minimaxImageKey (cfg) {
+  const own = String(cfg?.imageGen?.minimax?.apiKey || '').trim()
+  return own || String(cfg?.voice?.minimax?.apiKey || '').trim()
+}
+
+/** 尺寸 → MiniMax 允许的宽高比字符串（用于 size=auto + area 的增强模式）。 */
+function minimaxRatioOf (size) {
+  const m = /^(\d+)\s*[x×*]\s*(\d+)$/i.exec(String(size || ''))
+  if (!m) return 'auto'
+  const w = Number(m[1]); const h = Number(m[2])
+  if (!w || !h) return 'auto'
+  const gcd = (a, b) => (b ? gcd(b, a % b) : a)
+  const d = gcd(w, h)
+  let a = w / d; let b = h / d
+  // 比例值限制在 1:3 ~ 3:1；极端值交给 auto 让服务端按提示词决定。
+  if (a > b * 3 || b > a * 3) return 'auto'
+  // 常见大分母比例归一成常用值，减少 1024x1536 → 2:3 之外的怪比例。
+  const common = [[1, 1], [4, 3], [3, 4], [3, 2], [2, 3], [16, 9], [9, 16], [21, 9]]
+  for (const [x, y] of common) if (Math.abs(a / b - x / y) < 0.02) return `${x}:${y}`
+  return `${a}:${b}`
+}
+
+/** 小图按比例放大到 MiniMax 的下限 655,360 像素；超过上限 20,000,000 按比例缩小。 */
+function minimaxSizeOf (size) {
+  const m = /^(\d+)\s*[x×*]\s*(\d+)$/i.exec(String(size || ''))
+  if (!m) return ''
+  let w = Number(m[1]); let h = Number(m[2])
+  if (!w || !h) return ''
+  const area = w * h
+  const MIN = 655360; const MAX = 20000000
+  if (area < MIN) { const k = Math.sqrt(MIN / area); w = Math.round(w * k); h = Math.round(h * k) }
+  else if (area > MAX) { const k = Math.sqrt(MAX / area); w = Math.round(w * k); h = Math.round(h * k) }
+  return `${w}x${h}`
+}
+
+/**
+ * MiniMax H3 Image 的请求（纯函数，方便单测）。
+ * 返回 { endpoint: 'generations'|'edits', body, images: Buffer[] }。
+ * enhance 默认 true：走官方提示词增强（短中文描述效果更好），用 aspect_ratio + area 控制尺寸；
+ * enhance=false 时直接发 WxH，明确禁用提示词增强（此时服务只读前 4096 tokens）。
+ */
+export function minimaxImageBody ({ prompt, image, images = [], size, count, cfg } = {}) {
+  const m = cfg?.imageGen?.minimax || {}
+  const model = MINIMAX_IMAGE_MODELS.includes(m.model) ? m.model : 'MiniMax-H3-Image'
+  const refs = (Array.isArray(images) && images.length ? images : image ? [image] : []).filter(Boolean)
+  const n = Math.max(1, Math.min(10, Math.round(Number(count ?? m.n) || 1)))
+  const area = MINIMAX_IMAGE_AREAS.includes(m.area) ? m.area : '2K'
+  const areaPixels = { '1K': 1048576, '2K': 4194304, '4K': 16777216 }[area]
+  // b64_json 的总面积有上限（png 20M；jpeg/webp 80M）。按更保守的 png 上限算，
+  // 这样无论服务端实际输出 png 还是 jpeg，都不会因为大 n + 大图直接 400。
+  const B64_AREA_LIMIT = 20000000
+  const body = { model, prompt: String(prompt || ''), n }
+  let outputPixels = areaPixels
+  if (m.enhance === false) {
+    const exact = minimaxSizeOf(size)
+    if (exact) {
+      body.size = exact
+      body.disable_prompt_enhanced = true
+      const dims = /^(\d+)x(\d+)$/.exec(exact)
+      outputPixels = dims ? Number(dims[1]) * Number(dims[2]) : areaPixels
+    } else {
+      // 关闭提示词增强时若没有可用 size，必须给 aspect_ratio（官方要求），否则会 400。
+      body.size = 'auto'
+      body.aspect_ratio = minimaxRatioOf(size)
+    }
+  } else {
+    body.size = 'auto'
+    body.aspect_ratio = minimaxRatioOf(size)
+    body.area = area
+  }
+  body.response_format = n * outputPixels > B64_AREA_LIMIT ? 'url' : 'b64_json'
+  if (refs.length) body.images = refs.map((buf) => ({ image_url: `data:${mimeOf(buf)};base64,${buf.toString('base64')}` }))
+  return { endpoint: refs.length ? 'edits' : 'generations', body, images: refs }
+}
+
+/** MiniMax baseUrl 归一化：允许用户按 OpenAI 习惯填 /v1，但拼接口时只能有一个版本前缀。 */
+export function minimaxBaseUrl (baseUrl) {
+  return String(baseUrl || 'https://api.minimax.cn').trim().replace(/\/+$/, '').replace(/\/v1$/i, '')
+}
+
+/** MiniMax 参考图校验：官方 /images/edits 不支持 GIF（JPG/JPEG/PNG/WEBP/HEIC/HEIF）。 */
+function assertMinimaxReferences (refs) {
+  if ((refs || []).some((buf) => String(mimeOf(buf)) === 'image/gif')) {
+    throw new Error('MiniMax H3 的参考图不支持 GIF（官方只支持 JPG/PNG/WEBP/HEIC）；请换一张静态图，或先把 GIF 转成 PNG 再试')
+  }
+}
+
 /** 按 "data.0.url" 这种路径取值。 */
 function dotted (obj, path) {
   let cur = obj
@@ -201,19 +298,25 @@ export function createImageGen({ getConfig, log, local, dsh, fetchImpl, codexAut
   const fetch = fetchImpl || ((...args) => globalThis.fetch(...args))
   const auth = codexAuth || createCodexAuth({ log, fetchImpl: fetch })
   const viaCodex = createCodexImage({ auth, fetchImpl: fetch, log })
-  async function generate(prompt, { format, shape, image, images, size, onRetry } = {}) {
-    const config = getConfig().imageGen
+  async function generate(prompt, { format, shape, image, images, size, count, onRetry } = {}) {
+    const cfg = getConfig()
+    const config = cfg.imageGen
     const gif = drawFormat(format) === 'gif'
+    const defaultCount = config.provider === 'minimax' ? config.minimax?.n : 1
+    const many = Math.max(1, Math.min(10, Math.round(Number(count ?? defaultCount) || 1)))
     if (gif && !config.allowGif) throw gifError('GIF 动图还没开启，请主人在生图设置中打开「允许按需生成 GIF」')
     if (gif && (config.provider !== 'openai' || local?.active('image') || upstream?.ready?.())) throw gifError('当前生图接法暂不支持按需 GIF，请使用支持 GIF 的 OpenAI 格式接口')
+    if (many > 1 && config.provider !== 'minimax') throw new Error('一次生成多张目前只支持 MiniMax H3 接法')
     const requestedSize = size == null || size === '' ? '' : normalizeRequestedSize(size)
     if (size != null && size !== '' && !requestedSize) throw new Error('图片尺寸格式不对，应为 1024x1024 或 2048x2048 这类格式')
     const c = { ...config, size: requestedSize || imageSizeFor(shape, config) }
     c.gif = gif
     if (gif && !requestedSize) c.size = gifSizeFor(shape, config)
     const refs = images ?? (image ? [image] : [])
-    if (!Array.isArray(refs) || refs.length > 8 || refs.some((buf) => !Buffer.isBuffer(buf) || !String(mimeOf(buf)).startsWith('image/'))) throw new Error('参考图须为最多 8 张可用图片')
+    const refLimit = c.provider === 'minimax' ? 16 : 8
+    if (!Array.isArray(refs) || refs.length > refLimit || refs.some((buf) => !Buffer.isBuffer(buf) || !String(mimeOf(buf)).startsWith('image/'))) throw new Error(`参考图须为最多 ${refLimit} 张可用图片`)
     if (image != null && (!Buffer.isBuffer(image) || !String(mimeOf(image)).startsWith('image/'))) throw new Error('参考图不是可用的图片')
+    if (c.provider === 'minimax') assertMinimaxReferences(refs)
     image = refs[0] || null
     if (image && c.img2img === false) throw new Error('参考图功能已关闭')
     // 外部生图模块（如社区库的「生图 · DSH 已接入模型」）：它明确接管时就用它，返回 null 则照旧。
@@ -240,9 +343,16 @@ export function createImageGen({ getConfig, log, local, dsh, fetchImpl, codexAut
     const full = [c.stylePrompt, prompt].filter(Boolean).join('，')
     const t = Date.now()
     let buf
-    try { buf = c.provider === 'codex' ? await viaCodex(c, full, { shape, image }) : c.provider === 'custom' ? await viaCustom(c, full, image, refs) : await viaOpenAI(c, full, image, refs) }
-    catch (error) {
-      if (gif || !c.fallbackEnabled || !error.imageRequestFailed) throw error
+    try {
+      buf = c.provider === 'codex'
+        ? await viaCodex(c, full, { shape, image })
+        : c.provider === 'custom'
+          ? await viaCustom(c, full, image, refs)
+          : c.provider === 'minimax'
+            ? await viaMinimaxImage(cfg, c, full, refs, many)
+            : await viaOpenAI(c, full, image, refs)
+    } catch (error) {
+      if (gif || many > 1 || !c.fallbackEnabled || !error.imageRequestFailed) throw error
       let last = error
       for (const endpoint of c.fallbacks || []) {
         if (!endpoint.model || (endpoint.provider !== 'codex' && !endpoint.baseUrl)) continue
@@ -252,6 +362,13 @@ export function createImageGen({ getConfig, log, local, dsh, fetchImpl, codexAut
       }
       if (!buf) throw last
     }
+    // MiniMax 一次多张：把每张都校验一遍后整组返回，交给模块逐张发送 / 存盘。
+    if (Array.isArray(buf)) {
+      if (!buf.length) throw new Error('生图接口没有返回图片')
+      if (buf.some((item) => !item || !item.length || !String(mimeOf(item)).startsWith('image/'))) throw new Error('生图接口返回的不是图片')
+      log.info(`画好了 ${buf.length} 张图（${Math.round(buf.reduce((n, item) => n + item.length, 0) / 1024)}KB，${Math.round((Date.now() - t) / 1000)}s）：${prompt.slice(0, 40)}`)
+      return buf
+    }
     if (gif && gifFrameCount(buf) < 2) {
       const kind = ({ 'image/png': 'PNG 静态图', 'image/jpeg': 'JPEG 静态图', 'image/webp': 'WebP 图片', 'image/gif': '单帧或损坏的 GIF' })[mimeOf(buf)] || '无法识别的内容'
       throw gifError(`接口没有返回有效的多帧 GIF 动图，实际返回${kind}；已停止发送，请检查接口或模型的 GIF 支持`)
@@ -260,6 +377,52 @@ export function createImageGen({ getConfig, log, local, dsh, fetchImpl, codexAut
     if (!String(mimeOf(buf)).startsWith('image/')) throw new Error('生图接口返回的不是图片')
     log.info(`画好了一张图（${Math.round(buf.length / 1024)}KB，${Math.round((Date.now() - t) / 1000)}s）：${prompt.slice(0, 40)}`)
     return buf
+  }
+
+  /**
+   * MiniMax H3 Image：同步接口（最长 600 秒），支持多图参考编辑和一次多张。
+   * 文档见 minimaxImageBody() 上方注释。
+   */
+  async function viaMinimaxImage (cfg, c, prompt, refs, count) {
+    const m = c.minimax || {}
+    const key = minimaxImageKey(cfg)
+    if (!key) throw new Error('没填 MiniMax API Key：面板「生图」页填上，或到「语音」页复用同一个 Key')
+    const base = minimaxBaseUrl(m.baseUrl)
+    const req = minimaxImageBody({ prompt, images: refs, size: c.size, count, cfg })
+    if (req.images.length > 16) throw new Error('MiniMax H3 最多支持 16 张参考图')
+    let r
+    try {
+      r = await fetch(`${base}/v1/images/${req.endpoint}`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
+        body: JSON.stringify(req.body),
+        signal: AbortSignal.timeout(600000),
+      })
+    } catch (error) { error.imageRequestFailed = true; error.imageNetworkFailure = true; throw error }
+    const j = await r.json().catch(() => ({}))
+    if (!r.ok) {
+      const message = j?.error?.message || j?.base_resp?.status_msg || j?.message || '接口没有返回错误说明'
+      const code = j?.error?.code ?? j?.base_resp?.status_code
+      const error = new Error(`MiniMax 生图失败（HTTP ${r.status}${code !== undefined ? '，code ' + code : ''}）：${message}`)
+      error.imageRequestFailed = true; error.imageStatus = r.status
+      throw error
+    }
+    const items = Array.isArray(j.data) ? j.data : Array.isArray(j.images) ? j.images : []
+    const bufs = []
+    let firstError = ''
+    for (const item of items) {
+      try {
+        if (item?.b64_json) bufs.push(Buffer.from(item.b64_json, 'base64'))
+        else if (item?.url) {
+          const url = String(item.url)
+          if (/^data:image\//i.test(url)) bufs.push(await valueToBuffer(url))
+          else bufs.push(await fetchImage(url, { maxBytes: 40 * 1024 * 1024, allowLocal: false, timeoutMs: 120000, fetchImpl: fetch }))
+        } else if (item?.error) { firstError = firstError || String(item.error.message || item.error.code || '生成失败') }
+      } catch (error) { firstError = firstError || String(error?.message || error) }
+    }
+    if (!bufs.length) throw new Error(`MiniMax 生图没有返回图片${firstError ? '：' + firstError : ''}`)
+    if (count > 1 && bufs.length < count) log.warn?.(`MiniMax 一次请求要 ${count} 张，实际成功 ${bufs.length} 张${firstError ? '（' + firstError + '）' : ''}`)
+    return count > 1 ? bufs : bufs[0]
   }
 
   /** OpenAI 兼容接口。 */
@@ -326,9 +489,10 @@ export function createImageGen({ getConfig, log, local, dsh, fetchImpl, codexAut
     if (local?.active('image')) return true
     // 外部生图模块已就绪时，插件自己的「生图」开关不是必要条件。
     try { if (upstream && upstream.ready && upstream.ready()) return true } catch {}
-    const c = getConfig().imageGen
+    const cfg = getConfig(); const c = cfg.imageGen
     if (!c.enabled) return false
     if (c.provider === 'codex') return auth.status().loggedIn
+    if (c.provider === 'minimax') return Boolean(minimaxImageKey(cfg)) && Boolean(c.minimax?.model || c.model)
     return c.provider === 'custom' ? Boolean(c.custom && c.custom.url) : Boolean(c.baseUrl && c.model)
   }
 
@@ -339,11 +503,12 @@ export function createImageGen({ getConfig, log, local, dsh, fetchImpl, codexAut
   const notReadyReason = () => {
     if (local?.active('image')) return ''
     try { if (upstream && upstream.ready && upstream.ready()) return '' } catch {}
-    const c = getConfig().imageGen
+    const cfg = getConfig(); const c = cfg.imageGen
     if (!c.enabled) return '生图还没开启：面板「生图」页右上角开关打开并保存'
     if (c.provider === 'codex') {
       return auth.status().loggedIn ? '' : 'ChatGPT 订阅还没登录：面板「生图」页 → Codex 订阅 → 登录'
     }
+    if (c.provider === 'minimax') return minimaxImageKey(cfg) ? '' : '没填 MiniMax API Key：面板「生图」页填上，或到「语音」页复用同一个 Key'
     if (c.provider === 'custom') return c.custom && c.custom.url ? '' : '自定义生图接口地址还没填（面板「生图」页）'
     return c.baseUrl && c.model ? '' : '还没填生图服务地址或模型（面板「生图」页）'
   }
@@ -360,6 +525,7 @@ export function createImageGen({ getConfig, log, local, dsh, fetchImpl, codexAut
     }
     if (!c.enabled) return 0
     if (c.provider === 'codex') return 0
+    if (c.provider === 'minimax') return minimaxImageKey(getConfig()) ? 16 : 0
     if (c.provider === 'custom') return customSupportsReference(c.custom || {}, '{images}') ? 8 : customSupportsReference(c.custom || {}) ? 1 : 0
     if (!c.baseUrl || !c.model) return 0
     if (/^dall-e-3$/i.test(c.model || '')) return 0
