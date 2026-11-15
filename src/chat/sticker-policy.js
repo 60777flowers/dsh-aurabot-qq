@@ -16,3 +16,8 @@ export function hasReplyStickerKeywords(items) {
     .map((item) => String(item.value ?? '').replace(/<[^>]*>/g, '')).join('\n')
   return KEYWORDS.some((word) => body.includes(word)) || ENGLISH.test(body)
 }
+
+// 纯表情本身就是完整回复；实验模式下不把整轮回复抽没。空回复不算。
+export function preserveReplyStickers(items) {
+  return (items.length > 0 && items.every((item) => item.kind === 'sticker')) || hasReplyStickerKeywords(items)
+}

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { hasReplyStickerKeywords } from '../src/chat/sticker-policy.js'
+import { hasReplyStickerKeywords, preserveReplyStickers } from '../src/chat/sticker-policy.js'
 import { parseReply } from '../src/chat/reply.js'
 import { normalize, mergeFromPanel } from '../src/core/config.js'
 
@@ -32,4 +32,12 @@ test('只匹配正文，标签名、图片段和 QQ 小黄脸标签不算关键�
 test('语音正文和同一段回复的其他文字气泡也参与匹配', () => {
   assert.equal(match('<voice>给你看看这个</voice><sticker:开心>'), true)
   assert.equal(match('这张很端庄|||真的|||<sticker:开心>'), true)
+})
+
+test('纯表情豁免不把空回复、混排或表情名字当成正文关键词', () => {
+  assert.equal(preserveReplyStickers(parseReply('<sticker:开心> ||| <sticker:委屈>').items), true)
+  assert.equal(preserveReplyStickers([]), false)
+  assert.equal(preserveReplyStickers(parseReply('你好<sticker:图片>').items), false)
+  assert.equal(preserveReplyStickers(parseReply('<voice>你好</voice><sticker:开心>').items), false)
+  assert.equal(preserveReplyStickers([{kind:'image',value:'image.png'},{kind:'sticker',value:'开心'}]), false)
 })

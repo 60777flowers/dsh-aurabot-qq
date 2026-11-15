@@ -1,5 +1,5 @@
 import { ignoredGroupMember } from './member-filter.js'
-import { hasReplyStickerKeywords } from './sticker-policy.js'
+import { preserveReplyStickers } from './sticker-policy.js'
 // 消息中枢：QQ 会话 ↔ DSH 会话。
 //   收：OneBot 事件 → 白名单 / 群聊策略 → 拼好文案（带发言人、群上下文、图片、语音转写）→ 喂进对应 DSH 会话
 //   发：DSH 会话一轮结束 → 取最终正文 → 拆条 / 语音 / 表情 → 发回原来的 QQ 会话
@@ -1041,7 +1041,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     if (parsed.silent) return
     const cfg = getConfig()
     const items = cfg.stickers.limitTagged && parsed.items.some((i) => i.kind === 'sticker')
-      && !(cfg.stickers.keywordExemption && hasReplyStickerKeywords(parsed.items)) && random() >= cfg.stickers.autoChance
+      && !(cfg.stickers.keywordExemption && preserveReplyStickers(parsed.items)) && random() >= cfg.stickers.autoChance
       ? parsed.items.filter((i) => i.kind !== 'sticker') : parsed.items
     for (const item of items) {
       if (!isCurrent()) return
@@ -1571,8 +1571,8 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     }
   }
 
-  function silenceTurn(chatId) {
-    log.info(`${chatId}：她选择不说话`)
+  function silenceTurn(chatId, reason = '她选择不说话') {
+    log.info(`${chatId}：${reason}`)
     if (chatId.startsWith('group:')) {
       const gid = chatId.slice(6)
       groupEngaged.delete(gid)
@@ -1696,11 +1696,14 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     const interim = Boolean(opts.interim)
     // 一段回复只抽一次：模型标签、自动补图与 items 钩子共用结果，拒绝后不能再补一张。
     // 新开关默认关，保留旧的「标签直发、自动补图受心情影响」行为。
-    let stickerAllowed
+    let stickerAllowed, stickersFiltered = false
     const allowReplySticker = () => (stickerAllowed ??= random() < cfg.stickers.autoChance * (cfg.stickers.limitTagged ? 1 : mood().sticker))
-    const limitReplyStickers = (list) => cfg.stickers.limitTagged && list.some((i) => i.kind === 'sticker')
-      && !(cfg.stickers.keywordExemption && hasReplyStickerKeywords(list)) && !allowReplySticker()
-      ? list.filter((i) => i.kind !== 'sticker') : list
+    const limitReplyStickers = (list) => {
+      if (!cfg.stickers.limitTagged || !list.some((i) => i.kind === 'sticker')
+        || (cfg.stickers.keywordExemption && preserveReplyStickers(list)) || allowReplySticker()) return list
+      stickersFiltered = true
+      return list.filter((i) => i.kind !== 'sticker')
+    }
     // 对方明确要语音、她却只打了字：整段改成语音发（模型偶尔会忘，这里兜底）
     if (!interim && opts.wantVoice && cfg.voice.enabled && !items.some((i) => i.kind === 'voice')) {
       const spoken = items.filter((i) => i.kind === 'text').map((i) => i.value).join('，')
@@ -1737,7 +1740,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       data: { text: item.value }, item,
     })), { ...cleaningFor(chatId), allowPromptEcho: false, onPromptDecision: (allow) => { outputScope.getStore().allowPromptEcho = allow } })
       .map((seg) => seg.type === 'text' ? { ...seg.item, value: seg.data.text } : seg.item)
-    if (!items.length) return silenceTurn(chatId)
+    if (!items.length) return silenceTurn(chatId, stickersFiltered ? '本轮表情被概率过滤，没有消息可发' : '回复清理后为空，没有消息可发')
     // 一段只有一个人明确 @ / 引用她时，第一条回复引用并 @ 那个人；多人同时叫她不猜。
     // 模型明确选了引用编号时尊重它，不再自动引用另一条。
     const refs = inGroup ? groupRefs.get(chatId.slice(6)) || {} : {}

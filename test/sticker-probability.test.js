@@ -16,17 +16,17 @@ function setup(t, patch = {}, options = {}) {
     chat: { bubbleMinMs: 0, bubbleMaxMs: 0 }, voice: { enabled: false },
     stickers: { enabled: true, limitTagged: true, autoChance: 0 }, ...patch })
   let draws = 0, picks = 0
-  const calls = []
+  const calls = [], logs = []
   const hub = createHub({ dsh: {}, getConfig: () => cfg,
     random: () => { draws++; return options.roll ?? 0.5 },
     moodEffects: () => ({ sticker: options.mood ?? 1, voice: 1, delay: 0, chatty: 1 }),
     hooks: options.hooks,
-    log: Object.fromEntries(['info', 'debug', 'warn', 'error'].map(k => [k, () => {}])),
+    log: Object.fromEntries(['info', 'debug', 'warn', 'error'].map(k => [k, (...args) => logs.push(args.join(' '))])),
     onebot: { async call(action, params) { calls.push({ action, params }); return { message_id: calls.length } } },
     stickers: { match: () => item, pickForReply: () => { picks++; return item }, markUsed() {},
       segmentFor: () => ({ type: 'image', data: { file: 'base64://test', sub_type: 1 } }) } })
   t.after(() => { hub.dispose(); if (old === undefined) delete process.env.AURABOT_DATA_DIR; else process.env.AURABOT_DATA_DIR = old; rmSync(dir, { recursive: true, force: true }) })
-  return { cfg, hub, calls, draws: () => draws, picks: () => picks,
+  return { cfg, hub, calls, logs, draws: () => draws, picks: () => picks,
     segments: () => calls.flatMap(c => c.params.message || []) }
 }
 const images = s => s.segments().filter(x => x.type === 'image')
@@ -204,4 +204,27 @@ test('中间段也识别本段关键词，命中只保留模型选好的表情',
   const s = setup(t, { stickers: { limitTagged: true, keywordExemption: true, autoChance: 0 } })
   await s.hub.deliver('private:1', '给你看看<sticker:开心>', { interim: true, simulate: true })
   assert.equal(images(s).length, 1); assert.equal(s.draws(), 0); assert.equal(s.picks(), 0)
+})
+
+for (const chatId of ['private:1', 'group:2']) test(`${chatId}：实验模式下两张纯表情完整发送，不抽概率也不补图`, async t => {
+  const s = setup(t, { stickers: { limitTagged: true, keywordExemption: true, autoChance: 0 } }, { roll: 0.99 })
+  await s.hub.deliver(chatId, '<sticker:开心> ||| <sticker:委屈>', { simulate: true })
+  assert.equal(images(s).length, 2); assert.equal(words(s), ''); assert.equal(s.draws(), 0); assert.equal(s.picks(), 0)
+  assert.ok(!s.logs.some(line => line.includes('选择不说话')))
+  s.cfg.stickers.keywordExemption = false
+  await s.hub.deliver(chatId, '<sticker:开心> ||| <sticker:委屈>', { simulate: true })
+  assert.equal(images(s).length, 2); assert.equal(s.draws(), 1)
+  assert.ok(s.logs.some(line => line.includes('表情被概率过滤')))
+  assert.ok(!s.logs.some(line => line.includes('选择不说话')))
+})
+
+test('纯表情豁免不绕过总开关、试运行和群消息条数限制', async t => {
+  const s = setup(t, { stickers: { enabled: false, limitTagged: true, keywordExemption: true, autoChance: 0 } })
+  const body = '<sticker:开心> ||| <sticker:委屈>'
+  await s.hub.deliver('private:1', body, { simulate: true }); assert.equal(images(s).length, 0)
+  s.cfg.stickers.enabled = true; s.cfg.dryRun = true
+  await s.hub.deliver('private:1', body, { simulate: true }); assert.equal(images(s).length, 0)
+  s.cfg.dryRun = false
+  await s.hub.deliver('group:2', body + '|||<sticker:开心>|||<sticker:开心>', { simulate: true })
+  assert.equal(images(s).length, 3)
 })
