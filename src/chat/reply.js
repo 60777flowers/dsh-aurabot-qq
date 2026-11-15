@@ -81,12 +81,28 @@ export function stripModelArtifacts(text) {
     .trim()
 }
 
+const SILENCE_MARK_SOURCE = '\\[沉默\\]|［沉默］|\\(沉默\\)|（沉默）'
 /** 是不是「这次不说话」：整条只由沉默标记、空白、标点组成才算。 */
-const SILENCE_MARK = /\[沉默\]|［沉默］|\(沉默\)|（沉默）/g
+const SILENCE_MARK = new RegExp(SILENCE_MARK_SOURCE, 'g')
+// 标记周边通常还跟着空格：一起带走，免得剥完正文留下「嗯  我在」这种多空格。
+const SILENCE_MARK_WITH_SPACE = new RegExp(`[ \\t]*(?:${SILENCE_MARK_SOURCE})[ \\t]*`, 'g')
 export function isSilence(text) {
   const t = String(text || '').trim()
   if (t === '') return true
   return t.replace(SILENCE_MARK, '').replace(/[\s\p{P}]/gu, '') === ''
+}
+
+/** 剥掉正文里残留的沉默标记；整条只有标记时会变成空串，由 isSilence 判沉默。 */
+export function stripSilenceMarks(text) {
+  return String(text || '').replace(SILENCE_MARK_WITH_SPACE, '')
+}
+
+/** 沉默标记的删除区间：统一出站清洗按原文坐标并进 cuts，消息段映射才不会错位。 */
+function silenceMarkRanges(text) {
+  const ranges = []
+  const re = new RegExp(SILENCE_MARK_WITH_SPACE.source, 'g')
+  for (const m of String(text || '').matchAll(re)) ranges.push({ start: m.index, end: m.index + m[0].length })
+  return ranges
 }
 
 const ZERO_WIDTH_CHARS = new Set(['\u200B', '\u200C', '\u200D', '\uFEFF', '\u2060'])
@@ -388,7 +404,11 @@ export function cleanOutboundText(text, { warn, promptSources, fingerprint, user
   // 先剥 HTML 残片：它们和工具调用、提示词复读互不重叠，按原文坐标并进同一份区间表。
   const { cuts: htmlCuts } = stripHtmlFragments(raw)
   // time-context 注入不是提示词复读，主人私聊的复读豁免不该放过它，这里直接并进必删区间。
-  const tools = [...toolTextRanges(raw, { ownerPrivate }), ...contextInjectionRanges(raw)]
+  const required = [...toolTextRanges(raw, { ownerPrivate }), ...contextInjectionRanges(raw)]
+  // 沉默标记也按区间删：turn/end 之外（空间说说、模块代发等）同样不能把标记当正文发出去。
+  const silence = silenceMarkRanges(raw)
+  const noiseCount = required.length + htmlCuts.length
+  const tools = [...required, ...silence]
     .sort((a, b) => a.start - b.start || b.end - a.end)
   const baseRanges = mergeRanges([...tools, ...htmlCuts])
   const toolClean = withoutToolRanges(raw, baseRanges)
@@ -411,7 +431,8 @@ export function cleanOutboundText(text, { warn, promptSources, fingerprint, user
     ranges = mergeRanges([...baseRanges, ...prompts.map((p) => ({ start: offsets[p.start], end: offsets[p.end - 1] + 1 }))])
   }
   let clean = withoutToolRanges(raw, ranges)
-  if (ranges.length && isSilence(visibleContent(clean))) {
+  // 只有沉默标记时属于正常「不想说话」，不要误报成工具调用/提示词复读。
+  if ((noiseCount > 0 || removePrompts) && isSilence(visibleContent(clean))) {
     warn?.(removePrompts ? '模型输出整段都是提示词复读，已拦下并按沉默处理' : '模型输出整段都是工具调用文字，已拦下并按沉默处理')
     clean = ''
   }
@@ -484,7 +505,7 @@ export function parseReply(text, options) {
   if (isSilence(raw)) return { silent: true, items: [] }
   // 工具显式指定语音：仍经过同一份清洗，但正文不再当作媒体/气泡指令解析。
   if (options?.voice === true) {
-    const value = stripMarkdown(raw)
+    const value = stripSilenceMarks(stripMarkdown(raw))
     return { silent: !value, items: value ? [{ kind: 'voice', value }] : [] }
   }
   const items = []
@@ -513,7 +534,7 @@ export function parseReply(text, options) {
       } else if (m[1] !== undefined) {
         replyTo = m[1]
       } else if (m[2] !== undefined) {
-        const v = stripMarkdown(m[2])
+        const v = stripSilenceMarks(stripMarkdown(m[2]))
         if (v) items.push({ kind: 'voice', value: v })
       } else if (m[3] !== undefined) {
         const v = m[3].trim()
@@ -595,7 +616,8 @@ export function itemsToLine(items, resolveSticker = () => null) {
 }
 
 function pushText(items, s) {
-  const t = stripMarkdown(String(s || '').replace(/<\/?reply[^>]*>/g, '')) // 写坏的引用标签直接去掉
+  // 写坏的引用标签直接去掉；混在正文里的沉默标记也全部剥掉，整行只剩标记时按沉默跳过。
+  const t = stripSilenceMarks(stripMarkdown(String(s || '').replace(/<\/?reply[^>]*>/g, '')))
   if (!t || isSilence(t)) return
   for (const line of splitLines(t)) if (!isSilence(line)) items.push({ kind: 'text', value: line })
 }
