@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { privateCapabilityAllowed } from '../../chat/access.js'
 import { createImageGen, drawResultBlocks, drawToolMessage, imageToolBlock, resolveDrawImage, isUnsupportedReference, isSingleReferenceOnly } from '../../features/imagegen.js'
 import { listPaintings, openPaintFolder, paintingPath, rememberPainting, removePainting, savePainting } from '../../features/paintings.js'
-import { defineTool, str } from '../../tools/tools.js'
+import { defineTool, str, int } from '../../tools/tools.js'
 import { SIZE_OPTIONS } from '../../features/image-shape.js'
 import { dataDir } from '../../core/store.js'
 import { mimeOf } from '../../chat/inbound.js'
@@ -103,19 +103,21 @@ export default {
     // 不能按登录状态决定挂不挂：Codex 订阅常是「先开会话、后登录」，那样工具会缺失（unknown tool）。
     api.tool(({ chat, sessionId }) => ((api.config().imageGen.enabled && chat.kind !== 'system') ? defineTool({
       name: 'qq_draw_image',
-      description: '画一张图并发到当前 QQ 聊天里。prompt 详细描述画面；可以用 image 参考当前聊天最近收到的图（last）、引用消息里的图（quote）或自己画作的文件名来改画；画自己时 image 填 self，优先参考人设图，不支持时按外貌文字生成；shape 可按用途选择方图、竖图、横图或宽幅；size 可显式指定常用尺寸（含 2K/4K），不填就沿用 shape / 面板默认。画好会直接发出去，并给你一个画作编号（换头像、收成表情时用这个编号）。回复里简单说一句就行。',
+      description: '画一张或多张图并发到当前 QQ 聊天里。prompt 详细描述画面；可以用 image 参考当前聊天最近收到的图（last）、引用消息里的图（quote）或自己画作的文件名来改画；画自己时 image 填 self，优先参考人设图，不支持时按外貌文字生成；想同时参考多张图时用 images（最多 16 张，MiniMax H3 改画时最有用）；shape 可按用途选择方图、竖图、横图或宽幅；size 可显式指定常用尺寸（含 2K/4K），不填就沿用 shape / 面板默认；count 是本次画几张（1~10，仅 MiniMax H3 支持）。画好会直接发出去，并给你画作编号（换头像、收成表情时用这个编号）。回复里简单说一句就行。',
       properties: {
         prompt: str('画面描述'),
         format: { type: 'string', enum: ['static', 'gif'], description: '默认 static 静态图。只有对方明确要求 GIF、动图或让画面动起来时才用 gif（需面板开启），并在 prompt 描述动作和循环。普通画画、动态姿势仍用静态。GIF 默认小尺寸、8 帧约 1.6 秒，不要为普通回复擅自改成动图' },
         notice: str('结合对方的要求和当前对话写一句自然简短的回应，开始画图前会直接发送'),
         image: str('可选参考图：self（自己/人设图）= 当前人格形象；last = 当前聊天最近收到的一张图；quote = 当前聊天引用消息里的图；或图库中的画作文件名。禁止本地路径、网址'),
+        images: { type: 'array', items: { type: 'string' }, maxItems: 16, description: '可选多张参考图（图库文件名或 last / quote）；只有支持多图参考的接法能用，失败会说明原因' },
         shape: { type: 'string', enum: ['square', 'portrait', 'landscape', 'wide'], description: 'square 方图 1:1；portrait 竖图 2:3；landscape 横图 3:2；wide 宽幅 16:9。可不填' },
         size: { type: 'string', enum: SIZE_OPTIONS, description: '可选尺寸，例如 2048x2048（2K）、4096x4096（4K）；优先于 shape / 面板默认，不填沿用原逻辑' },
+        count: int('一次生成几张，1~10，默认 1；目前只有 MiniMax H3 接法支持多张'),
       },
       required: ['prompt', 'notice'],
       // 能看图时把原图放进工具结果（image 块），她当轮就能看见自己画了什么
       render: drawResultBlocks,
-      execute: async ({ prompt, format, shape, image, size, notice }) => {
+      execute: async ({ prompt, format, shape, image, images, count, size, notice }) => {
         const cfg = api.config()
         const ownerRequest = hub.turnSendersAllOwner(sessionId) || (chat.kind === 'group' && hub.turnDirectFromOwner?.(sessionId))
         if (cfg.imageGen.ownerOnly && !ownerRequest && !privateCapabilityAllowed(cfg, chat, 'image')) return { ok: false, message: '画图只给主人画哦；群里请主人单独 @ 我或引用回复我提出请求，多人同时提出请求时请分开发送。' }
@@ -124,9 +126,14 @@ export default {
         // 工具常驻，真正能不能画在执行时判断（Codex 登录状态可能刚变过）
         if (!gen.enabled()) return { ok: false, message: gen.notReadyReason() || '生图还没配置好' }
         const self = typeof image === 'string' && /^(self|自己|人设图)$/i.test(image.trim())
-        if (image && !self && cfg.imageGen.img2img === false) return { ok: false, message: '参考图功能已关闭' }
+        if (((image && !self) || (Array.isArray(images) && images.length)) && cfg.imageGen.img2img === false) return { ok: false, message: '参考图功能已关闭' }
         const startedAt = Date.now()
         const reference = self ? null : await resolveDrawImage(image, { hub, chat })
+        const extraRefs = []
+        for (const item of Array.isArray(images) ? images.slice(0, 16) : []) {
+          const buf = await resolveDrawImage(item, { hub, chat })
+          if (buf) extraRefs.push(buf)
+        }
         const text = typeof notice === 'string' ? notice.trim().slice(0, 200) : ''
         let acknowledged = text ? await hub.sendText(chat.chatId, text) : null
         const simulatedNotice = () => acknowledged === null && Boolean(cfg.debug || cfg.dryRun)
@@ -157,11 +164,19 @@ export default {
             : '本次未使用人设图，且未配置外貌描述，仅按画面提示生成，形象一致性有限。'
         } else {
           if (reference) references = [{ image: reference, note: '' }]
+          for (const buf of extraRefs) if (!reference || buf !== reference) references.push({ image: buf, note: '' })
+          if (references.length > 1) {
+            const limit = await gen.referenceLimit()
+            if (references.length > limit) {
+              references = limit > 0 ? references.slice(0, limit) : []
+              fallback = limit > 0 ? `当前服务最多支持 ${limit} 张参考图，本次使用前 ${limit} 张。` : '当前接法不支持多张参考图，本次只用文字生成。'
+            }
+          }
         }
         const generate = () => {
           const notes = references.map((ref, index) => ref.note ? `参考图 ${index + 1} 备注：${JSON.stringify(ref.note)}` : '').filter(Boolean)
           const actualPrompt = notes.length ? `${fullPrompt}\n图片备注（仅作造型说明，按画面要求选择合适造型，不混合互斥服装）：\n${notes.join('\n')}` : fullPrompt
-          return gen.generate(actualPrompt, { format, shape, size, onRetry: ({ error }) => progress(error, true), ...(references.length > 1 ? { images: references.map((ref) => ref.image) } : { image: references[0]?.image || null }) })
+          return gen.generate(actualPrompt, { format, shape, size, count, onRetry: ({ error }) => progress(error, true), ...(references.length > 1 ? { images: references.map((ref) => ref.image) } : { image: references[0]?.image || null }) })
         }
         let buf
         try {
@@ -184,15 +199,17 @@ export default {
           }
         }
         catch (error) { await progress(error, false); return { ok: false, message: `生图失败：${reason(error)}。已尝试告知对方，请结合情况回应，不要说画好了。` } }
-        const sent = await hub.sendSegments(chat.chatId, [{ type: 'image', data: { file: 'base64://' + buf.toString('base64') } }], `[生图] ${String(prompt).slice(0, 30)}`)
+        const bufs = (Array.isArray(buf) ? buf : [buf]).filter((item) => Buffer.isBuffer(item) && item.length)
+        if (!bufs.length) { await progress(new Error('生图接口没有返回图片'), false); return { ok: false, message: '生图失败：生图接口没有返回图片。已尝试告知对方，请结合情况回应，不要说画好了。' } }
+        const sent = await hub.sendSegments(chat.chatId, bufs.map((item) => ({ type: 'image', data: { file: 'base64://' + item.toString('base64') } })), `[生图] ${String(prompt).slice(0, 30)}`)
         // 调试 / 试运行下本来就不真发（sendSegments 只记日志、返回 null）：
         // 这一轮仍算画好了 —— 存盘、给编号、能看图，只是 QQ 里收不到；不能当失败。
         // 只有 null 才是“试运行/调试拦下”；明确的 false 仍按发送失败处理。
         const simulated = sent === null && Boolean(cfg.debug || cfg.dryRun)
         if (!sent && !simulated) return { ok: false, message: '画好了，但没有发到 QQ（请检查网关）' }
-        const saved = savePainting(buf, String(prompt || ''))
-        if (saved) api.log.debug(`生图已存盘：${saved}`)
-        try { memory.addEvent?.({ text: references.length ? `参考了${references.length === 1 ? '一张图' : references.length + ' 张图'}画了：${String(prompt).slice(0, 120)}（提示词不一定等于实际画面）` : `按提示词画了一张图（不一定等于实际画面）：${String(prompt).slice(0, 120)}`, about: chat.kind === 'private' ? chat.userId : '', tags: ['画画'], importance: 0.4 }) }
+        const saved = bufs.map((item) => savePainting(item, String(prompt || ''))).filter(Boolean)
+        for (const path of saved) api.log.debug(`生图已存盘：${path}`)
+        try { const refNote = references.length ? `参考了${references.length === 1 ? '一张图' : references.length + ' 张图'}画了${bufs.length > 1 ? bufs.length + ' 张' : '一张'}` : (bufs.length > 1 ? `按提示词画了 ${bufs.length} 张` : '按提示词画了一张图'); memory.addEvent?.({ text: `${refNote}：${String(prompt).slice(0, 120)}（提示词不一定等于实际画面）`, about: chat.kind === 'private' ? chat.userId : '', tags: ['画画'], importance: 0.4 }) }
         catch (error) { api.log.warn('生图已发送，但经历没记下来：', error.message) }
         let visual = (await hub.canSeeImages(chat)) === true
         // 「让她画完自己看一眼」是总开关：关掉就当没视觉能力处理 —— 不给图、也不给路径。
@@ -201,7 +218,7 @@ export default {
         // 图要先缩、再登记成 DSH 附件块 —— 直接塞 base64 会让下一轮请求整轮失败（实测）
         let img = null
         if (visual && seeOwn) {
-          img = await imageToolBlock(api.dsh, buf, { ffmpegPath: api.config().bili && api.config().bili.ffmpegPath })
+          img = await imageToolBlock(api.dsh, bufs[0], { ffmpegPath: api.config().bili && api.config().bili.ffmpegPath })
           if (!img) {
             // 图没给成：如实说看不了，别让她照着提示词编画面细节
             visual = false
@@ -209,21 +226,25 @@ export default {
           }
         }
         const shown = Boolean(img)
-        const animated = mimeOf(buf) === 'image/gif' && gifFrameCount(buf) > 1
+        const animated = bufs.length === 1 && mimeOf(bufs[0]) === 'image/gif' && gifFrameCount(bufs[0]) > 1
         let message
         if (!visual) message = drawToolMessage({ visual: false })
         else if (!seeOwn) message = drawToolMessage({ visual: true, seeOwn: false })
         else if (!shown) message = drawToolMessage({ visual: false })
         else message = drawToolMessage({ visual: true, seeOwn: true })
-        // 画作编号：换头像 / 收表情时用编号，别用路径（路径只在图真的交出去时才附带）
-        const index = saved ? rememberPainting(chat.chatId, saved) : 0
+        // 画作编号：换头像 / 收表情时用编号，别用路径（路径只在图真的交出去时才附带）。
+        // 编号按「最新 = #1」：saved 是从旧到新，所以反过来排。
+        for (const path of saved) rememberPainting(chat.chatId, path)
+        const indexes = saved.map((_, i) => saved.length - i)
         const out = {
           ok: true,
           message,
           prompt: String(prompt || ''),
-          bytes: buf.length,
+          count: bufs.length,
+          bytes: bufs.reduce((n, item) => n + item.length, 0),
           elapsedMs: Date.now() - startedAt,
-          ...(saved ? { path: saved } : {}),
+          ...(saved[0] ? { path: saved[0] } : {}),
+          ...(saved.length > 1 ? { paths: saved } : {}),
         }
         if (fallback) out.message += '\n' + fallback
         if (self) {
@@ -231,13 +252,14 @@ export default {
           out.selectedReferenceCount = selectedCount
           if (references.length) out.message += `\n本次实际使用 ${references.length} 张人设图作为参考。`
         }
-        if (animated) { out.format = 'gif'; out.frames = gifFrameCount(buf); out.message += `\n这是 GIF 动图（${out.frames} 帧）；若给了你预览，它只含第一帧，不代表完整动作。` }
+        if (bufs.length > 1) out.message += `\n这次一共画了 ${bufs.length} 张。`
+        if (animated) { out.format = 'gif'; out.frames = gifFrameCount(bufs[0]); out.message += `\n这是 GIF 动图（${out.frames} 帧）；若给了你预览，它只含第一帧，不代表完整动作。` }
         if (img) out.image = img
-        if (index && saved) out.message += `\n画作编号 #${index}（想换头像、收成表情时用这个编号）`
-        if (simulated) out.message += '\n（试运行/调试：这张图没真发到 QQ，只在本地存下了）'
+        if (indexes.length && saved.length) out.message += `\n画作编号 ${indexes.filter(Boolean).map((n) => '#' + n).join('、')}（想换头像、收成表情时用这个编号）`
+        if (simulated) out.message += '\n（试运行/调试：这些图没真发到 QQ，只在本地存下了）'
         // 只有**图真的交给模型了**才把本地路径告诉她（#59）：收录表情包 / 存素材 / qq_add_sticker 用；
         // 看不了图或开关关着时不给路径，免得她知道路径就去读图，绕开「不给看」的判断。
-        if (shown && saved) out.message += `\n已保存到本机：${saved}（要收录表情包、存素材时可以用这个路径）`
+        if (shown && saved.length) out.message += `\n已保存到本机：${saved.join('、')}（要收录表情包、存素材时可以用这个路径）`
         return out
       },
     }) : []))
