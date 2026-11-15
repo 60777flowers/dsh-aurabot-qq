@@ -11,7 +11,7 @@
 
 import { chatRecordRanges, contextInjectionRanges, currentPromptSources, promptFingerprint, promptTextRanges } from '../security/leak-guard.js'
 import { stripMarkers } from './reply-marker.js'
-import { stripHtmlFragments } from './html-fragments.js'
+import { stripHtmlFragments, fenceRanges } from './html-fragments.js'
 
 export const SILENCE = '[沉默]'
 
@@ -56,6 +56,65 @@ export function stripMarkdown(text) {
     .replace(/[ \t]+$/gm, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
+}
+
+// 假媒体动作：模型声称「图片/照片已经发出」或「刚拍了一张」，但回复里根本没有对应的
+// 图片段/工具调用（这台机器也没有拍照硬件）。这些动作描写原样发到 QQ，主人会以为图在路上，
+// 实际永远收不到，所以要在出站清洗时剥掉。
+//
+// 只认「整个括号内容都是这类短动作短语」的圆括号/方括号：普通括号动作（（笑）、（凑近看了看））、
+// 颜文字（（￣▽￣））、[图片] 这类占位，以及代码示例里的字面量都不动。
+const FAKE_MEDIA_NOUN = '(?:图片|照片|相片|自拍照?|截图|图)'
+const FAKE_MEDIA_TAIL = '[\\s，。！!？?、~～…]*$'
+const FAKE_MEDIA_SEND = [
+  // 图片发出 / 图片已发出 / 图片发送成功 / 照片发你了 / 图片给你发过去了 / 图发你了
+  new RegExp(
+    '^(?:我|这边|现在)?(?:已经|已|刚刚|刚才|刚|这就|就|先)?' + FAKE_MEDIA_NOUN + '(?:我)?' +
+    '(?:已经|已|刚刚|刚才|刚)?(?:给你)?' +
+    '(?:发出(?:出去|过去|给|你|给你)?(?:了|啦|哦|喔|呀|哈|呢)?(?:成功|完毕)?' +
+    '|发送(?:出去|过去|给|你|给你)?(?:了|啦|哦|喔|呀|哈|呢|成功|完毕)?' +
+    '|(?:发|传)(?:出去|过去|给你|给|你)(?:了|啦|哦|喔|呀|哈|呢)?(?:成功|完毕)?' +
+    '|(?:发|传)(?:了|啦|哦|喔|呀|哈|呢)(?:出去|过去)?(?:成功|完毕)?)' + FAKE_MEDIA_TAIL,
+  ),
+  // 发了图 / 发了一张新图 / 发图了 / 传图了
+  new RegExp(
+    '^(?:我)?(?:已经|已|刚刚|刚才|刚|这就|就)?(?:给你)?(?:发送|发出|发|传)(?:出去|过去)?' +
+    '(?:了|过)(?:一?[张个])?(?:新(?:的)?)?' + FAKE_MEDIA_NOUN + FAKE_MEDIA_TAIL,
+  ),
+  new RegExp(
+    '^(?:我)?(?:已经|已|刚刚|刚才|刚|这就|就)?(?:给你)?(?:发送|发出|发|传)(?:出去|过去)?' +
+    '(?:一?[张个])?(?:新(?:的)?)?' + FAKE_MEDIA_NOUN + '(?:了|啦|哦|喔|呀)' + FAKE_MEDIA_TAIL,
+  ),
+]
+// 拍了一张新的 / 拍了张新照片 / 刚拍了一张 / 拍好了 / 拍照了 / 自拍一张 / 拍了张照片给你
+const FAKE_PHOTO_ACTION = new RegExp(
+  '^(?:我)?(?:已经|已|刚刚|刚才|刚|又|才|这就|就|先)?(?:拍照|自拍|拍|照)' +
+  '(?:(?:了|好|到|完)(?:一?[张个])?|一?[张个])(?:新(?:的)?)?(?:的)?(?:照片|相片|自拍|图片|图)?' +
+  '(?:给你)?(?:了|啦|哦|喔|呀)?' + FAKE_MEDIA_TAIL,
+)
+// 照片拍好了 / 图片已经拍完了
+const FAKE_PHOTO_DONE = new RegExp(
+  '^(?:这张|新的)?' + FAKE_MEDIA_NOUN + '(?:已经|已)?拍(?:好|完|到|了)(?:了|啦|哦|呀)?' + FAKE_MEDIA_TAIL,
+)
+const FAKE_MEDIA_PAREN = /[（(【]\s*([^（）()【】\n]{1,40}?)\s*[）)】]/gu
+const isFakeMediaPhrase = (value) => FAKE_MEDIA_SEND.some((re) => re.test(value)) ||
+  FAKE_PHOTO_ACTION.test(value) || FAKE_PHOTO_DONE.test(value)
+
+/** 假媒体动作在原文里的删除区间；代码块/行内代码中的示例保持原样。 */
+function fakeMediaActionRanges(raw) {
+  const text = String(raw || '')
+  if (!text) return []
+  // 代码围栏（``` / ~~~）和行内代码里的示例原样保留。
+  const code = [...codeRanges(text), ...fenceRanges(text)]
+  const ranges = []
+  for (const match of text.matchAll(FAKE_MEDIA_PAREN)) {
+    const start = match.index
+    const end = start + match[0].length
+    if (insideCode(code, start, end)) continue
+    if (!isFakeMediaPhrase(match[1].trim())) continue
+    ranges.push({ start, end })
+  }
+  return ranges
 }
 
 // 模型偶尔把自己那边的内部语法漏进正文，这些都不能发到 QQ，得在解析入口洗掉：
@@ -447,6 +506,8 @@ export function cleanOutboundText(text, { warn, promptSources, fingerprint, user
   const raw = String(text || '')
   // 先剥 HTML 残片：它们和工具调用、提示词复读互不重叠，按原文坐标并进同一份区间表。
   const { cuts: htmlCuts } = stripHtmlFragments(raw)
+  // 假媒体动作（「（图片发出）」「（拍了一张新的）」）是纯文字描写，按原文坐标并进同一份区间表。
+  const mediaCuts = fakeMediaActionRanges(raw)
   // time-context 注入不是提示词复读，主人私聊的复读豁免不该放过它，这里直接并进必删区间。
   const toolRanges = toolTextRanges(raw, { ownerPrivate })
   const contextRanges = contextInjectionRanges(raw)
@@ -459,7 +520,7 @@ export function cleanOutboundText(text, { warn, promptSources, fingerprint, user
   const noiseCount = toolRanges.length + contextRanges.length + htmlCuts.length
   const tools = [...toolRanges, ...contextRanges, ...silence, ...stateRanges, ...recordRanges, ...pokeRanges]
     .sort((a, b) => a.start - b.start || b.end - a.end)
-  const baseRanges = mergeRanges([...tools, ...htmlCuts])
+  const baseRanges = mergeRanges([...tools, ...htmlCuts, ...mediaCuts])
   const toolClean = withoutToolRanges(raw, baseRanges)
   const prompts = (allowPromptEcho ? [] : promptTextRanges(toolClean, fingerprint || promptFingerprint(sources, userText ?? active?.userText ?? '')))
     .sort((a, b) => a.start - b.start || b.end - a.end)
@@ -480,9 +541,12 @@ export function cleanOutboundText(text, { warn, promptSources, fingerprint, user
     ranges = mergeRanges([...baseRanges, ...prompts.map((p) => ({ start: offsets[p.start], end: offsets[p.end - 1] + 1 }))])
   }
   let clean = withoutToolRanges(raw, ranges)
-  // 只有沉默标记/state 标签/中文时间注入/伪造聊天记录/poke 闭合标签时按正常沉默或内部残留处理，不要误报成工具调用或提示词复读。
-  if ((noiseCount > 0 || removePrompts) && isSilence(visibleContent(clean))) {
-    warn?.(removePrompts ? '模型输出整段都是提示词复读，已拦下并按沉默处理' : '模型输出整段都是工具调用文字，已拦下并按沉默处理')
+  // 只有沉默标记/state 标签/中文时间注入/伪造聊天记录/poke 闭合标签/假媒体动作时按正常沉默或内部残留处理，不要误报成工具调用或提示词复读。
+  const fakeMediaOnly = mediaCuts.length > 0 && isSilence(visibleContent(withoutToolRanges(raw, mediaCuts)))
+  if ((noiseCount > 0 || removePrompts || fakeMediaOnly) && isSilence(visibleContent(clean))) {
+    warn?.(removePrompts ? '模型输出整段都是提示词复读，已拦下并按沉默处理'
+      : fakeMediaOnly ? '模型输出整段都是假媒体动作，已拦下并按沉默处理'
+        : '模型输出整段都是工具调用文字，已拦下并按沉默处理')
     clean = ''
   }
   onRanges?.(ranges)
