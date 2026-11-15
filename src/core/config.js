@@ -939,6 +939,12 @@ export function normalize(raw) {
   c.imageGen.fallbackEnabled = bool(c.imageGen.fallbackEnabled, false)
   c.imageGen.fallbacks = (Array.isArray(c.imageGen.fallbacks) ? c.imageGen.fallbacks : []).map(e => ({ id: String(e?.id || '').slice(0, 100), provider: e?.provider === 'codex' ? 'codex' : 'openai', baseUrl: String(e?.baseUrl || '').trim(), apiKey: String(e?.apiKey || ''), model: String(e?.model || '').trim() })).filter(e => e.id)
   c.imageGen.enabled = bool(c.imageGen.enabled, false)
+  // 手工改配置文件 / 从旧版复制过来时，常见前后空格和换行：不归一化会让「看起来填了」的地址或
+  // 模型名实际带空白，请求失败又很难查。Key 也去掉换行与首尾空格（不改变可见字符）。
+  c.imageGen.baseUrl = String(c.imageGen.baseUrl || '').trim().slice(0, 500)
+  c.imageGen.model = String(c.imageGen.model || '').trim().slice(0, 200)
+  c.imageGen.apiKey = String(c.imageGen.apiKey || '').trim().slice(0, 500)
+  c.imageGen.stylePrompt = String(c.imageGen.stylePrompt || '').trim().slice(0, 500)
   c.imageGen.ownerOnly = bool(c.imageGen.ownerOnly, true)
   c.imageGen.seeOwn = bool(c.imageGen.seeOwn, true)
   c.imageGen.img2img = bool(c.imageGen.img2img, true)
