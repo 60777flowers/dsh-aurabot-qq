@@ -351,11 +351,123 @@ export function rankCandidates(list, query = '') {
   return [...list.filter((s) => !bad(s)), ...list.filter(bad)]
 }
 
-export function clipWindow(durationSec, maxSec, start = 'auto') {
+/** 截一段：歌比上限长时从自动定位的副歌入口开始（分析不出来回退全曲 30%），否则从头；head 从头。 */
+export function clipWindow(durationSec, maxSec, start = 'auto', chorusStart = null) {
   if (!(durationSec > maxSec)) return { start: 0, length: durationSec }
   if (start === 'head') return { start: 0, length: maxSec }
-  const s = Math.max(0, Math.min(Math.round(durationSec * 0.3), Math.floor(durationSec - maxSec)))
+  const latest = Math.max(0, Math.floor(durationSec - maxSec))
+  if (Number.isFinite(chorusStart) && chorusStart >= 0) return { start: Math.min(Math.round(chorusStart), latest), length: maxSec }
+  const s = Math.max(0, Math.min(Math.round(durationSec * 0.3), latest))
   return { start: s, length: maxSec }
+}
+
+/** 每 frameSec 秒一帧的 RMS 音量包络（0~1）。纯函数：pcm 是 16-bit 单声道小端 PCM。 */
+export function pcmEnergyEnvelope(pcm, sampleRate = 8000, frameSec = 0.25) {
+  if (!pcm || !pcm.length || !(sampleRate > 0) || !(frameSec > 0)) return []
+  const bytes = Buffer.isBuffer(pcm) ? pcm : Buffer.from(pcm)
+  const frameSamples = Math.max(1, Math.round(sampleRate * frameSec))
+  const totalSamples = Math.floor(bytes.length / 2)
+  const out = []
+  for (let start = 0; start + frameSamples <= totalSamples; start += frameSamples) {
+    let sum = 0
+    for (let i = 0; i < frameSamples; i++) {
+      const v = bytes.readInt16LE((start + i) * 2) / 32768
+      sum += v * v
+    }
+    out.push(Math.sqrt(sum / frameSamples))
+  }
+  return out
+}
+
+function correlation(a, b) {
+  const n = Math.min(a.length, b.length)
+  if (n < 4) return 0
+  let ma = 0, mb = 0
+  for (let i = 0; i < n; i++) { ma += a[i]; mb += b[i] }
+  ma /= n; mb /= n
+  let num = 0, da = 0, db = 0
+  for (let i = 0; i < n; i++) {
+    const x = a[i] - ma, y = b[i] - mb
+    num += x * y; da += x * x; db += y * y
+  }
+  return da > n * 1e-8 && db > n * 1e-8 ? num / Math.sqrt(da * db) : 0
+}
+
+/**
+ * 从 16-bit 单声道 PCM 估算副歌入口（秒）。
+ *
+ * 思路（离线、零依赖）：
+ *   1. 每 0.25 秒算 RMS 音量；按秒平均并做 3 秒平滑；
+ *   2. 找出持续高于「中位数~90 分位」阈值的响段（前奏/间奏通常太短会被滤掉）；
+ *   3. 对每个响段，用音量曲线和其他同时长片段做相关，重复度高的段落更像副歌；
+ *   4. 综合「平均能量 × (0.5 + 0.5 × 重复度)」挑第一段最强的副歌。
+ * 分析不出来（静音、太短、没有明显响段）返回 null，由 clipWindow 回退 30%。
+ */
+export function estimateChorusStart(pcm, { sampleRate = 8000, maxSec = 120, frameSec = 0.25 } = {}) {
+  const envelope = pcmEnergyEnvelope(pcm, sampleRate, frameSec)
+  const totalSec = envelope.length * frameSec
+  if (!(maxSec > 0) || !(totalSec > maxSec)) return null
+  const secCount = Math.floor(totalSec)
+  const energy = []
+  for (let s = 0; s < secCount; s++) {
+    const a = Math.floor(s / frameSec)
+    const b = Math.min(envelope.length, Math.floor((s + 1) / frameSec))
+    let sum = 0, n = 0
+    for (let i = a; i < b; i++) { sum += envelope[i]; n++ }
+    energy.push(n ? sum / n : 0)
+  }
+  if (energy.length < 8) return null
+  const smooth = energy.map((_, i) => {
+    let sum = 0, n = 0
+    for (let j = Math.max(0, i - 1); j <= Math.min(energy.length - 1, i + 1); j++) { sum += energy[j]; n++ }
+    return n ? sum / n : 0
+  })
+  const sorted = [...smooth].sort((a, b) => a - b)
+  const at = (p) => sorted[Math.min(sorted.length - 1, Math.max(0, Math.round(p * (sorted.length - 1))))]
+  const med = at(0.5), p90 = at(0.9), maxEnergy = sorted[sorted.length - 1]
+  if (!(maxEnergy > 0.005)) return null // 整首几乎是静音
+  const threshold = med + (p90 - med) * 0.4
+  const minRun = Math.max(3, Math.min(12, Math.round(maxSec * 0.2)))
+  const runs = []
+  let runStart = -1, lastLoud = -1
+  for (let i = 0; i < smooth.length; i++) {
+    if (smooth[i] >= threshold) {
+      if (runStart < 0) runStart = i
+      else if (i - runStart >= minRun && energy[i] > energy[i - 1] * 1.35) {
+        // 音量突然抬一大截（副歌接桥段之类）就在跳变处切开，别把两段合成一段
+        runs.push({ start: runStart, end: i - 1 })
+        runStart = i
+      }
+      lastLoud = i
+    } else if (runStart >= 0 && i - lastLoud > 2) {
+      // 允许中间有 1~2 秒的短暂回落，别把一个副歌切碎
+      if (lastLoud - runStart + 1 >= minRun) runs.push({ start: runStart, end: lastLoud })
+      runStart = -1
+    }
+  }
+  if (runStart >= 0 && lastLoud - runStart + 1 >= minRun) runs.push({ start: runStart, end: lastLoud })
+  if (!runs.length) return null
+  let best = null
+  for (const run of runs) {
+    let sum = 0
+    for (let i = run.start; i <= run.end; i++) sum += smooth[i]
+    const avg = sum / (run.end - run.start + 1)
+    // 用响段内部（去掉两端淡入淡出）的音量曲线做重复度，避免边界过渡造成假相似
+    const margin = run.end - run.start >= 8 ? 2 : 0
+    const len = Math.min(16, run.end - run.start + 1 - margin * 2)
+    const patternStart = run.start + margin
+    const pattern = energy.slice(patternStart, patternStart + len)
+    let repeat = 0
+    for (let t = 0; t + len <= smooth.length; t += 2) {
+      if (t + len > run.start - 2 && t < run.end + 3) continue // 跳过和自己重叠的片段
+      const c = correlation(pattern, energy.slice(t, t + len))
+      if (c > repeat) repeat = c
+    }
+    const score = avg * (0.5 + 0.5 * Math.max(0, repeat)) - run.start * 1e-6 // 同分时优先靠前的副歌
+    if (!best || score > best.score) best = { ...run, score }
+  }
+  const latest = Math.max(0, Math.floor(totalSec - maxSec))
+  return Math.max(0, Math.min(best.start, latest))
 }
 
 function run(cmd, args, { cwd, env, log, onLine, timeoutMs = 30 * 60_000 } = {}) {
@@ -420,7 +532,35 @@ export function songFailureReason(error) {
   return '这次翻唱没完成，详细原因请主人查看翻唱面板。'
 }
 
-export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, say, onSung, local }) {
+/**
+ * 截出要发的那一段（依赖可注入，测试不用真 ffmpeg/真音频）。
+ * auto 模式下先让 readPcm 读整首歌 PCM、分析副歌入口；分析失败/不可用回退全曲 30%。
+ * @returns {Promise<{file:string, cut:boolean, length:number}>}
+ */
+export async function cutFirstWith({
+  song, dir, clip = null, maxSec = 120, clipStart = 'auto',
+  probeDuration, readPcm, run, ffmpegPath, log,
+}) {
+  const dur = await probeDuration(song)
+  let chorusStart = null
+  if (!clip && clipStart !== 'head' && dur > maxSec) {
+    try {
+      const pcm = readPcm ? await readPcm(song) : null
+      chorusStart = pcm ? estimateChorusStart(pcm, { sampleRate: 8000, maxSec }) : null
+      if (Number.isFinite(chorusStart)) log?.info?.(`副歌定位：从第 ${chorusStart} 秒开始截（歌长 ${Math.round(dur)} 秒）`)
+    } catch (error) {
+      log?.debug?.('副歌定位分析失败：', error.message)
+      chorusStart = null
+    }
+  }
+  const w = clip ? selectedWindow(dur, clip) : clipWindow(dur, maxSec, clipStart, chorusStart)
+  if (!dur || (w.start === 0 && w.length >= dur)) return { file: song, cut: false, length: dur }
+  const out = join(dir, 'part.wav')
+  await run(ffmpegPath, ['-y', '-hide_banner', '-loglevel', 'error', '-ss', String(w.start), '-t', String(w.length), '-i', song, '-ar', '44100', out], { log })
+  return { file: out, cut: true, length: w.length }
+}
+
+export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, say, onSung, local, readPcm: readPcmInjected } = {}) {
   const cfg = () => getConfig().song
   const P = () => pathsOf(cfg().root || defaultRoot())
   const work = () => dataDir('songs')
@@ -709,6 +849,30 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, say,
     })
   }
 
+  /** 用 ffmpeg 离线读整首歌的单声道 PCM（8kHz s16le），给副歌定位用；失败返回 null。 */
+  async function readPcm(file, sampleRate = 8000) {
+    return new Promise((resolve) => {
+      const chunks = []
+      let total = 0
+      let stderr = ''
+      const c = spawn(P().ffmpeg, ['-hide_banner', '-loglevel', 'error', '-i', file, '-vn', '-ac', '1', '-ar', String(sampleRate), '-f', 's16le', '-'], { windowsHide: true })
+      // 分析只是锦上添花：ffmpeg 卡住 30 秒就放弃，按失败回退 30%
+      const timer = setTimeout(() => { try { c.kill() } catch (error) {}; resolve(null) }, 30_000)
+      c.stdout.on('data', (buf) => {
+        // 正常一首歌几分钟也就几 MB；超过 64MB 不收了，避免异常文件把内存吃满
+        if (total < 64 * 1024 * 1024) { chunks.push(buf); total += buf.length }
+      })
+      // 必须消费 stderr：-loglevel error 也可能有输出，不读会把子进程管道塞满卡死
+      c.stderr.on('data', (buf) => { stderr = (stderr + buf.toString()).slice(-2000) })
+      c.on('error', () => { clearTimeout(timer); resolve(null) })
+      c.on('exit', (code) => {
+        clearTimeout(timer)
+        if (code !== 0 && stderr) log?.debug?.('副歌定位读 PCM 失败：', stderr.split(/\r?\n/).filter(Boolean).slice(-2).join(' | '))
+        resolve(code === 0 && total ? Buffer.concat(chunks) : null)
+      })
+    })
+  }
+
   /** 人声轨的平均音量（dB）；纯音乐分出来的人声几乎是静音。 */
   async function meanVolume(file) {
     return new Promise((resolve) => {
@@ -825,12 +989,17 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, say,
   /** 先截出要发的那一段再处理：分离和换声都只算这一段，快一倍多。返回 {file, cut, length}。 */
   async function cutFirst(song, dir, clip) {
     const c = cfg()
-    const dur = await ffprobeDuration(song)
-    const w = clip ? selectedWindow(dur, clip) : clipWindow(dur, Number(c.maxVoiceSec) || 120, c.clipStart)
-    if (!dur || (w.start === 0 && w.length >= dur)) return { file: song, cut: false, length: dur }
-    const out = join(dir, 'part.wav')
-    await run(P().ffmpeg, ['-y', '-hide_banner', '-loglevel', 'error', '-ss', String(w.start), '-t', String(w.length), '-i', song, '-ar', '44100', out], { log })
-    return { file: out, cut: true, length: w.length }
+    const readPcmForAnalysis = typeof readPcmInjected === 'function' ? readPcmInjected : readPcm
+    return cutFirstWith({
+      song, dir, clip,
+      maxSec: Number(c.maxVoiceSec) || 120,
+      clipStart: c.clipStart,
+      probeDuration: ffprobeDuration,
+      readPcm: readPcmForAnalysis,
+      run,
+      ffmpegPath: P().ffmpeg,
+      log,
+    })
   }
 
   /** 截过的段落首尾加淡入淡出，听起来不突兀。 */
@@ -853,8 +1022,9 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, say,
     const song = job.file || (await download(job, dir))
     current.title = job.title || job.query
     // 同一首歌、同一个音色、音高和截取方式做过的，直接复用
+    // v3：副歌定位从固定 30% 改成音频分析，旧缓存（可能截在非副歌处）一律不用
     // v2：0.6.2 起才检查有没有人声，之前缓存的可能是只有伴奏的成品，一律不用
-    const key = createHash('md5').update(['v2', job.songKey || song, local?.active('song') ? 'local:' + (voice?.id || '') : voice.id, pitch, ...clipCacheParts(job.clip, c), ...(job.acapella ? ['acapella'] : [])].join('|')).digest('hex').slice(0, 16)
+    const key = createHash('md5').update(['v3', job.songKey || song, local?.active('song') ? 'local:' + (voice?.id || '') : voice.id, pitch, ...clipCacheParts(job.clip, c), ...(job.acapella ? ['acapella'] : [])].join('|')).digest('hex').slice(0, 16)
     const cached = join(work(), 'cache', key + '.mp3')
     if (existsSync(cached)) {
       log.info(`翻唱：「${job.title}」做过了，直接用缓存`)

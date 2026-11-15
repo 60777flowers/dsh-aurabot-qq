@@ -1,7 +1,7 @@
 // 翻唱：截取位置、音色列表、网易云加密和 Cookie 解析、点歌的前置检查、/sing 命令。
 import { test, before } from 'node:test'
 import assert from 'node:assert/strict'
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { nudgeMoodAfterSong } from '../src/modules/song/index.js'
@@ -19,12 +19,119 @@ before(async () => {
   ;({ normalize } = await import('../src/core/config.js'))
 })
 
+/** 合成一段 16-bit 单声道 PCM：每段给振幅（可传函数），方波让 RMS 等于振幅。 */
+function pcmOf(sections, sampleRate = 200) {
+  const totalSec = sections.reduce((sum, s) => sum + s.sec, 0)
+  const buf = Buffer.alloc(totalSec * sampleRate * 2)
+  let index = 0
+  for (const section of sections) {
+    const n = Math.round(section.sec * sampleRate)
+    for (let i = 0; i < n; i++) {
+      const amp = typeof section.amp === 'function' ? section.amp(i / sampleRate) : section.amp
+      const v = Math.round((i % 2 ? amp : -amp) * 32767)
+      buf.writeInt16LE(Math.max(-32768, Math.min(32767, v)), (index + i) * 2)
+    }
+    index += n
+  }
+  return buf
+}
+
 test('截一段：歌比上限长就从副歌附近截，短歌整首', () => {
   assert.deepEqual(studio.clipWindow(264, 120), { start: 79, length: 120 })
   assert.deepEqual(studio.clipWindow(264, 120, 'head'), { start: 0, length: 120 })
   assert.deepEqual(studio.clipWindow(90, 120), { start: 0, length: 90 })
   // 不会截到歌尾外面
   assert.deepEqual(studio.clipWindow(130, 120), { start: 10, length: 120 })
+})
+
+test('截一段：分析到的副歌入口优先，越界夹到歌尾，head 不受影响', () => {
+  assert.deepEqual(studio.clipWindow(264, 120, 'auto', 60), { start: 60, length: 120 })
+  assert.deepEqual(studio.clipWindow(264, 120, 'auto', 999), { start: 144, length: 120 })
+  assert.deepEqual(studio.clipWindow(264, 120, 'auto', null), { start: 79, length: 120 }, '分析失败回退 30%')
+  assert.deepEqual(studio.clipWindow(264, 120, 'head', 60), { start: 0, length: 120 })
+})
+
+test('副歌定位：能量找响段，重复段优先于更响的一次性桥段', () => {
+  // 40s 前奏 + 20s 主歌 + 30s 副歌 + 20s 主歌 + 30s 副歌 + 20s 尾奏
+  const plain = pcmOf([
+    { sec: 40, amp: 0.08 }, { sec: 20, amp: 0.12 }, { sec: 30, amp: 0.65 },
+    { sec: 20, amp: 0.12 }, { sec: 30, amp: 0.65 }, { sec: 20, amp: 0.08 },
+  ])
+  const start = studio.estimateChorusStart(plain, { sampleRate: 200, maxSec: 60 })
+  assert.equal(start, 60, '应落在第一段副歌入口（前奏 40s + 主歌 20s）')
+
+  // 两段低一点的副歌重复出现，后面跟着一段更响但不重复的桥段：应选副歌，不能被桥段带偏
+  const wave = (t) => 0.5 + 0.06 * Math.sin(t * 2 * Math.PI / 3)
+  const repeated = pcmOf([
+    { sec: 30, amp: 0.08 }, { sec: 20, amp: wave }, { sec: 30, amp: 0.08 },
+    { sec: 20, amp: wave }, { sec: 20, amp: 0.7 }, { sec: 30, amp: 0.08 },
+  ])
+  const chorus = studio.estimateChorusStart(repeated, { sampleRate: 200, maxSec: 40 })
+  assert.ok((chorus >= 28 && chorus <= 34) || (chorus >= 78 && chorus <= 84), `应落在某段副歌入口，实际 ${chorus}`)
+
+  // 静音 / 太短 / 没有明显响段：返回 null，交给 clipWindow 回退
+  assert.equal(studio.estimateChorusStart(Buffer.alloc(160 * 200 * 2), { sampleRate: 200, maxSec: 60 }), null)
+  assert.equal(studio.estimateChorusStart(plain, { sampleRate: 200, maxSec: 200 }), null)
+  assert.equal(studio.estimateChorusStart(Buffer.alloc(0), { sampleRate: 200, maxSec: 60 }), null)
+})
+
+test('副歌定位：maxSec=120 时 15 秒副歌也能检出（minRun 上限 12 秒）', () => {
+  // 40s 前奏 + 20s 主歌 + 15s 副歌 + 20s 主歌 + 15s 副歌 + 90s 尾奏
+  const pcm = pcmOf([
+    { sec: 40, amp: 0.08 }, { sec: 20, amp: 0.12 }, { sec: 15, amp: 0.65 },
+    { sec: 20, amp: 0.12 }, { sec: 15, amp: 0.65 }, { sec: 90, amp: 0.08 },
+  ])
+  assert.equal(studio.estimateChorusStart(pcm, { sampleRate: 200, maxSec: 120 }), 60)
+})
+
+test('副歌定位：121~124 秒的歌也要进入分析，不再被 maxSec+4 挡掉', () => {
+  // 122s：1s 前奏 + 15s 副歌（从 1s 开始）+ 106s 尾奏；clip 最多 120s，起点夹到 2s 内
+  const pcm = pcmOf([{ sec: 1, amp: 0.08 }, { sec: 15, amp: 0.65 }, { sec: 106, amp: 0.08 }])
+  const start = studio.estimateChorusStart(pcm, { sampleRate: 200, maxSec: 120 })
+  assert.ok(Number.isInteger(start), `122 秒歌应能分析，实际 ${start}`)
+  assert.ok(start <= 2, `起点必须给 120 秒留够空间，实际 ${start}`)
+})
+
+test('cutFirst：注入假 readPcm，成功用副歌入口、失败回退 30%', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'song-cut-'))
+  const song = join(dir, 'song.mp3')
+  // 264s：40 前奏 + 20 主歌 + 30 副歌（60s 起）+ 20 主歌 + 30 副歌 + 124 尾奏
+  const pcm = pcmOf([
+    { sec: 40, amp: 0.08 }, { sec: 20, amp: 0.12 }, { sec: 30, amp: 0.65 },
+    { sec: 20, amp: 0.12 }, { sec: 30, amp: 0.65 }, { sec: 124, amp: 0.08 },
+  ], 8000)
+  const calls = []
+  const run = async (cmd, args) => { calls.push({ cmd, args }) }
+  const base = {
+    song, dir, clip: null, maxSec: 120, clipStart: 'auto',
+    probeDuration: async () => 264, run, ffmpegPath: 'ffmpeg',
+    log: { info() {}, debug() {} },
+  }
+  const ok = await studio.cutFirstWith({ ...base, readPcm: async () => pcm })
+  assert.equal(ok.cut, true)
+  assert.equal(ok.length, 120)
+  let args = calls.at(-1).args
+  assert.equal(args[args.indexOf('-ss') + 1], '60', '应使用分析出的副歌入口 60s')
+
+  calls.length = 0
+  const fallback = await studio.cutFirstWith({ ...base, readPcm: async () => { throw new Error('分析失败') } })
+  assert.equal(fallback.cut, true)
+  assert.equal(fallback.length, 120)
+  args = calls.at(-1).args
+  assert.equal(args[args.indexOf('-ss') + 1], '79', '分析失败回退 264s 的 30%')
+
+  calls.length = 0
+  await studio.cutFirstWith({ ...base, clipStart: 'head', readPcm: async () => { throw new Error('不该被调用') } })
+  args = calls.at(-1).args
+  assert.equal(args[args.indexOf('-ss') + 1], '0', 'head 不分析')
+})
+
+test('readPcm 会消费 stderr（改动后的源码契约）', () => {
+  const src = readFileSync(new URL('../src/song/studio.js', import.meta.url), 'utf8')
+  const start = src.indexOf('async function readPcm')
+  const end = src.indexOf('async function meanVolume', start)
+  assert.ok(start >= 0 && end > start)
+  assert.match(src.slice(start, end), /c\.stderr\.on\('data'/)
 })
 
 test('挑歌：钢琴版、伴奏这类排到最后，点歌时本来就要钢琴版就不排', () => {
