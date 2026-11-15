@@ -168,16 +168,23 @@ export function createCommunity({ mods, getConfig, setConfig, log, version, aliv
     return ''
   }
 
-  /** 把 Releases 列表按模块聚合成 { 模块 id: 下载次数 }。tag 形如 pet-v1.0.7。 */
+  /**
+   * 把 Releases 列表按模块聚合：下载次数 + 最近一次 Release 的发布时间（published_at，退 created_at）。
+   * tag 形如 pet-v1.0.7；日期只是排序用的参考值，索引里已有 publishedAt 时以索引为准。
+   */
   function sumReleases(releases) {
-    const out = {}
+    const counts = {}
+    const released = {}
     for (const rel of Array.isArray(releases) ? releases : []) {
       const m = String(rel?.tag_name || '').match(/^([a-z][a-z0-9-]{1,39})-v\d+\.\d+\.\d+$/)
       if (!m) continue
+      const id = m[1]
       const n = (Array.isArray(rel.assets) ? rel.assets : []).reduce((sum, a) => sum + (Number(a?.download_count) || 0), 0)
-      out[m[1]] = (out[m[1]] || 0) + n
+      counts[id] = (counts[id] || 0) + n
+      const at = String(rel?.published_at || rel?.created_at || '')
+      if (at && (!released[id] || at > released[id])) released[id] = at
     }
-    return out
+    return { counts, released }
   }
 
   /**
@@ -186,8 +193,8 @@ export function createCommunity({ mods, getConfig, setConfig, log, version, aliv
    */
   function statsWithin(index, { force = false } = {}) {
     return new Promise((done) => {
-      const timer = setTimeout(() => done({ counts: {}, source: '', at: 0, failed: true }), 6000)
-      loadStats(index, { force }).then((value) => { clearTimeout(timer); done(value) }, () => { clearTimeout(timer); done({ counts: {}, source: '', at: 0, failed: true }) })
+      const timer = setTimeout(() => done({ counts: {}, released: {}, source: '', at: 0, failed: true }), 6000)
+      loadStats(index, { force }).then((value) => { clearTimeout(timer); done(value) }, () => { clearTimeout(timer); done({ counts: {}, released: {}, source: '', at: 0, failed: true }) })
     })
   }
 
@@ -197,11 +204,12 @@ export function createCommunity({ mods, getConfig, setConfig, log, version, aliv
    */
   async function loadStats(index, { force = false } = {}) {
     const repo = repoOf(index)
-    if (!repo) return { counts: {}, source: '', at: 0 }
+    if (!repo) return { counts: {}, released: {}, source: '', at: 0 }
     if (!force && statsCache && statsCache.repo === repo && Date.now() - statsCache.at < STATS_TTL) return statsCache.value
-    if (!force && statsMiss && statsMiss.repo === repo && Date.now() - statsMiss.at < STATS_FAIL_TTL) return { counts: {}, source: repo, at: 0, failed: true }
+    if (!force && statsMiss && statsMiss.repo === repo && Date.now() - statsMiss.at < STATS_FAIL_TTL) return { counts: {}, released: {}, source: repo, at: 0, failed: true }
     try {
       const counts = {}
+      const released = {}
       // 有令牌就用上：没登录时 GitHub 接口一小时只给 60 次，用户多的机器会不够
       const token = String(process.env.AURABOT_GITHUB_TOKEN || process.env.GITHUB_TOKEN || '').trim()
       for (let page = 1; page <= RELEASES_PAGES; page++) {
@@ -212,17 +220,19 @@ export function createCommunity({ mods, getConfig, setConfig, log, version, aliv
         // 403 是没登录的额度用完了：别再翻页，已有的照用
         if (!r.ok) throw new Error(`HTTP ${r.status}`)
         const list = await r.json()
-        for (const [id, n] of Object.entries(sumReleases(list))) counts[id] = (counts[id] || 0) + n
+        const pageSum = sumReleases(list)
+        for (const [id, n] of Object.entries(pageSum.counts)) counts[id] = (counts[id] || 0) + n
+        for (const [id, at] of Object.entries(pageSum.released)) if (!released[id] || at > released[id]) released[id] = at
         if (!Array.isArray(list) || list.length < 100) break
       }
-      const value = { counts, source: repo, at: Date.now() }
+      const value = { counts, released, source: repo, at: Date.now() }
       statsCache = { at: value.at, repo, value }
       statsMiss = null
       return value
     } catch (error) {
       statsMiss = { at: Date.now(), repo }
       log.debug?.('读不到模块下载量：', error?.message || error)
-      return { counts: {}, source: repo, at: 0, failed: true }
+      return { counts: {}, released: {}, source: repo, at: 0, failed: true }
     }
   }
 
@@ -236,10 +246,14 @@ export function createCommunity({ mods, getConfig, setConfig, log, version, aliv
     return missing.length ? `要先装：${missing.join('、')}` : ''
   }
 
-  function view(index, e, counts = {}) {
+  function view(index, e, counts = {}, released = {}) {
     const src = readSource(e.id)
     return {
       ...e,
+      // 市场排序用的时间：新索引给 publishedAt；兼容 snake_case 的索引；都没有时退 GitHub Release 时间。
+      publishedAt: e.publishedAt || e.published_at || '',
+      updatedAt: e.updatedAt || e.updated_at || '',
+      releasedAt: released[e.id] || '',
       installed: src?.version || '',
       foreign: !src && hasFolder(e.id), // 同名文件夹是用户自己写的
       update: Boolean(src && compareVersions(e.version, src.version) > 0),
@@ -254,10 +268,11 @@ export function createCommunity({ mods, getConfig, setConfig, log, version, aliv
     const index = await loadIndex({ force })
     const stats = await statsWithin(index, { force })
     const counts = stats.counts || {}
-    const entries = (index.modules || []).filter((e) => ID_RE.test(String(e.id))).map((e) => view(index, e, counts))
+    const released = stats.released || {}
+    const entries = (index.modules || []).filter((e) => ID_RE.test(String(e.id))).map((e) => view(index, e, counts, released))
     // 已安装但索引里没有了（下架）的也列出来，好让用户卸载
     const known = new Set(entries.map((e) => e.id))
-    const delisted = mods.status().filter((m) => !known.has(m.id) && readSource(m.id)).map((m) => ({ id: m.id, name: m.name, description: m.description, version: readSource(m.id).version, installed: readSource(m.id).version, delisted: true, capabilities: [], blocked: '', downloads: Number(counts[m.id]) || 0 }))
+    const delisted = mods.status().filter((m) => !known.has(m.id) && readSource(m.id)).map((m) => ({ id: m.id, name: m.name, description: m.description, version: readSource(m.id).version, installed: readSource(m.id).version, delisted: true, capabilities: [], blocked: '', downloads: Number(counts[m.id]) || 0, publishedAt: '', updatedAt: '', releasedAt: released[m.id] || '' }))
     const revoked = entries.concat(delisted).filter((e) => e.installed && revokedReason(index, e.id, e.installed)).map((e) => ({ id: e.id, version: e.installed, reason: revokedReason(index, e.id, e.installed) }))
     return { list: [...entries, ...delisted], revoked, generatedAt: index.generatedAt || '', downloads: { source: stats.source || '', at: stats.at || 0, failed: Boolean(stats.failed) } }
   }
