@@ -169,6 +169,7 @@ export const DEFAULTS = {
     faces: true, // 回复里能夹 QQ 自带的小黄脸（<face:名字>）
     autoChance: 0.35, // 自动配表情的概率；limitTagged 开启时也限制回复自带的表情
     limitTagged: false, // 升级保持原行为；开启后按 autoChance 限制回复中的表情，不再叠加心情倍率
+    keywordExemption: false, // 实验性：正文命中配图关键词时保留已有表情，只在 limitTagged 开启时生效
     // 主动给对方的原消息贴 QQ 表情：这是新行为，默认关；开了之后按自己的概率算，
     // 不从 autoChance 取值（两者是不同动作，隐式联动会让升级后的人莫名其妙被贴表情，#216 review）
     react: false, // 主动贴表情总开关，默认关
@@ -647,6 +648,7 @@ export function normalize(raw) {
   asrApi.prefer = ['qq', 'cloud'].includes(asrApi.prefer) ? asrApi.prefer : 'qq'
   c.stickers.autoChance = num(c.stickers.autoChance, 0.35, 0, 1)
   c.stickers.limitTagged = bool(c.stickers.limitTagged, false)
+  c.stickers.keywordExemption = bool(c.stickers.keywordExemption, false)
   // 主动贴表情：自己的概率（默认 0.15），不从 autoChance 取值；老配置里存成 null 的按默认算
   c.stickers.reactChance = num(c.stickers.reactChance ?? 0.15, 0.15, 0, 1)
   c.stickers.reactMaxPerHour = num(c.stickers.reactMaxPerHour, 10, 0, BIG)

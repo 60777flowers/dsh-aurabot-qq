@@ -146,3 +146,62 @@ test('分条发送的中间段也限制标签，但仍不自动补图', async t 
   await s.hub.deliver('private:1', '你好呀', { interim: true })
   assert.equal(images(s).length, 0); assert.equal(s.picks(), 0)
 })
+
+
+test('关闭限制后，承诺配图的正文与对应表情一起发送，保留原概率', async t => {
+  const s = setup(t, { stickers: { limitTagged: false, autoChance: 0.03 } }, { roll: 0.99 })
+  await s.hub.deliver('group:2', '我发的都是正经表情\n正经点是吧，行，看我给你整一个端庄版<sticker:无语>', { simulate: true })
+  assert.ok(words(s).includes('看我给你整一个端庄版'))
+  assert.equal(images(s).length, 1)
+  assert.equal(s.cfg.stickers.autoChance, 0.03)
+})
+
+test('实验豁免命中正文时不抽概率、不额外补图，原案例可发完整', async t => {
+  const s = setup(t, { stickers: { limitTagged: true, keywordExemption: true, autoChance: 0 } }, { roll: 0.99 })
+  await s.hub.deliver('group:2', '我发的都是正经表情\n正经点是吧，行，看我给你整一个端庄版<sticker:无语>', { simulate: true, autoReply: { mid: '9', uid: '3' } })
+  assert.ok(words(s).includes('看我给你整一个端庄版'))
+  assert.equal(images(s).length, 1); assert.equal(s.draws(), 0); assert.equal(s.picks(), 0)
+  assert.ok(s.segments().some(x => x.type === 'reply' && String(x.data.id) === '9'))
+})
+
+test('实验豁免没命中仍按原概率；标签名和用户消息不能冒充正文关键词', async t => {
+  const s = setup(t, { stickers: { limitTagged: true, keywordExemption: true, autoChance: 0.03 } }, { roll: 0.99 })
+  await s.hub.deliver('private:1', '你好呀<sticker:一张表情图>', { userText: '给你看一张图', simulate: true })
+  assert.equal(images(s).length, 0); assert.equal(words(s).trim(), '你好呀'); assert.equal(s.draws(), 1)
+})
+
+test('正文提图但没选表情时，不强行补图；自动补图仍按原概率', async t => {
+  const s = setup(t, { stickers: { limitTagged: true, keywordExemption: true, autoChance: 0.03 } }, { roll: 0.99 })
+  await s.hub.deliver('private:1', '地图怎么打开', { simulate: true })
+  assert.equal(images(s).length, 0); assert.equal(s.picks(), 0); assert.equal(s.draws(), 1)
+})
+
+test('动态关闭实验开关恢复严格概率，关闭总限制恢复标签直发', async t => {
+  const s = setup(t, { stickers: { limitTagged: true, keywordExemption: true, autoChance: 0 } })
+  const body = '给你看看<sticker:开心>'
+  await s.hub.deliver('private:1', body, { simulate: true }); assert.equal(images(s).length, 1)
+  s.cfg.stickers.keywordExemption = false
+  await s.hub.deliver('private:1', body, { simulate: true }); assert.equal(images(s).length, 1)
+  s.cfg.stickers.limitTagged = false; s.cfg.stickers.keywordExemption = true
+  await s.hub.deliver('private:1', '你好呀<sticker:开心>', { simulate: true }); assert.equal(images(s).length, 2)
+})
+
+test('扩展追加表情按最终正文判断关键词；没有词仍不放行', async t => {
+  const s = setup(t, { stickers: { limitTagged: true, keywordExemption: true, autoChance: 0 } }, { hooks: { items: items => [...items, { kind: 'sticker', value: item }] } })
+  await s.hub.deliver('private:1', '给你看看', { simulate: true }); assert.equal(images(s).length, 1)
+  await s.hub.deliver('private:1', '你好呀', { simulate: true }); assert.equal(images(s).length, 1)
+})
+
+test('实验豁免不能绕过表情总开关或试运行', async t => {
+  const s = setup(t, { stickers: { enabled: false, limitTagged: true, keywordExemption: true, autoChance: 0 } })
+  await s.hub.deliver('private:1', '给你看看<sticker:开心>', { simulate: true }); assert.equal(images(s).length, 0)
+  s.cfg.stickers.enabled = true; s.cfg.dryRun = true
+  await s.hub.deliver('private:1', '给你看看<sticker:开心>'); assert.equal(images(s).length, 0)
+})
+
+
+test('中间段也识别本段关键词，命中只保留模型选好的表情', async t => {
+  const s = setup(t, { stickers: { limitTagged: true, keywordExemption: true, autoChance: 0 } })
+  await s.hub.deliver('private:1', '给你看看<sticker:开心>', { interim: true, simulate: true })
+  assert.equal(images(s).length, 1); assert.equal(s.draws(), 0); assert.equal(s.picks(), 0)
+})
