@@ -462,11 +462,21 @@ export function cleanOutboundSegments(message, options) {
   return result.some((seg) => seg.type === 'text' ? seg.data.text.trim() : !['reply', 'at'].includes(seg.type)) ? result : []
 }
 
+/** 模型偶尔把协议标签写成中文参数语法（<参数 name="sticker">名字<参数>）；转成可解析标签。 */
+function normalizeParamTags (text) {
+  return String(text || '').replace(/[<＜]\s*参数\s+name\s*=\s*["'“”]?\s*(sticker|voice|poke)\s*["'“”]?\s*[>＞]([\s\S]*?)[<＜]\s*\/?\s*参数\s*[>＞]/gi, (match, name, body) => {
+    if (name.toLowerCase() === 'sticker') return `<sticker:${body.trim()}>`
+    if (name.toLowerCase() === 'voice') return `<voice>${body.trim()}</voice>`
+    return '<poke>'
+  })
+}
+
 /** 解析一轮回复；在拆气泡/语音前清洗，避免协议里的竖线被误作气泡分隔符。 */
 export function parseReply(text, options) {
   // 模型偶尔把「戳人」写成方括号动作（[戳了戳你：尾巴往回一收]），插件不认这种写法，
   // 会原样当文字发出去。这里统一转成 <poke>，让戳一戳变成真的系统动作。
-  const forwarded = String(text || '').replace(/[[【]\s*戳了戳(?:你|他|她)?[^\]】]*[\]】]/g, '<poke>')
+  // 模型偶尔写中文参数标签 <参数 name="sticker">…<参数>，同样在解析前归一成协议标签。
+  const forwarded = normalizeParamTags(String(text || '')).replace(/[[【]\s*戳了戳(?:你|他|她)?[^\]】]*[\]】]/g, '<poke>')
   // 模型偶尔把换行写成 HTML `<br>`：当真正的换行处理；代码示例里的字面量保留。
   const cleaned = stripModelArtifacts(cleanOutboundText(forwarded, options))
   const code = codeRanges(cleaned)
