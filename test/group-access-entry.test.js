@@ -22,7 +22,7 @@ test('群设置主入口直接跳转，旧名单默认折叠；浏览不会改�
  const card=find(tree,n=>n.props.title==='群消息设置')
  const fold=find(card,n=>n.type==='details')
  assert.notEqual(fold.props.open,true);assert.match(text(fold),/直接编辑群白名单/)
- const link=find(card,n=>text(n)==='打开按群设置'&&n.props.onClick)
+ const link=find(card,n=>text(n)==='打开群聊设置'&&n.props.onClick)
  assert.equal(link.props.kind,'primary');link.props.onClick()
  assert.deepEqual(p.visits,['group']);assert.deepEqual(p.draft,before)
  assert.ok(nodes(fold).some(n=>n.props.onChange||n.props.onClick),'保留原名单操作')

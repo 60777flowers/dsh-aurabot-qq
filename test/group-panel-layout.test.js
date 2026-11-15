@@ -48,11 +48,11 @@ test('旁听只改目标名单；响应模式仍使用原有两项配置，不�
 
 test('开关与概率分别修改，跟随默认与 /quiet 留下的值可见', () => {
   const p = panel()
-  find(p.render(), n => n.props.ariaLabel === `群 ${G} 窗口内接话`).props.onChange('on')
+  find(p.render(), n => n.props.ariaLabel === `群 ${G} 聊起来后继续回应`).props.onChange('on')
   assert.deepEqual(p.draft.group.overrides[G], { proactiveEnabled: false, engagedEnabled: true })
   find(p.render(), n => n.props['aria-label'] === `群 ${G} 插话概率`).props.onChange({ target: { value: '0' } })
-  assert.match(text(p.render()), /主动加入关，基础概率 0%；窗口内接话开/)
-  find(p.render(), n => n.props.ariaLabel === `群 ${G} 主动加入话题`).props.onChange('')
+  assert.match(text(p.render()), /主动插话关（基础 0%），继续回应开/)
+  find(p.render(), n => n.props.ariaLabel === `群 ${G} 没人叫时主动插话`).props.onChange('')
   assert.equal(p.draft.group.overrides[G].proactiveEnabled, undefined)
   assert.equal(p.draft.group.overrides[G].engagedEnabled, true)
   assert.equal(p.draft.group.overrides[G].interjectChance, 0)
@@ -62,11 +62,59 @@ test('页面默认展示按群设置，分区切换不修改配置，旧入口�
   const p = panel(), before = structuredClone(p.draft)
   let tree = p.render(p.Group)
   assert.equal(find(tree, n => n.props.className === 'ab-group-home').props.hidden, false)
-  for (const label of ['默认接话', '回复与消息', '不回应与管理', '按群设置']) {
+  for (const label of ['回复方式', '权限与限制', '群聊']) {
     find(tree, n => n.type === 'button' && text(n) === label).props.onClick(); tree = p.render(p.Group)
   }
   assert.deepEqual(p.draft, before)
-  assert.match(source, /打开按群设置/)
-  assert.match(source, /group: '群聊 发言 白名单 仅模块 主动 窗口 插话 旁听 静默 合并 不回应 不理 屏蔽 黑名单'/)
+  assert.match(source, /打开群聊设置/)
+  assert.match(source, /group: '群聊 发言 白名单 仅模块 主动 窗口 插话 旁听 静默 合并 不回应 不理 屏蔽 黑名单 通用设置 继续回应 回复方式 权限与限制'/)
   assert.match(source, /JSON.stringify\(draft.allow\?\.groups\) !== JSON.stringify\(cfg.allow\?\.groups\)/)
+})
+
+
+test('群聊通用设置是群聊里的次级入口，导航和返回不改配置', () => {
+  const p = panel(), before = structuredClone(p.draft)
+  let tree = p.render(p.Group)
+  const nav = find(tree, n => n.props['aria-label'] === '聊天设置分类')
+  assert.deepEqual(nodes(nav).filter(n => n.type === 'button').map(text), ['群聊', '回复方式', '权限与限制'])
+  find(tree, n => n.type?.name === 'GroupOverrides').props.setSection('defaults')
+  tree = p.render(p.Group)
+  const common = find(tree, n => n.props.title === '群聊通用设置')
+  assert.match(common.props.desc, /单独设置过的项目不受影响/)
+  assert.equal(find(tree, n => n.type === 'button' && text(n) === '群聊').props['aria-pressed'], true)
+  assert.equal(find(tree, n => n.props.className === 'ab-group-home').props.hidden, true)
+  assert.ok(find(tree, n => n.props.title === '被叫到时回复'))
+  const topics = find(tree, n => n.type === 'details' && text(n).includes('话题与群活跃度'))
+  assert.notEqual(topics.props.open, true)
+  common.props.right.props.onClick()
+  assert.equal(find(p.render(p.Group), n => n.props.className === 'ab-group-home').props.hidden, false)
+  assert.deepEqual(p.draft, before)
+})
+
+test('通用规则只改通用字段，不覆盖单群选择；回复页不再混入群叫醒规则', () => {
+  const p = panel(), before = structuredClone(p.draft)
+  find(p.render(p.Group), n => n.type?.name === 'GroupOverrides').props.setSection('defaults')
+  find(p.render(p.Group), n => n.props.title === '没人叫时主动插话').props.onChange(false)
+  find(p.render(p.Group), n => n.props.title === '聊起来后继续回应').props.onChange(true)
+  find(p.render(p.Group), n => n.props['aria-label'] === '不主动说话的开始小时').props.onChange({target:{value:'23'}})
+  const expected = structuredClone(before)
+  expected.group.proactiveEnabled = false; expected.group.engagedEnabled = true; expected.group.quietHours[0] = 23
+  assert.deepEqual(p.draft, expected)
+  find(p.render(p.Group), n => n.type === 'button' && text(n) === '回复方式').props.onClick()
+  const tree = p.render(p.Group)
+  assert.equal(nodes(tree).some(n => n.props.title === '被叫到时回复'), false)
+  assert.ok(find(tree, n => n.props.title === '连发合并'))
+})
+
+
+test('插话频率收起但仍可改，恢复通用只清除本群接话设置', () => {
+  const p = panel(), before = structuredClone(p.draft)
+  let tree = p.render()
+  const advanced = find(tree, n => n.type === 'details' && (n.children || []).some(c => c?.type === 'summary' && text(c) === '插话频率与次数'))
+  assert.notEqual(advanced.props.open, true)
+  find(advanced, n => n.props['aria-label'] === `群 ${G} 插话概率`).props.onChange({ target: { value: '0' } })
+  assert.equal(p.draft.group.overrides[G].interjectChance, 0)
+  find(p.render(), n => text(n) === '本群接话改用通用设置' && n.props.onClick).props.onClick()
+  const expected = structuredClone(before); delete expected.group.overrides[G]
+  assert.deepEqual(p.draft, expected)
 })
