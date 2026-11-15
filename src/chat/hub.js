@@ -1011,7 +1011,10 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
   async function sendSlowNotice(chatId, text, isCurrent) {
     const parsed = parseReply(text, cleaningFor(chatId))
     if (parsed.silent) return
-    for (const item of parsed.items) {
+    const cfg = getConfig()
+    const items = cfg.stickers.limitTagged && parsed.items.some((i) => i.kind === 'sticker') && random() >= cfg.stickers.autoChance
+      ? parsed.items.filter((i) => i.kind !== 'sticker') : parsed.items
+    for (const item of items) {
       if (!isCurrent()) return
       if (item.kind === 'text') {
         await sendText(chatId, item.value, undefined, [], undefined, { isCurrent })
@@ -1660,8 +1663,14 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     if (r.silent) return silenceTurn(chatId)
     let items = r.items
     // 分条发出的中间段（chat.everyStep）：只发她当时说的原话，不做语音转换、不补表情、不按概率改形态，
-    // 免得一段闲聊被拆成语音条和表情乱入。标签、markdown 图片照旧解析。
+    // 免得一段闲聊被拆成语音条和表情乱入。标签、markdown 图片照旧解析，表情仍受显式开启的概率限制。
     const interim = Boolean(opts.interim)
+    // 一段回复只抽一次：模型标签、自动补图与 items 钩子共用结果，拒绝后不能再补一张。
+    // 新开关默认关，保留旧的「标签直发、自动补图受心情影响」行为。
+    let stickerAllowed
+    const allowReplySticker = () => (stickerAllowed ??= random() < cfg.stickers.autoChance * (cfg.stickers.limitTagged ? 1 : mood().sticker))
+    const limitReplyStickers = (list) => cfg.stickers.limitTagged && list.some((i) => i.kind === 'sticker') && !allowReplySticker()
+      ? list.filter((i) => i.kind !== 'sticker') : list
     // 对方明确要语音、她却只打了字：整段改成语音发（模型偶尔会忘，这里兜底）
     if (!interim && opts.wantVoice && cfg.voice.enabled && !items.some((i) => i.kind === 'voice')) {
       const spoken = items.filter((i) => i.kind === 'text').map((i) => i.value).join('，')
@@ -1673,11 +1682,12 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       const all = texts.map((t) => t.value).join('，')
       if (all.length <= cfg.voice.autoMaxChars && Math.random() < cfg.voice.autoChance * mood().voice) items = [{ kind: 'voice', value: all }]
     }
+    items = limitReplyStickers(items)
     const inGroup = chatId.startsWith('group:')
     // 群里别刷屏：一段最多 3 条
     if (inGroup && items.length > 3) items = items.slice(0, 3)
     // 按概率补一张表情（群里已经有两条以上就不补了）
-    if (!interim && cfg.stickers.enabled && !items.some((i) => i.kind === 'sticker') && !(inGroup && items.length >= 2) && Math.random() < cfg.stickers.autoChance * mood().sticker) {
+    if (!interim && cfg.stickers.enabled && !items.some((i) => i.kind === 'sticker') && !(inGroup && items.length >= 2) && allowReplySticker()) {
       const pick = stickers.pickForReply(texts.map((t) => t.value).join(' '))
       if (pick) items.push({ kind: 'sticker', value: pick })
     }
@@ -1690,6 +1700,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
         log.warn('扩展模块改写回复出错：', error.message)
       }
     }
+    items = limitReplyStickers(items)
     // 钩子改写后仍走同一个清洗，保留每条的语音/引用元数据。
     items = cleanOutboundSegments(items.map((item) => ({
       type: ['text', 'voice'].includes(item.kind) ? 'text' : item.kind,
