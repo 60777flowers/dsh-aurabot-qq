@@ -26,7 +26,6 @@ function setup(t, patch = {}) {
     model: { provider: 'p', model: 'm' },
     memory: {
       dailyConsolidate: true,
-      consolidateTimes: [],
       extractIdleMinutes: 1,
       extractMinLines: 2,
       extractDailyBatches: 24,
@@ -36,6 +35,9 @@ function setup(t, patch = {}) {
     },
     ...patch,
   })
+  // normalize 会把空数组当成「没配」回退到 04:00/16:00；这里必须清掉，
+  // 否则 CI 在下午跑 tick 时会先走 consolidate，而不是本用例要测的 extractIdle。
+  cfg.memory.consolidateTimes = []
   const hub = {
     chatLogDays: () => [...logs.keys()].sort(),
     chatLogOf: (d) => logs.get(d) || [],
