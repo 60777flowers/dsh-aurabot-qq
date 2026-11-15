@@ -146,3 +146,12 @@ test('分条发送的中间段也限制标签，但仍不自动补图', async t 
   await s.hub.deliver('private:1', '你好呀', { interim: true })
   assert.equal(images(s).length, 0); assert.equal(s.picks(), 0)
 })
+
+
+test('关闭限制后，承诺配图的正文与对应表情一起发送，保留原概率', async t => {
+  const s = setup(t, { stickers: { limitTagged: false, autoChance: 0.03 } }, { roll: 0.99 })
+  await s.hub.deliver('group:2', '我发的都是正经表情\n正经点是吧，行，看我给你整一个端庄版<sticker:无语>', { simulate: true })
+  assert.ok(words(s).includes('看我给你整一个端庄版'))
+  assert.equal(images(s).length, 1)
+  assert.equal(s.cfg.stickers.autoChance, 0.03)
+})
