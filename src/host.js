@@ -17,6 +17,7 @@ import { spawn } from 'node:child_process'
 import net from 'node:net'
 import { isDeepStrictEqual } from 'node:util'
 import { loadConfig, saveConfig, publicConfig, mergeFromPanel, ownerAuthorizationRevision } from './core/config.js'
+import { quietWindowOf } from './core/time-window.js'
 import { createLogger } from './core/logger.js'
 import { encodeResponse } from './core/http-compress.js'
 import { registerSecret, redact } from './core/redact.js'
@@ -1242,10 +1243,9 @@ export function apply(ctx) {
     const pu = use('purpose')
     const ext = (cfg.ext && cfg.ext.purpose) || {}
     const sp = cfg.speakUp || {}
-    const pad2 = (n) => String(n % 24).padStart(2, '0')
     const awakeFrom = Number.isFinite(sp.awakeFrom) ? sp.awakeFrom : 8
     const awakeTo = Number.isFinite(sp.awakeTo) ? sp.awakeTo : 23
-    const quiet = awakeTo >= 24 || awakeFrom >= awakeTo ? { quietStart: '00:00', quietEnd: '00:00' } : { quietStart: pad2(awakeTo) + ':00', quietEnd: pad2(awakeFrom) + ':00' }
+    const quiet = quietWindowOf(awakeFrom, awakeTo)
     return {
       available: typeof pu?.status === 'function',
       enabled: ext.enabled === true,

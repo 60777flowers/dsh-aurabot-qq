@@ -10,6 +10,7 @@
 // 想换引擎的主人自己开关，迁移说明见 docs/PURPOSE_MODULE_API.md。
 
 import { dataDir, readJson, writeJson } from '../core/store.js'
+import { quietWindowOf } from '../core/time-window.js'
 import { cleanOutboundText } from '../chat/reply.js'
 import { isSessionBackoff } from '../chat/session-backoff.js'
 import { followUpHint } from '../features/memory.js'
@@ -31,7 +32,6 @@ const MINUTE = 60_000
 const MOOD_PREFIX = '【系统提醒，不是主人说的话】（她主动找你）'
 const SILENCE = '[沉默]'
 
-const pad2 = (n) => String(n).padStart(2, '0')
 // 文本截断：模块内随手用（引擎侧有同名工具，这里不跨文件依赖）。
 const clip = (text, max = 120) => {
   const s = String(text ?? '').replace(/\s+/g, ' ').trim()
@@ -52,10 +52,8 @@ export function purposeConfig(cfg = {}) {
   const ext = (cfg.ext && cfg.ext.purpose) || {}
   const awakeFrom = clampInt(ext.awakeFrom ?? su.awakeFrom, 8, 0, 24)
   const awakeTo = clampInt(ext.awakeTo ?? su.awakeTo, 23, 0, 24)
-  // awake 窗口为全天（awakeTo>=24 或区间非法）时，安静时段关闭（start===end 视为不启用）
-  const quiet = awakeTo >= 24 || awakeFrom >= awakeTo
-    ? { quietStart: '00:00', quietEnd: '00:00' }
-    : { quietStart: `${pad2(awakeTo % 24)}:00`, quietEnd: `${pad2(awakeFrom)}:00` }
+  // 醒着窗口的补集 = 安静时段；from > to 是跨天窗口（如 9 点到次日 3 点），安静时段为 3 点–9 点。
+  const quiet = quietWindowOf(awakeFrom, awakeTo)
   // normalizePurposeConfig 只认引擎字段，打分模型在归一化后补挂（面板下拉同款结构校验）
   return {
     ...normalizePurposeConfig({

@@ -5,6 +5,7 @@ import { dataDir, readJson, writeJson } from '../core/store.js'
 import { askModel } from '../core/llm.js'
 import { cleanText, clipText } from '../core/text.js'
 import { shouldDeferBackground } from '../core/offpeak.js'
+import { inHourWindow } from '../core/time-window.js'
 import { followUpHint } from './memory.js'
 import { moodReason } from './mood-context.js'
 import { selfName, personaDataDir, personaNow } from '../persona/personas.js'
@@ -391,8 +392,7 @@ export function createSpeakUp({ getConfig, hub, log, isMuted, memory }) {
   /** 白名单：每人单独算次数和间隔，一分钟最多找一个人，不一口气群发。 */
   async function tickFriends(cfg, s) {
     const c = cfg.speakUp
-    const h = new Date().getHours()
-    if (!(h >= c.awakeFrom && h < c.awakeTo)) return false
+    if (!inHourWindow(Date.now(), c.awakeFrom, c.awakeTo)) return false
     const today = new Date().toDateString()
     s.friends = s.friends || {}
     for (const qq of c.allow || []) {
@@ -426,8 +426,7 @@ export function createSpeakUp({ getConfig, hub, log, isMuted, memory }) {
     const today = new Date().toDateString()
     if (s.day !== today) Object.assign(s, { day: today, count: 0 })
     if (!s.nextAt) schedule(s, c)
-    const h = new Date().getHours()
-    const awake = h >= c.awakeFrom && h < c.awakeTo
+    const awake = inHourWindow(Date.now(), c.awakeFrom, c.awakeTo)
     const idleOk = Date.now() - lastPrivateAt() > c.idleMinutes * 60_000
     // 追问：她最后一句是在问主人、主人 15~40 分钟没回，有一半的机会轻轻追一句（每句最多追一次，不占每天的次数）
     const lb = hub.lastBotToOwner || { at: 0, text: '' }
