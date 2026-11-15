@@ -92,14 +92,31 @@ const SYMBOL_RUN = /[^\p{L}\p{N}\s]{2,}/gu
 // 括号也收进来：颜文字被擦掉之后剩下的半个括号 / 空括号，念出来只有「左括号」，没有意义。
 const KAOMOJI_CHAR = /[￣▽△▲･´｀＾﹏Ωﾟω()（）و✧☆★]/gu
 
-/** 念之前把符号串擦掉；擦完只剩标点（比如一条语音只有颜文字）就返回空串，由调用方改发文字。 */
-function stripUnspeakable (s) {
-  // 括号里成段的东西整块摘掉：只擦括号符号的话，TTS 会把「鳍耳竖起来」这类动作描写照念出来。
-  const out = String(s)
+// Breeze 等 TTS 的音频标签：中文用方括号（[咯咯笑] / [叹气] / [打哈欠]…），必须原样交给引擎。
+// 连续两三个标签（[咯咯笑][叹气]）或句首标签后面紧跟标点（[咯咯笑]，）时，如果先走
+// SYMBOL_RUN 会把 ][ / ]， 当成「连着堆的符号」擦成空格，标签就变成 [咯咯笑 叹气] 这种无效写法，
+// 引擎识别不了只好照字念（用户反馈的「咯咯笑变成念哥哥」）。所以先按标签切开，只清洗标签外的文字。
+const AUDIO_TAG = /\[[^\[\]\r\n]{1,30}\]/gu
+function cleanSpeechPart (s) {
+  return String(s)
+    // 括号里成段的东西整块摘掉：只擦括号符号的话，TTS 会把「鳍耳竖起来」这类动作描写照念出来。
     .replace(/[（(][^（）()]{0,40}[）)]/gu, ' ')
     .replace(SYMBOL_RUN, ' ')
     .replace(KAOMOJI_CHAR, ' ')
-  return /[\p{L}\p{N}]/u.test(out) ? out : ''
+}
+
+/** 念之前把符号串擦掉；擦完只剩标点（比如一条语音只有颜文字）就返回空串，由调用方改发文字。 */
+function stripUnspeakable (s) {
+  const raw = String(s)
+  const out = []
+  let last = 0
+  for (const m of raw.matchAll(AUDIO_TAG)) {
+    out.push(cleanSpeechPart(raw.slice(last, m.index)), m[0])
+    last = m.index + m[0].length
+  }
+  out.push(cleanSpeechPart(raw.slice(last)))
+  const text = out.join('')
+  return /[\p{L}\p{N}]/u.test(text) ? text : ''
 }
 
 /**

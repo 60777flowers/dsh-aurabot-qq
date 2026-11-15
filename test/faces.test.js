@@ -96,3 +96,16 @@ test('语音文本拆分：括号里的动作描写整段不念（TTS 会把「�
   assert.deepEqual(splitSpeakable('这是 3.5 秒的音频'), { spoken: '这是 3.5 秒的音频', extras: '' }, '没有括号时一个字不动')
   assert.deepEqual(splitSpeakable('（' + '很长的说明'.repeat(10) + '）好'), { spoken: '很长的说明'.repeat(10) + ' 好', extras: '' }, '超过 40 字的括号不整段摘，只擦括号符号（防止误伤正文）')
 })
+
+test('语音文本拆分：Breeze 音频标签保持原样（句首 / 连续标签边界不能被符号清洗吃掉）', () => {
+  // Breeze 中文音频标签用方括号：[咯咯笑] / [叹气] / [打哈欠]…，必须原样传给 TTS；
+  // 之前 SYMBOL_RUN 会把「][」「]，」当成连着堆的符号擦掉，导致标签失效被照字念。
+  assert.deepEqual(splitSpeakable('[咯咯笑]你好'), { spoken: '[咯咯笑]你好', extras: '' }, '句首标签完整保留')
+  assert.deepEqual(splitSpeakable('[咯咯笑]，你好'), { spoken: '[咯咯笑]，你好', extras: '' }, '句首标签后面的逗号不能吃掉右括号')
+  assert.deepEqual(splitSpeakable('[叹气]！今天好累'), { spoken: '[叹气]！今天好累', extras: '' }, '句首标签后面的感叹号同理')
+  assert.deepEqual(splitSpeakable('你好[咯咯笑]。'), { spoken: '你好[咯咯笑]。', extras: '' }, '句尾标签的方括号不能被擦掉')
+  assert.deepEqual(splitSpeakable('[咯咯笑][叹气]你好'), { spoken: '[咯咯笑][叹气]你好', extras: '' }, '两个连续标签不能合并成 [咯咯笑 叹气]')
+  assert.deepEqual(splitSpeakable('[笑][偷笑][咯咯笑]你好呀'), { spoken: '[笑][偷笑][咯咯笑]你好呀', extras: '' }, '三个连续标签逐个保留')
+  assert.deepEqual(splitSpeakable('（鳍耳竖起来）[咯咯笑]好啦'), { spoken: '[咯咯笑]好啦', extras: '' }, '括号动作照常摘，音频标签不受影响')
+  assert.deepEqual(splitSpeakable('[笑]'), { spoken: '[笑]', extras: '' }, '只有音频标签的语音也要能念')
+})
