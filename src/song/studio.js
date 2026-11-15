@@ -532,18 +532,34 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, say,
         if (existsSync(join(p.applio, 'core.py'))) return note('  已经有了，跳过')
         // 直接下代码压缩包（固定版本），不需要电脑上装 git
         const zip = join(p.root, 'downloads', 'applio.zip')
-        // 用环境里的 Python 下（断了能接着下、走系统代理）；万一不行再用 PowerShell 下
-        try {
-          await fetchFile(p.python, zip, [`https://github.com/IAHispano/Applio/archive/${APPLIO_COMMIT}.zip`, `https://codeload.github.com/IAHispano/Applio/zip/${APPLIO_COMMIT}`], note, log, (done, total) => {
-            install.progress = { kind: 'file', name: 'Applio', done, total }
-          })
-        } catch (error) {
-          note('  换个方式再下一次')
-          await fetchWithProgress(`https://github.com/IAHispano/Applio/archive/${APPLIO_COMMIT}.zip`, zip)
-        }
         const tmp = join(p.root, 'downloads', 'applio-src')
+        const urls = [`https://github.com/IAHispano/Applio/archive/${APPLIO_COMMIT}.zip`, `https://codeload.github.com/IAHispano/Applio/zip/${APPLIO_COMMIT}`]
+        const downloadApplio = async () => {
+          // 以前中断留下的同名 zip 可能能过 existsSync，但内容不完整；先按 zip 头判断，坏包直接丢掉。
+          try {
+            if (existsSync(zip) && (!statSync(zip).size || readFileSync(zip).subarray(0, 2).toString() !== 'PK')) rmSync(zip, { force: true })
+          } catch { try { rmSync(zip, { force: true }) } catch {} }
+          try {
+            await fetchFile(p.python, zip, urls, note, log, (done, total) => {
+              install.progress = { kind: 'file', name: 'Applio', done, total }
+            })
+          } catch (error) {
+            note('  换个方式再下一次')
+            await fetchWithProgress(urls[0], zip)
+          }
+        }
+        await downloadApplio()
         rmSync(tmp, { recursive: true, force: true })
-        await expandZip(zip, tmp)
+        try {
+          await expandZip(zip, tmp)
+        } catch (error) {
+          // Expand-Archive 失败通常是下载不完整/镜像返回了 HTML：清掉坏包重下一次，不能一直拿坏包重试。
+          rmSync(tmp, { recursive: true, force: true })
+          rmSync(zip, { force: true })
+          note('  压缩包不完整，已清理并重新下载')
+          await downloadApplio()
+          await expandZip(zip, tmp)
+        }
         const inner = readdirSync(tmp).find((n) => existsSync(join(tmp, n, 'core.py')))
         if (!inner) throw new Error('下载的 Applio 压缩包不完整')
         rmSync(p.applio, { recursive: true, force: true })
