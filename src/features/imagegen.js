@@ -9,6 +9,7 @@ import { paintingPath } from './paintings.js'
 import { createCodexAuth } from './codex-auth.js'
 import { createCodexImage } from './codex-image.js'
 import { mimeOf } from '../chat/inbound.js'
+import { drawFormat, gifError, gifSizeFor, gifFrameCount, GIF_FIELDS } from './image-format.js'
 import { imageToolBlock } from '../core/img.js'
 import { canSeeImages } from '../core/llm.js'
 import { imageSizeFor, normalizeRequestedSize } from './image-shape.js'
@@ -162,11 +163,16 @@ export function createImageGen({ getConfig, log, local, dsh, fetchImpl, codexAut
   const fetch = fetchImpl || ((...args) => globalThis.fetch(...args))
   const auth = codexAuth || createCodexAuth({ log, fetchImpl: fetch })
   const viaCodex = createCodexImage({ auth, fetchImpl: fetch, log })
-  async function generate(prompt, { shape, image, images, size, onRetry } = {}) {
+  async function generate(prompt, { format, shape, image, images, size, onRetry } = {}) {
     const config = getConfig().imageGen
+    const gif = drawFormat(format) === 'gif'
+    if (gif && !config.allowGif) throw gifError('GIF 动图还没开启，请主人在生图设置中打开「允许按需生成 GIF」')
+    if (gif && (config.provider !== 'openai' || local?.active('image') || upstream?.ready?.())) throw gifError('当前生图接法暂不支持按需 GIF，请使用支持 GIF 的 OpenAI 格式接口')
     const requestedSize = size == null || size === '' ? '' : normalizeRequestedSize(size)
     if (size != null && size !== '' && !requestedSize) throw new Error('图片尺寸格式不对，应为 1024x1024 或 2048x2048 这类格式')
     const c = { ...config, size: requestedSize || imageSizeFor(shape, config) }
+    c.gif = gif
+    if (gif && !requestedSize) c.size = gifSizeFor(shape, config)
     const refs = images ?? (image ? [image] : [])
     if (!Array.isArray(refs) || refs.length > 8 || refs.some((buf) => !Buffer.isBuffer(buf) || !String(mimeOf(buf)).startsWith('image/'))) throw new Error('参考图须为最多 8 张可用图片')
     if (image != null && (!Buffer.isBuffer(image) || !String(mimeOf(image)).startsWith('image/'))) throw new Error('参考图不是可用的图片')
@@ -174,7 +180,7 @@ export function createImageGen({ getConfig, log, local, dsh, fetchImpl, codexAut
     if (image && c.img2img === false) throw new Error('参考图功能已关闭')
     // 外部生图模块（如社区库的「生图 · DSH 已接入模型」）：它明确接管时就用它，返回 null 则照旧。
     // 只在没有参考图时询问：对话模型通道没有统一的编辑协议，图生图落回内置接法。
-    if (upstream && !image) {
+    if (upstream && !image && !gif) {
       const full = [c.stylePrompt, prompt].filter(Boolean).join('，')
       const handled = await upstream(full, { shape, size: c.size })
       if (handled != null) {
@@ -198,7 +204,7 @@ export function createImageGen({ getConfig, log, local, dsh, fetchImpl, codexAut
     let buf
     try { buf = c.provider === 'codex' ? await viaCodex(c, full, { shape, image }) : c.provider === 'custom' ? await viaCustom(c, full, image, refs) : await viaOpenAI(c, full, image, refs) }
     catch (error) {
-      if (!c.fallbackEnabled || !error.imageRequestFailed) throw error
+      if (gif || !c.fallbackEnabled || !error.imageRequestFailed) throw error
       let last = error
       for (const endpoint of c.fallbacks || []) {
         if (!endpoint.model || (endpoint.provider !== 'codex' && !endpoint.baseUrl)) continue
@@ -207,6 +213,10 @@ export function createImageGen({ getConfig, log, local, dsh, fetchImpl, codexAut
         catch (next) { last = next; if (!next.imageRequestFailed) throw next }
       }
       if (!buf) throw last
+    }
+    if (gif && gifFrameCount(buf) < 2) {
+      const kind = ({ 'image/png': 'PNG 静态图', 'image/jpeg': 'JPEG 静态图', 'image/webp': 'WebP 图片', 'image/gif': '单帧或损坏的 GIF' })[mimeOf(buf)] || '无法识别的内容'
+      throw gifError(`接口没有返回有效的多帧 GIF 动图，实际返回${kind}；已停止发送，请检查接口或模型的 GIF 支持`)
     }
     if (!buf || !buf.length) throw new Error('生图接口没有返回图片')
     if (!String(mimeOf(buf)).startsWith('image/')) throw new Error('生图接口返回的不是图片')
@@ -221,12 +231,12 @@ export function createImageGen({ getConfig, log, local, dsh, fetchImpl, codexAut
     const headers = image ? {} : { 'content-type': 'application/json' }
     if (c.apiKey) headers.authorization = `Bearer ${c.apiKey}`
     // response_format、image_size 不是每家都认（官方 OpenAI 就不认）：被拒了去掉再发。被拒的请求没出图，重发不会多画
-    const body = { model: c.model, prompt, size: c.size, n: 1, response_format: 'b64_json', image_size: c.size }
+    const body = { model: c.model, prompt, size: c.size, n: 1, ...(c.gif ? GIF_FIELDS : { response_format: 'b64_json', image_size: c.size }) }
     let requestBody
     if (image) {
       requestBody = new FormData()
       refs.forEach((buf, index) => requestBody.append(refs.length > 1 ? 'image[]' : 'image', new Blob([buf], { type: mimeOf(buf) }), `reference-${index + 1}.` + mimeOf(buf).split('/')[1]))
-      for (const [key, value] of Object.entries({ prompt, model: c.model, size: c.size })) requestBody.append(key, value)
+      for (const [key, value] of Object.entries({ prompt, model: c.model, size: c.size, ...(c.gif ? GIF_FIELDS : {}) })) requestBody.append(key, value)
     }
     let r, j
     for (;;) {

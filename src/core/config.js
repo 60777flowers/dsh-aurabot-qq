@@ -92,6 +92,7 @@ export const DEFAULTS = {
     ownerOnly: true, // 只有主人能让她画
     seeOwn: true, // 「让她画完自己看一眼」：开着才把画好的图交给她看
     img2img: true, // 允许参考聊天图片 / 自己的画作来改画
+    allowGif: false, // 明确请求动图时才允许 format=gif，普通画图仍沿用静态路径
     galleryShown: 20, // 面板「她的画作」显示最近几张（1~50；只影响显示，不删文件）
     // 自定义接法：url 里可以用 {prompt} {model} {size} {width} {height} {image}（参考图 base64）；params 是参数名/值（值里也能用这些占位符）
     custom: { method: 'GET', url: '', bodyType: 'json', responsePath: '', params: [] },
@@ -941,6 +942,7 @@ export function normalize(raw) {
   c.imageGen.ownerOnly = bool(c.imageGen.ownerOnly, true)
   c.imageGen.seeOwn = bool(c.imageGen.seeOwn, true)
   c.imageGen.img2img = bool(c.imageGen.img2img, true)
+  c.imageGen.allowGif = bool(c.imageGen.allowGif, false)
   if (!/^\d{3,4}x\d{3,4}$/.test(String(c.imageGen.size))) c.imageGen.size = '1024x1024'
   c.imageGen.galleryShown = Math.min(50, Math.max(1, Math.round(Number(c.imageGen.galleryShown) || 20)))
   c.imageGen.shape = ['her', 'square', 'portrait', 'landscape', 'wide'].includes(c.imageGen.shape) ? c.imageGen.shape : 'her'

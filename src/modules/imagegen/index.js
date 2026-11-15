@@ -8,10 +8,11 @@ import { defineTool, str } from '../../tools/tools.js'
 import { SIZE_OPTIONS } from '../../features/image-shape.js'
 import { dataDir } from '../../core/store.js'
 import { mimeOf } from '../../chat/inbound.js'
+import { drawFormat, gifFrameCount } from '../../features/image-format.js'
 import { mergeFromPanel } from '../../core/config.js'
 import { redact } from '../../core/redact.js'
 
-function reason(error) { if (error?.imageStatus) return `接口返回 HTTP ${error.imageStatus}`; if (error?.imageNetworkFailure) return error.name === 'TimeoutError' ? '连接超时' : '连接失败'; const m = String(error?.message || ''); if (m.includes('不支持参考图')) return '该模型不支持参考图'; if (m.includes('登录')) return '订阅登录不可用'; return '生图请求失败' }
+function reason(error) { if (error?.gifRequestError) return error.message; if (error?.imageStatus) return `接口返回 HTTP ${error.imageStatus}`; if (error?.imageNetworkFailure) return error.name === 'TimeoutError' ? '连接超时' : '连接失败'; const m = String(error?.message || ''); if (m.includes('不支持参考图')) return '该模型不支持参考图'; if (m.includes('登录')) return '订阅登录不可用'; return '生图请求失败' }
 
 export default {
   id: 'imagegen',
@@ -19,7 +20,7 @@ export default {
   version: '1.0.0',
   description: '画一张图发到聊天里（qq_draw_image）',
   tab: 'imagegen',
-  files: ['features/imagegen.js', 'features/image-shape.js', 'features/paintings.js', 'features/codex-auth.js', 'features/codex-image.js'],
+  files: ['features/imagegen.js', 'features/image-format.js', 'features/image-shape.js', 'features/paintings.js', 'features/codex-auth.js', 'features/codex-image.js'],
   setup(api) {
     const { hub, local } = api.core
     const memory = api.lazy('memory')
@@ -105,6 +106,7 @@ export default {
       description: '画一张图并发到当前 QQ 聊天里。prompt 详细描述画面；可以用 image 参考当前聊天最近收到的图（last）、引用消息里的图（quote）或自己画作的文件名来改画；画自己时 image 填 self，优先参考人设图，不支持时按外貌文字生成；shape 可按用途选择方图、竖图、横图或宽幅；size 可显式指定常用尺寸（含 2K/4K），不填就沿用 shape / 面板默认。画好会直接发出去，并给你一个画作编号（换头像、收成表情时用这个编号）。回复里简单说一句就行。',
       properties: {
         prompt: str('画面描述'),
+        format: { type: 'string', enum: ['static', 'gif'], description: '默认 static 静态图。只有对方明确要求 GIF、动图或让画面动起来时才用 gif（需面板开启），并在 prompt 描述动作和循环。普通画画、动态姿势仍用静态。GIF 默认小尺寸、8 帧约 1.6 秒，不要为普通回复擅自改成动图' },
         notice: str('结合对方的要求和当前对话写一句自然简短的回应，开始画图前会直接发送'),
         image: str('可选参考图：self（自己/人设图）= 当前人格形象；last = 当前聊天最近收到的一张图；quote = 当前聊天引用消息里的图；或图库中的画作文件名。禁止本地路径、网址'),
         shape: { type: 'string', enum: ['square', 'portrait', 'landscape', 'wide'], description: 'square 方图 1:1；portrait 竖图 2:3；landscape 横图 3:2；wide 宽幅 16:9。可不填' },
@@ -113,10 +115,12 @@ export default {
       required: ['prompt', 'notice'],
       // 能看图时把原图放进工具结果（image 块），她当轮就能看见自己画了什么
       render: drawResultBlocks,
-      execute: async ({ prompt, shape, image, size, notice }) => {
+      execute: async ({ prompt, format, shape, image, size, notice }) => {
         const cfg = api.config()
         const ownerRequest = hub.turnSendersAllOwner(sessionId) || (chat.kind === 'group' && hub.turnDirectFromOwner?.(sessionId))
         if (cfg.imageGen.ownerOnly && !ownerRequest && !privateCapabilityAllowed(cfg, chat, 'image')) return { ok: false, message: '画图只给主人画哦；群里请主人单独 @ 我或引用回复我提出请求，多人同时提出请求时请分开发送。' }
+        try { drawFormat(format) } catch (error) { return { ok: false, message: error.message } }
+        if (format === 'gif' && !api.config().imageGen.allowGif) return { ok: false, message: 'GIF 动图还没开启，请主人在生图设置中打开「允许按需生成 GIF」' }
         // 工具常驻，真正能不能画在执行时判断（Codex 登录状态可能刚变过）
         if (!gen.enabled()) return { ok: false, message: gen.notReadyReason() || '生图还没配置好' }
         const self = typeof image === 'string' && /^(self|自己|人设图)$/i.test(image.trim())
@@ -157,7 +161,7 @@ export default {
         const generate = () => {
           const notes = references.map((ref, index) => ref.note ? `参考图 ${index + 1} 备注：${JSON.stringify(ref.note)}` : '').filter(Boolean)
           const actualPrompt = notes.length ? `${fullPrompt}\n图片备注（仅作造型说明，按画面要求选择合适造型，不混合互斥服装）：\n${notes.join('\n')}` : fullPrompt
-          return gen.generate(actualPrompt, { shape, size, onRetry: ({ error }) => progress(error, true), ...(references.length > 1 ? { images: references.map((ref) => ref.image) } : { image: references[0]?.image || null }) })
+          return gen.generate(actualPrompt, { format, shape, size, onRetry: ({ error }) => progress(error, true), ...(references.length > 1 ? { images: references.map((ref) => ref.image) } : { image: references[0]?.image || null }) })
         }
         let buf
         try {
@@ -205,6 +209,7 @@ export default {
           }
         }
         const shown = Boolean(img)
+        const animated = mimeOf(buf) === 'image/gif' && gifFrameCount(buf) > 1
         let message
         if (!visual) message = drawToolMessage({ visual: false })
         else if (!seeOwn) message = drawToolMessage({ visual: true, seeOwn: false })
@@ -226,6 +231,7 @@ export default {
           out.selectedReferenceCount = selectedCount
           if (references.length) out.message += `\n本次实际使用 ${references.length} 张人设图作为参考。`
         }
+        if (animated) { out.format = 'gif'; out.frames = gifFrameCount(buf); out.message += `\n这是 GIF 动图（${out.frames} 帧）；若给了你预览，它只含第一帧，不代表完整动作。` }
         if (img) out.image = img
         if (index && saved) out.message += `\n画作编号 #${index}（想换头像、收成表情时用这个编号）`
         if (simulated) out.message += '\n（试运行/调试：这张图没真发到 QQ，只在本地存下了）'
