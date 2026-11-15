@@ -24,6 +24,13 @@ test('parseReply 识别语音和表情标记', () => {
   assert.deepEqual(r2.items.map((x) => x.kind), ['text', 'sticker'])
 })
 
+test('中文参数标签 <参数 name="sticker"> 也转成真表情，不原样发出', () => {
+  const r = parseReply('<参数 name="sticker">N05_刷刷<参数>')
+  assert.deepEqual(r.items, [{ kind: 'sticker', value: 'N05_刷刷' }])
+  const v = parseReply('<参数 name="voice">晚安啦<参数>')
+  assert.deepEqual(v.items, [{ kind: 'voice', value: '晚安啦' }])
+})
+
 test('parseReply 沉默与空', () => {
   assert.equal(parseReply('[沉默]').silent, true)
   assert.equal(parseReply('   ').silent, true)
