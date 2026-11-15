@@ -143,7 +143,7 @@ export function createMood({ getConfig, dsh, log }) {
         const out = await askModel(dsh, {
         module: 'mood',
           cfg: getConfig(),
-          system: `你在判断聊天角色「${selfName(getConfig())}」聊完一轮后的心情变化。她现在心情 ` + v + '/100（' + base() + ' 是平常）。' + scene + '。只看这一轮真正影响她心情的东西：被夸、被关心、被惦记会开心；被凶、被冷落、被嫌弃会难过；开玩笑的「讨厌~」「笨蛋」不算真骂。只输出 JSON：{"delta": -15~15 的整数, "reason": "十几个字的理由", "confidence": 0~1 你有多确定}。没什么影响就 delta 为 0。',
+          system: `你在判断聊天角色「${selfName(getConfig())}」聊完一轮后的心情变化。她现在心情 ` + v + '/100（' + base() + ' 是平常）。' + scene + '。只看这一轮真正影响她心情的东西：被夸、被关心、被惦记会开心；被凶、被冷落、被嫌弃会难过。对方明显是在开玩笑、调侃、傲娇或亲昵称呼时（例如「讨厌~」「笨蛋」「坏蛋」「哼」），即使字面带负面词，也不要判成被嘲讽/被嫌弃，按轻松互动给 0 或轻微正向；只有明确恶意、攻击、羞辱或刻意冷落才降心情。只输出 JSON：{"delta": -15~15 的整数, "reason": "十几个字的理由", "confidence": 0~1 你有多确定}。没什么影响就 delta 为 0。',
           text: `${origin === 'speak-up' ? '她主动说' : who + '说'}：${String(userText || '').slice(0, 600)}\n她回：${String(reply || '').slice(0, 600)}`,
           maxTokens: 400,
           temperature: 0.2,
