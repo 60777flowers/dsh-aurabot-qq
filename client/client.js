@@ -8350,6 +8350,30 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const saveDsh = (patch) => { setDshSettings(patch); toast('已改，记得点「保存设置」'); return Promise.resolve({ ok: true }) }
       const [testing, setTesting] = useState('')
       const [results, setResults] = useState({})
+      // 「获取模型」按当前服务地址拉 /models；列表只是候选，手填模型名始终可用。
+      const [models, setModels] = useState([])
+      const [modelsLoading, setModelsLoading] = useState(false)
+      const [modelsError, setModelsError] = useState('')
+      const modelSource = `${c.provider}|${c.baseUrl}|${c.apiKeySet ? 1 : 0}`
+      useEffect(() => { setModels([]); setModelsError('') }, [modelSource])
+      const fetchModels = async () => {
+        setModelsLoading(true); setModelsError('')
+        try {
+          const r = await post('/image/models', { imageGen: c })
+          const list = Array.isArray(r.models) ? r.models : []
+          if (r.ok !== true) { setModels([]); setModelsError(r.message || '获取失败'); toast(r.message || '获取模型失败', 'err'); return }
+          setModels(list)
+          setModelsError(list.length ? '' : '接口没有返回任何模型')
+          toast(list.length ? `找到 ${list.length} 个模型，点下面的列表选择` : '接口没有返回任何模型', list.length ? 'ok' : 'err')
+        } finally { setModelsLoading(false) }
+      }
+      const modelField = () => h(Fragment, null,
+        h(Row, { label: '模型' }, h('div', { className: 'ab-flex', style: { gap: 8, flexWrap: 'wrap' } },
+          f.text('imageGen.model', { size: 'wide', placeholder: '例如 Kwai-Kolors/Kolors' }),
+          h(Btn, { small: true, disabled: modelsLoading, onClick: fetchModels, title: '按上面的服务地址和 API Key 拉一次 /models' }, modelsLoading ? '获取中…' : '获取模型'))),
+        models.length ? h(Row, { label: '可用模型', hint: '点选后填入上面的模型名；也可以继续手动输入' },
+          h(Select, { value: models.includes(c.model) ? c.model : '', options: models.map((id) => ({ value: id, label: id })), width: 360, placeholder: '从获取到的模型里选择', onChange: (v) => setDraft(setPath(draft, 'imageGen.model', v)) })) : null,
+        modelsError ? h('div', { className: 'ab-note err', role: 'alert', style: { marginTop: -4, marginBottom: 8 } }, '获取模型失败：' + modelsError) : null)
       const snapshot = JSON.stringify(c); const current = useRef(snapshot); current.current = snapshot
       useEffect(() => { setResults({}) }, [snapshot])
       const test = async (id) => {
@@ -8411,7 +8435,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             h(Row, { label: '服务地址', hint: '选择官方推荐赞助商地址；选中即设为当前服务地址' },
               h(Select, { value: sponsorSelected ? SPONSOR_BASE : '', options: sponsorOptions, width: 320, ariaLabel: '赞助商服务地址', placeholder: '选择赞助商服务地址', onChange: pickSponsor })),
             h(Row, { label: 'API Key', hint: '只存在本机，不会显示出来' }, f.text('imageGen.apiKey', { type: 'password', placeholder: c.apiKeySet ? '已保存（不改就留空）' : '没有就留空' })),
-            h(Row, { label: '模型' }, f.text('imageGen.model', { size: 'wide', placeholder: '例如 Kwai-Kolors/Kolors' })),
+            modelField(),
           ) : tab === 'dsh' ? h('div', null,
             dshMod
               ? h(ExtPanel, { m: dshMod, settings: dshDraft, draftSettings: dshDraft, setSettings: setDshSettings, toast, reload, saveOverride: saveDsh })
@@ -8449,7 +8473,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           ) : h('div', null,
             h(Row, { label: '服务地址', hint: '一般以 /v1 结尾' }, f.text('imageGen.baseUrl', { size: 'wide', placeholder: 'https://api.siliconflow.cn/v1' })),
             h(Row, { label: 'API Key', hint: '只存在本机，不会显示出来' }, f.text('imageGen.apiKey', { type: 'password', placeholder: c.apiKeySet ? '已保存（不改就留空）' : '没有就留空' })),
-            h(Row, { label: '模型' }, f.text('imageGen.model', { size: 'wide', placeholder: '例如 Kwai-Kolors/Kolors' })),
+            modelField(),
           ),
           h('div', { className: 'ab-muted ab-small' }, '测试会实际生成图片，可能消耗额度；使用当前页面配置，不自动切换或发送到 QQ。'),
           testButton(''),

@@ -2,7 +2,7 @@
 
 import { readFileSync } from 'node:fs'
 import { privateCapabilityAllowed } from '../../chat/access.js'
-import { createImageGen, drawResultBlocks, drawToolMessage, imageToolBlock, resolveDrawImage, isUnsupportedReference, isSingleReferenceOnly } from '../../features/imagegen.js'
+import { createImageGen, drawResultBlocks, drawToolMessage, imageToolBlock, resolveDrawImage, isUnsupportedReference, isSingleReferenceOnly, fetchOpenAIModels } from '../../features/imagegen.js'
 import { listPaintings, openPaintFolder, paintingPath, rememberPainting, removePainting, savePainting } from '../../features/paintings.js'
 import { defineTool, str } from '../../tools/tools.js'
 import { SIZE_OPTIONS } from '../../features/image-shape.js'
@@ -48,6 +48,21 @@ export default {
       if (req?.method !== 'POST' || !/^application\/json(?:\s*;|$)/i.test(String(req.headers?.['content-type'] || ''))) return { ok: false, message: '账号操作需要 POST JSON 请求' }
       return fn(req)
     }
+    api.route('/image/models', accountAction(async (req) => {
+      const body = await api.core.http.body(req)
+      if (!body?.imageGen || typeof body.imageGen !== 'object') return { ok: false, message: '缺少生图配置' }
+      const config = mergeFromPanel(api.config(), { imageGen: body.imageGen }); const c = config.imageGen
+      if (c.provider === 'custom') return { ok: false, message: '自定义接口没有统一的模型列表接口，请手动填写模型名' }
+      if (c.provider === 'codex') return { ok: false, message: 'Codex 订阅不需要填模型名，也不能按服务地址拉模型列表' }
+      try {
+        const models = await fetchOpenAIModels({ baseUrl: c.baseUrl, apiKey: c.apiKey })
+        return { ok: true, models }
+      } catch (error) {
+        let message = redact(error?.message || String(error))
+        if (c.apiKey) message = message.split(c.apiKey).join('***')
+        return { ok: false, message }
+      }
+    }))
     api.route('/image/test', accountAction(async (req) => {
       const body = await api.core.http.body(req)
       if (!body?.imageGen || typeof body.imageGen !== 'object') return { ok: false, message: '缺少生图配置' }
