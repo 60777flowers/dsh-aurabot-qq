@@ -237,7 +237,13 @@ for (const gate of ['awake', 'daily', 'gap', 'active']) {
     const id = s.pending()
     s.cfg.speakUp.allow = []
     s.dueTick(gate === 'daily' ? { count: 2 } : gate === 'gap' ? { nextAt: Date.now() + DAY } : {})
-    if (gate === 'awake') s.cfg.speakUp.awakeTo = 0
+    if (gate === 'awake') {
+      // 构造一个不包含当前小时的醒着窗口（从当前小时 +1 开始；不能再用 awakeTo=0：
+      // 新约定 from===to 表示全天）
+      const hour = new Date().getHours()
+      s.cfg.speakUp.awakeFrom = (hour + 1) % 24
+      s.cfg.speakUp.awakeTo = (hour + 2) % 24
+    }
     if (gate === 'active') s.hub.lastOwnerChatAt = Date.now()
     await s.speak.tick()
     assert.equal(s.pushed.length, 0)
