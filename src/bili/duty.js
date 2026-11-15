@@ -7,6 +7,7 @@ import { loginSessionKey, recoverLoginPause } from './login-pause.js'
 import { isSessionBackoff } from '../chat/session-backoff.js'
 import { lookWithVision, visionState } from './vision.js'
 import { createShotStore, shotPath, clockOf } from './shots.js'
+import { inHourWindow } from '../core/time-window.js'
 
 // 这些错误说明今天别再发了：没登录 / Cookie 过期、csrf 不对、风控、要验证码、太频繁
 const PAUSE_CODES = { '-101': 'B 站没登录或 Cookie 过期了', '-111': 'Cookie 里的 bili_jct 不对', '-352': '被 B 站风控了', '-509': '发得太频繁', '12015': 'B 站要求验证码' }
@@ -476,8 +477,7 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
     const g = getConfig()
     const c = g.bili
     if (!g.enabled || !c.enabled || hub.systemSessionCooldown?.('bili')) return
-    const h = new Date().getHours()
-    if (h < g.speakUp.awakeFrom || h >= g.speakUp.awakeTo) return
+    if (!inHourWindow(Date.now(), g.speakUp.awakeFrom, g.speakUp.awakeTo)) return
     const s = today(load())
     if (c.reply && Date.now() - (s.lastReplyCheck || 0) > 20 * 60_000 && (await account()).isLogin) await checkReplies()
     if (!hub.systemSessionCooldown?.('bili') && c.autoBrowse && s.runs < c.maxRunsPerDay && Date.now() - (s.lastRun || 0) > c.intervalHours * 3600_000) await run()

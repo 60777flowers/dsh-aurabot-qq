@@ -143,6 +143,19 @@ test('闸门：安静时段（醒着窗口外）不发，推到安静结束', as
   assert.ok(!engine.inQuietHours(new Date('2026-01-01T12:00:00').getTime(), c), '中午不属于安静时段')
 })
 
+test('闸门：醒着窗口跨天（9 点到次日 3 点）时，安静时段是 3 点–9 点', () => {
+  const hub = makeHub()
+  const { cfg } = makePurpose(hub)
+  cfg.speakUp.awakeFrom = 9
+  cfg.speakUp.awakeTo = 3
+  const c = purposeConfig(cfg)
+  assert.equal(c.quietStart, '03:00')
+  assert.equal(c.quietEnd, '09:00')
+  assert.ok(engine.inQuietHours(new Date('2026-01-01T04:00:00').getTime(), c), '凌晨 4 点属于安静时段')
+  assert.ok(!engine.inQuietHours(new Date('2026-01-01T23:00:00').getTime(), c), '晚上 23 点不在安静时段')
+  assert.ok(!engine.inQuietHours(new Date('2026-01-01T02:00:00').getTime(), c), '凌晨 2 点还在醒着窗口')
+})
+
 test('闸门：总开关关掉后 tick 完全静默', async () => {
   const hub = makeHub()
   const { p, cfg } = makePurpose(hub)
