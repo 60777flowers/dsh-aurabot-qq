@@ -580,7 +580,8 @@ export function parseReply(text, options) {
       from = items.length
       if (m[0].startsWith('<poke')) {
         if (!items.some((i) => i.kind === 'poke')) items.push({ kind: 'poke', value: '' })
-      } else if (m[1] !== undefined) {        replyTo = m[1]
+      } else if (m[1] !== undefined) {
+        replyTo = m[1]
       } else if (m[2] !== undefined) {
         const v = stripSilenceMarks(stripMarkdown(m[2]))
         if (v) items.push({ kind: 'voice', value: v })
