@@ -88,8 +88,11 @@ export function createMood({ getConfig, dsh, log }) {
     const s = load()
     return Math.round(decayed(s.value, s.at, getConfig().mood.halfLifeHours, Date.now(), base()))
   }
-  /** 推一下心情（d 可正可负），记下原因。 */
-  function nudge(d, reason) {
+  /**
+   * 推一下心情（d 可正可负），记下原因和原因所属的聊天。
+   * chatId 用来防止别的私聊/群里的原因串进当前会话的上下文（issue #273）；不传时只做全局记录。
+   */
+  function nudge(d, reason, chatId = '') {
     if (getConfig().debug) return // 调试模式不动心情：心情是持久状态，调试不该留下痕迹
     if (!getConfig().mood.enabled || !d) return
     const s = load()
@@ -99,8 +102,9 @@ export function createMood({ getConfig, dsh, log }) {
     reason = cleanText(reason)
     s.reason = reason
     s.reasonAt = s.at
+    s.reasonChat = String(chatId || '')
     // 保留 200 条：20 条只够两小时，出问题查不到原因（实测需要回溯半天以上）
-    s.history = [{ at: Date.now(), from: before, to: Math.round(s.value), reason }, ...(s.history || [])].slice(0, 200)
+    s.history = [{ at: Date.now(), from: before, to: Math.round(s.value), reason, chatId: s.reasonChat }, ...(s.history || [])].slice(0, 200)
     save(s)
     try { log?.debug?.(`心情 ${before} → ${Math.round(s.value)}（${d > 0 ? '+' : ''}${d}）：${reason}`) } catch (error) {}
   }
@@ -113,21 +117,22 @@ export function createMood({ getConfig, dsh, log }) {
     /**
      * 聊天里的一句话。direct = 是对她说的（私聊、@她、叫她）；owner = 主人说的。
      * 不是对她说的群聊只算三成，主人的话算 1.5 倍。
+     * chatId = 这句话来自哪个聊天：心情原因只在同一个聊天里展示，避免串聊。
      */
-    observe(text, who, { direct = true, owner = false, silent = false } = {}) {
+    observe(text, who, { direct = true, owner = false, silent = false, chatId = '' } = {}) {
       // 开了模型判断就不用关键词；但峰时省钱模式会把模型判断推迟到谷时，这时退回关键词，心情照样有起伏
       const modelJudge = getConfig().mood.judge && dsh && !shouldDeferBackground(getConfig())
       if (silent ? !modelJudge : modelJudge) return
       const d0 = scoreText(text)
       if (!d0) return
       const d = Math.round(d0 * (direct ? 1 : 0.3) * (owner ? 1.5 : 1))
-      nudge(d, `${who || '有人'}说「${clipText(text, 20)}」`)
+      nudge(d, `${who || '有人'}说「${clipText(text, 20)}」`, chatId)
     },
     /**
      * 模型判心情（可选）：一轮聊完，看「对方说的 + 她回的」判断心情往哪走。没把握的（confidence < 0.6）不算。
      * origin：user = 有人在跟她说话；speak-up = 她自己主动找人（判她自己的心意，不是被叫来干活）。
      */
-    async judge({ userText, reply, who = '对方', origin = 'user' }) {
+    async judge({ userText, reply, who = '对方', origin = 'user', chatId = '' }) {
       const cfg = getConfig().mood
       if (getConfig().debug) return null // 调试模式不判心情（省一次模型调用，也不留下状态）
       if (!cfg.enabled || !cfg.judge || !dsh) return null
@@ -150,21 +155,26 @@ export function createMood({ getConfig, dsh, log }) {
         })
         const r = parseMoodJudge(out)
         if (!r) return null
-        if (r.confidence >= 0.6 && Math.abs(r.delta) >= 2) nudge(r.delta, r.reason || '刚才那一下')
+        if (r.confidence >= 0.6 && Math.abs(r.delta) >= 2) nudge(r.delta, r.reason || '刚才那一下', chatId)
         return r
       } catch (error) {
         return null
       }
     },
-    /** 给每一轮的上下文：心情明显偏离平常时，告诉她现在的状态和该怎么说话。 */
-    contextLine() {
+    /**
+     * 给每一轮的上下文：心情明显偏离平常时，告诉她现在的状态和该怎么说话。
+     * chat 传了聊天信息时，只有原因也来自这个聊天才带上「因为…」；旧存档没记来源就只报心情，不猜是谁。
+     */
+    contextLine(chat) {
       if (!getConfig().mood.enabled) return ''
       const s = load()
       const v = current()
       const label = moodLabel(v)
       const style = MOOD_STYLE[label]
       if (!style) return ''
-      return `（你现在${label}${moodReason(s, v, base())}。这会自然地影响你说话：${style}。不用说出来自己心情如何。）`
+      const chatId = typeof chat === 'string' ? chat : chat?.chatId
+      const reason = chatId && s.reasonChat !== String(chatId) ? '' : moodReason(s, v, base())
+      return `（你现在${label}${reason}。这会自然地影响你说话：${style}。不用说出来自己心情如何。）`
     },
   }
 }

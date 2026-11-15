@@ -2449,7 +2449,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     const dislikeChance = Math.max(0, Math.min(1, Number(cfg.memory?.dislikeSilence ?? 0.85) || 0))
     if (dislikeChance > 0 && !isOwner(cfg, msg.userId) && dislikes?.(msg.userId) && random() < dislikeChance) {
       logIncoming()
-      onActivity?.({ kind: 'silent', chatId: msg.chatId, text: msg.text, nickname: msg.nickname })
+      onActivity?.({ kind: 'silent', chatId: msg.chatId, userId: msg.userId, text: msg.text, nickname: msg.nickname })
       log.debug(`${msg.chatId}：不想搭理，安静看着`)
       return
     }
