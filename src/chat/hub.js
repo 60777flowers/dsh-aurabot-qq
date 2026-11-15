@@ -611,6 +611,33 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     }
   }
 
+  // DSH 重启后，主动搭话的「最近一次主人私聊 / 她最后一句」只在内存里会归零，
+  // 导致下一个 tick 把闲置时间算成几千万分钟、刚启动就插话。开机从最近流水恢复，
+  // 取不到就保持 0（companion 会把它当成不能搭话），不凭空造时间。
+  function restoreProactiveFromChatLog() {
+    const owner = String(getConfig().ownerQQ || '')
+    if (!owner || !/^\d+$/.test(owner)) return
+    let ownerAt = 0
+    let botAt = 0
+    let botText = ''
+    for (const day of chatLogDays().slice(-3)) {
+      for (const row of chatLogOf(day)) {
+        if (String(row?.chatId || '') !== `private:${owner}`) continue
+        const at = Number(row.t) || 0
+        if (!at) continue
+        if (row.who === 'bot') {
+          if (at > botAt) { botAt = at; botText = String(row.text || '') }
+        } else if (at > ownerAt) ownerAt = at
+      }
+    }
+    if (ownerAt) {
+      lastOwnerChatAt = ownerAt
+      lastPrivateAt.set(owner, ownerAt)
+    }
+    if (botAt) lastBotToOwner = { at: botAt, text: botText }
+  }
+  restoreProactiveFromChatLog()
+
   // saidElsewhere 是内存 Map，重启就空。这里从聊天流水里把「主动发出过」（带 proactive 标记）的 bot 行捞回来，
   // 不然重启一次她又忘了自己刚发过什么。窗口是最近 24 小时；跨日所以要读今天和昨天两份文件，再按时间戳过滤。
   // 按 chatId 记一个时间游标，同一批只补一次，不会每次聊天都重放。
