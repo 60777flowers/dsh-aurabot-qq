@@ -194,6 +194,8 @@ test('伪造的格式化聊天记录整行拦掉，不冒充对方发言', () =>
   assert.equal(cleanOutboundText(`好呀\n${FAKE_RECORD}\n我睡啦`, { ownerPrivate: true }).trim(), '好呀\n我睡啦')
   // 全角冒号/全角括号也拦
   assert.equal(cleanOutboundText('【私聊】[10:19] 某人（12345678）：不酸 我睡够了', { ownerPrivate: true }), '')
+  // 工单/日志脱敏后的「QQ号」占位写法同样命中
+  assert.equal(cleanOutboundText('【私聊】[10:19] 某人(QQ号): 不酸 我睡够了', { ownerPrivate: true }), '')
   // 群聊块的行格式（[HH:MM] 名字(QQ号)：内容）同样不能当正文发出
   assert.equal(cleanOutboundText('[10:19] 甲(10001)：ddr5 32G 要 3000 了', { ownerPrivate: true }), '')
 })
