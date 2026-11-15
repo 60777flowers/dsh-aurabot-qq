@@ -495,7 +495,8 @@ export function parseReply(text, options) {
       replyTo = ''
     }
   }
-  for (const bubble of raw.split('|||')) {
+  // 连续多写的竖线仍是同一个分隔符，避免 |||| 拆完残留一条 | 消息。
+  for (const bubble of raw.split(/\|{3,}/)) {
     const part = bubble.trim()
     if (!part) continue
     // 依次切出 reply / voice / sticker / markdown 图片，其余是文字

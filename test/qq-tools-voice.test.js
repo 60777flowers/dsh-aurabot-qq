@@ -183,3 +183,11 @@ test('跨聊天发送抛异常也不透传路径或代码，不自动重发',asy
   const r=await tool.execute({target:'group:9',text:'你好',voice:true})
   assert.equal(r.ok,false);assert.match(r.message,/发送结果未确认/);assert.doesNotMatch(r.message,/private|ENOENT|voice\.js|send\(\)/);assert.equal(calls,1)
 })
+
+test('跨群两条语音：多写一个分隔竖线不会夹带 | 消息，回执只报告语音', async t => {
+  const s = setup(t)
+  const r = await send(s, { text: '<voice>第一条语音</voice>||||<voice>第二条语音</voice>' })
+  assert.equal(r.ok, true); assert.deepEqual(r.sentTypes, ['record'])
+  assert.deepEqual(types(s), ['record', 'record'])
+  assert.deepEqual(s.spoken, ['第一条语音', '第二条语音'])
+})
