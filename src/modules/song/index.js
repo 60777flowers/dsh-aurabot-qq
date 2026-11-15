@@ -6,6 +6,11 @@ import { createSongStudio, checkRoot, listDrives } from '../../song/studio.js'
 import { privateCapabilityAllowed } from '../../chat/access.js'
 import { defineTool, str, int, bool } from '../../tools/tools.js'
 
+/** 翻唱完成后的心情变化：原因记到这次唱歌所在的聊天，别成为全局原因。 */
+export function nudgeMoodAfterSong(mood, title, chatId) {
+  mood?.nudge?.(8, `唱完了「${title}」`, chatId)
+}
+
 export default {
   id: 'song',
   name: '翻唱',
@@ -39,7 +44,7 @@ export default {
       },
       onSung: (title, chatId) => {
         const cfg = api.config()
-        mood.nudge?.(8, `唱完了「${title}」`)
+        nudgeMoodAfterSong(mood, title, chatId)
         // 唱过的歌记成她的经历：私聊记到对方头上
         const uid = String(chatId).startsWith('private:') ? String(chatId).slice(8) : ''
         const who = uid === String(cfg.ownerQQ) ? cfg.ownerName || '主人' : uid ? '对方' : '群里'

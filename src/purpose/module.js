@@ -461,7 +461,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     if (following && outcome === 'sent') memoryOf()?.markFollowUpAsked?.(ctx.followUp.id)
     // 模型的「待续」不能把事实跟进再复制进 purpose.pending。
     applyPurposeOutcome(state, { now: Date.now(), config, outcome, text, memo: following ? null : memo, planned: picked.purpose })
-    if (!friend) nudgeMood(picked.purpose, outcome, memo)
+    if (!friend) nudgeMood(picked.purpose, outcome, memo, chatIdOf(cfg, friend))
     saveState(state, friend)
     log.info?.(`目的：回合结束 ${outcome}（今天第 ${state.countToday} 次）`)
     return { outcome, text, memo }
@@ -519,12 +519,12 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
         if (!m) return ''
         // contextLine 自带「你现在 X，因为 Y。这会影响你说话：Z」，比裸数字有用得多
         if (typeof m.contextLine === 'function') {
-          const line = String(m.contextLine() || '').trim()
+          const line = String(m.contextLine({ chatId: target }) || '').trim()
           if (line) return line
         }
         if (typeof m.state === 'function') {
           const st = m.state()
-          if (st) return `（你现在心情 ${Number(st.value ?? 60)}/100（${st.label || ''}）${st.reason ? `，因为${st.reason}` : ''}。）`
+          if (st) return `（你现在心情 ${Number(st.value ?? 60)}/100（${st.label || ''}）。）`
         }
       } catch {}
       return ''
@@ -688,7 +688,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
 
   // 9 维驱动 → mood 单标量。mood 关闭时 nudge 自静默。
   // memo 里的【感受】喜/−喜（feelings.moodDelta ±10）会叠加在情绪表之上。
-  function nudgeMood(purpose, outcome, memo = null) {
+  function nudgeMood(purpose, outcome, memo = null, chatId = '') {
     if (outcome !== 'sent') return
     const m = moodOf()
     if (!m?.nudge) return
@@ -697,7 +697,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     const feel = Math.max(-10, Math.min(10, Number(memo?.feelings?.moodDelta) || 0))
     const total = delta + feel
     if (!total) return
-    try { m.nudge(total, `主动搭话：${String(purpose?.text || '').slice(0, 20)}`) } catch {}
+    try { m.nudge(total, `主动搭话：${String(purpose?.text || '').slice(0, 20)}`, chatId) } catch {}
   }
 
   // ---------- 追问（沿用旧 speakup 的「轻轻追一句」，不占今日次数） ----------

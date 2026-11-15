@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { nudgeMoodAfterSong } from '../src/modules/song/index.js'
 
 let studio
 let netease
@@ -266,4 +267,11 @@ test('翻唱失败那句话：清洗只留一句口语，[沉默] 和念了内�
   assert.equal(cleanFailLine('下载失败：Error: ENOENT /root/x.mp3，额度不够'), '')
   // 太长截到第一个句末
   assert.equal(cleanFailLine('今天嗓子不太行呀，这个调太高了，我唱不上去，等我想想办法再录一次好不好。要是还不行，我回头自己练两天，练好了再给你唱一遍试试'), '今天嗓子不太行呀，这个调太高了，我唱不上去，等我想想办法再录一次好不好。')
+})
+
+test('翻唱完成的心情原因带上当前聊天，避免原因在所有聊天里消失', () => {
+  const calls = []
+  nudgeMoodAfterSong({ nudge: (...args) => calls.push(args) }, '小幸运', 'group:12345')
+  assert.deepEqual(calls, [[8, '唱完了「小幸运」', 'group:12345']])
+  assert.doesNotThrow(() => nudgeMoodAfterSong(null, '小幸运', 'private:1'))
 })
