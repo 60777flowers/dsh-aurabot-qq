@@ -406,7 +406,7 @@ function correlation(a, b) {
 export function estimateChorusStart(pcm, { sampleRate = 8000, maxSec = 120, frameSec = 0.25 } = {}) {
   const envelope = pcmEnergyEnvelope(pcm, sampleRate, frameSec)
   const totalSec = envelope.length * frameSec
-  if (!(maxSec > 0) || !(totalSec > maxSec + 4)) return null
+  if (!(maxSec > 0) || !(totalSec > maxSec)) return null
   const secCount = Math.floor(totalSec)
   const energy = []
   for (let s = 0; s < secCount; s++) {
@@ -427,7 +427,7 @@ export function estimateChorusStart(pcm, { sampleRate = 8000, maxSec = 120, fram
   const med = at(0.5), p90 = at(0.9), maxEnergy = sorted[sorted.length - 1]
   if (!(maxEnergy > 0.005)) return null // 整首几乎是静音
   const threshold = med + (p90 - med) * 0.4
-  const minRun = Math.max(3, Math.min(20, Math.round(maxSec * 0.2)))
+  const minRun = Math.max(3, Math.min(12, Math.round(maxSec * 0.2)))
   const runs = []
   let runStart = -1, lastLoud = -1
   for (let i = 0; i < smooth.length; i++) {
@@ -532,7 +532,35 @@ export function songFailureReason(error) {
   return '这次翻唱没完成，详细原因请主人查看翻唱面板。'
 }
 
-export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, say, onSung, local }) {
+/**
+ * 截出要发的那一段（依赖可注入，测试不用真 ffmpeg/真音频）。
+ * auto 模式下先让 readPcm 读整首歌 PCM、分析副歌入口；分析失败/不可用回退全曲 30%。
+ * @returns {Promise<{file:string, cut:boolean, length:number}>}
+ */
+export async function cutFirstWith({
+  song, dir, clip = null, maxSec = 120, clipStart = 'auto',
+  probeDuration, readPcm, run, ffmpegPath, log,
+}) {
+  const dur = await probeDuration(song)
+  let chorusStart = null
+  if (!clip && clipStart !== 'head' && dur > maxSec) {
+    try {
+      const pcm = readPcm ? await readPcm(song) : null
+      chorusStart = pcm ? estimateChorusStart(pcm, { sampleRate: 8000, maxSec }) : null
+      if (Number.isFinite(chorusStart)) log?.info?.(`副歌定位：从第 ${chorusStart} 秒开始截（歌长 ${Math.round(dur)} 秒）`)
+    } catch (error) {
+      log?.debug?.('副歌定位分析失败：', error.message)
+      chorusStart = null
+    }
+  }
+  const w = clip ? selectedWindow(dur, clip) : clipWindow(dur, maxSec, clipStart, chorusStart)
+  if (!dur || (w.start === 0 && w.length >= dur)) return { file: song, cut: false, length: dur }
+  const out = join(dir, 'part.wav')
+  await run(ffmpegPath, ['-y', '-hide_banner', '-loglevel', 'error', '-ss', String(w.start), '-t', String(w.length), '-i', song, '-ar', '44100', out], { log })
+  return { file: out, cut: true, length: w.length }
+}
+
+export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, say, onSung, local, readPcm: readPcmInjected } = {}) {
   const cfg = () => getConfig().song
   const P = () => pathsOf(cfg().root || defaultRoot())
   const work = () => dataDir('songs')
@@ -826,6 +854,7 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, say,
     return new Promise((resolve) => {
       const chunks = []
       let total = 0
+      let stderr = ''
       const c = spawn(P().ffmpeg, ['-hide_banner', '-loglevel', 'error', '-i', file, '-vn', '-ac', '1', '-ar', String(sampleRate), '-f', 's16le', '-'], { windowsHide: true })
       // 分析只是锦上添花：ffmpeg 卡住 30 秒就放弃，按失败回退 30%
       const timer = setTimeout(() => { try { c.kill() } catch (error) {}; resolve(null) }, 30_000)
@@ -833,21 +862,15 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, say,
         // 正常一首歌几分钟也就几 MB；超过 64MB 不收了，避免异常文件把内存吃满
         if (total < 64 * 1024 * 1024) { chunks.push(buf); total += buf.length }
       })
+      // 必须消费 stderr：-loglevel error 也可能有输出，不读会把子进程管道塞满卡死
+      c.stderr.on('data', (buf) => { stderr = (stderr + buf.toString()).slice(-2000) })
       c.on('error', () => { clearTimeout(timer); resolve(null) })
-      c.on('exit', (code) => { clearTimeout(timer); resolve(code === 0 && total ? Buffer.concat(chunks) : null) })
+      c.on('exit', (code) => {
+        clearTimeout(timer)
+        if (code !== 0 && stderr) log?.debug?.('副歌定位读 PCM 失败：', stderr.split(/\r?\n/).filter(Boolean).slice(-2).join(' | '))
+        resolve(code === 0 && total ? Buffer.concat(chunks) : null)
+      })
     })
-  }
-
-  /** 分析整首歌的副歌入口；读 PCM / 分析失败都返回 null，调用方回退 30%。 */
-  async function analyzeChorusStart(file, durationSec, maxSec) {
-    try {
-      if (!(durationSec > maxSec)) return null
-      const pcm = await readPcm(file)
-      return pcm ? estimateChorusStart(pcm, { sampleRate: 8000, maxSec }) : null
-    } catch (error) {
-      log.debug('副歌定位分析失败：', error.message)
-      return null
-    }
   }
 
   /** 人声轨的平均音量（dB）；纯音乐分出来的人声几乎是静音。 */
@@ -966,19 +989,17 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, say,
   /** 先截出要发的那一段再处理：分离和换声都只算这一段，快一倍多。返回 {file, cut, length}。 */
   async function cutFirst(song, dir, clip) {
     const c = cfg()
-    const dur = await ffprobeDuration(song)
-    const maxSec = Number(c.maxVoiceSec) || 120
-    let chorusStart = null
-    if (!clip && c.clipStart !== 'head' && dur > maxSec) {
-      // 只看 auto：手动指定片段或「从头开始」都不做分析
-      chorusStart = await analyzeChorusStart(song, dur, maxSec)
-      if (Number.isFinite(chorusStart)) log.info(`副歌定位：从第 ${chorusStart} 秒开始截（歌长 ${Math.round(dur)} 秒）`)
-    }
-    const w = clip ? selectedWindow(dur, clip) : clipWindow(dur, maxSec, c.clipStart, chorusStart)
-    if (!dur || (w.start === 0 && w.length >= dur)) return { file: song, cut: false, length: dur }
-    const out = join(dir, 'part.wav')
-    await run(P().ffmpeg, ['-y', '-hide_banner', '-loglevel', 'error', '-ss', String(w.start), '-t', String(w.length), '-i', song, '-ar', '44100', out], { log })
-    return { file: out, cut: true, length: w.length }
+    const readPcmForAnalysis = typeof readPcmInjected === 'function' ? readPcmInjected : readPcm
+    return cutFirstWith({
+      song, dir, clip,
+      maxSec: Number(c.maxVoiceSec) || 120,
+      clipStart: c.clipStart,
+      probeDuration: ffprobeDuration,
+      readPcm: readPcmForAnalysis,
+      run,
+      ffmpegPath: P().ffmpeg,
+      log,
+    })
   }
 
   /** 截过的段落首尾加淡入淡出，听起来不突兀。 */
