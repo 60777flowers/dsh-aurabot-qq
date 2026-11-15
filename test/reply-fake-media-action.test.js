@@ -20,6 +20,12 @@ const FAKE_ACTIONS = [
   '（拍了张新照片）',
   '（刚刚拍了一张新的照片）',
   '（照片拍好了）',
+  '（图片发出来了）',
+  '（图片已发）',
+  '（我发图给你）',
+  '（照片拍给你了）',
+  '[图片发出]',
+  '[照片发你了]',
 ]
 
 test('整条只有假媒体动作：按沉默处理，一个字都不发', () => {
@@ -33,6 +39,7 @@ test('假媒体动作混在正文里：只剥动作短语，前后的话保留',
   assert.deepEqual(texts(parseReply('给你看看（图片发出）')), ['给你看看'])
   assert.deepEqual(texts(parseReply('（拍了一张新的）这张好看吗')), ['这张好看吗'])
   assert.deepEqual(texts(parseReply('（图片发出）|||这张好看')), ['这张好看'])
+  assert.deepEqual(texts(parseReply('[图片发出] 这张好看')), ['这张好看'])
 })
 
 test('一条里多个假动作一起出现也全部剥掉', () => {
@@ -46,14 +53,26 @@ test('cleanOutboundText 是共用出口：非 parseReply 路径也要剥', () =>
   assert.equal(cleanOutboundText('（照片发你了）这张'), '这张')
 })
 
-test('cleanOutboundSegments 跨文字段也按原文坐标剥干净，图片段保留', () => {
+test('cleanOutboundSegments 相邻文字段跨段剥干净，图片段保留', () => {
   const image = { type: 'image', data: { file: 'https://example.com/a.png' } }
   assert.deepEqual(cleanOutboundSegments([text('看图'), text('（图片发出）'), image]), [text('看图'), image])
   assert.deepEqual(cleanOutboundSegments([text('（图片'), text('发出）'), image]), [image])
 })
 
+test('cleanOutboundSegments 不跨 image/at 段拼括号，避免误删真实图文', () => {
+  const image = { type: 'image', data: { file: 'https://example.com/a.png' } }
+  const at = { type: 'at', data: { qq: '123456' } }
+  const left = text('（图片')
+  const right = text('发出）')
+  assert.deepEqual(cleanOutboundSegments([left, image, right]), [left, image, right])
+  assert.deepEqual(cleanOutboundSegments([left, at, right]), [left, at, right])
+})
+
 test('普通括号动作、颜文字和 [图片] 占位不误伤', () => {
-  for (const value of ['（笑）', '（凑近看了看）', '（揉了揉眼睛）', '（￣▽￣）', '(๑•̀ㅂ•́)و✧', '（图片）', '（拍照）']) {
+  for (const value of [
+    '（笑）', '（凑近看了看）', '（揉了揉眼睛）', '（￣▽￣）', '(๑•̀ㅂ•́)و✧', '（图片）', '（拍照）',
+    '（照了）', '（拍好了）', '（拍到了）', '（拍完了）',
+  ]) {
     assert.deepEqual(texts(parseReply(value)), [value], value)
   }
   assert.deepEqual(texts(parseReply('[图片] 这张好看')), ['[图片] 这张好看'])
@@ -66,8 +85,17 @@ test('代码示例里的假动作写法保留（行内代码与围栏都算）',
   assert.equal(cleanOutboundText(fence), fence)
 })
 
-test('带上下文的普通叙述不整段误删', () => {
-  const value = '（她拍了一张新的照片放在桌上）'
-  assert.deepEqual(texts(parseReply(value)), [value])
-  assert.equal(cleanOutboundText(value), value)
+test('带上下文的普通叙述和工单点名的两个例子不误删', () => {
+  for (const value of [
+    '（图片发你看）',
+    '（拍了一张新的照片放在桌上）',
+    '（她拍了一张新的照片放在桌上）',
+  ]) {
+    assert.deepEqual(texts(parseReply(value)), [value], value)
+    assert.equal(cleanOutboundText(value), value, value)
+  }
+})
+
+test('parseReply 里代码示例保留字面量（代码块保护的产品语义）', () => {
+  assert.deepEqual(texts(parseReply('```text\n（图片发出）\n```')), ['（图片发出）'])
 })

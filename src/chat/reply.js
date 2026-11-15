@@ -67,14 +67,16 @@ export function stripMarkdown(text) {
 const FAKE_MEDIA_NOUN = '(?:图片|照片|相片|自拍照?|截图|图)'
 const FAKE_MEDIA_TAIL = '[\\s，。！!？?、~～…]*$'
 const FAKE_MEDIA_SEND = [
-  // 图片发出 / 图片已发出 / 图片发送成功 / 照片发你了 / 图片给你发过去了 / 图发你了
+  // 图片发出 / 图片已发出 / 图片发出来了 / 图片发送成功 / 照片发你了 / 图片给你发过去了 / 图发你了
   new RegExp(
     '^(?:我|这边|现在)?(?:已经|已|刚刚|刚才|刚|这就|就|先)?' + FAKE_MEDIA_NOUN + '(?:我)?' +
     '(?:已经|已|刚刚|刚才|刚)?(?:给你)?' +
     '(?:发出(?:出去|过去|给|你|给你)?(?:了|啦|哦|喔|呀|哈|呢)?(?:成功|完毕)?' +
+    '|(?:发|传)出来(?:了|啦|哦|喔|呀|哈|呢)?(?:成功|完毕)?' +
     '|发送(?:出去|过去|给|你|给你)?(?:了|啦|哦|喔|呀|哈|呢|成功|完毕)?' +
     '|(?:发|传)(?:出去|过去|给你|给|你)(?:了|啦|哦|喔|呀|哈|呢)?(?:成功|完毕)?' +
-    '|(?:发|传)(?:了|啦|哦|喔|呀|哈|呢)(?:出去|过去)?(?:成功|完毕)?)' + FAKE_MEDIA_TAIL,
+    '|(?:发|传)(?:了|啦|哦|喔|呀|哈|呢)(?:出去|过去)?(?:成功|完毕)?' +
+    '|(?:发|传)(?:了|啦|哦|喔|呀|哈|呢)?(?:成功|完毕)?)' + FAKE_MEDIA_TAIL,
   ),
   // 发了图 / 发了一张新图 / 发图了 / 传图了
   new RegExp(
@@ -85,20 +87,42 @@ const FAKE_MEDIA_SEND = [
     '^(?:我)?(?:已经|已|刚刚|刚才|刚|这就|就)?(?:给你)?(?:发送|发出|发|传)(?:出去|过去)?' +
     '(?:一?[张个])?(?:新(?:的)?)?' + FAKE_MEDIA_NOUN + '(?:了|啦|哦|喔|呀)' + FAKE_MEDIA_TAIL,
   ),
+  // 我发图给你 / 发照片给你了
+  new RegExp(
+    '^(?:我)?(?:已经|已|刚刚|刚才|刚|这就|就|先)?(?:给你)?(?:发送|发出|发|传)(?:出去|过去)?' +
+    '(?:了|过)?(?:一?[张个])?(?:新(?:的)?)?' + FAKE_MEDIA_NOUN +
+    '(?:给你|给|你)(?:了|啦|哦|喔|呀|哈|呢)?' + FAKE_MEDIA_TAIL,
+  ),
 ]
-// 拍了一张新的 / 拍了张新照片 / 刚拍了一张 / 拍好了 / 拍照了 / 自拍一张 / 拍了张照片给你
+// 拍了一张新的 / 拍了张新照片 / 刚拍了一张 / 拍照了 / 拍了张照片给你 / 照了张照片
+// 注意：裸「拍好了」「拍到了」「拍完了」「照了」没有量词/媒体名词，按正常叙述保留。
 const FAKE_PHOTO_ACTION = new RegExp(
-  '^(?:我)?(?:已经|已|刚刚|刚才|刚|又|才|这就|就|先)?(?:拍照|自拍|拍|照)' +
-  '(?:(?:了|好|到|完)(?:一?[张个])?|一?[张个])(?:新(?:的)?)?(?:的)?(?:照片|相片|自拍|图片|图)?' +
-  '(?:给你)?(?:了|啦|哦|喔|呀)?' + FAKE_MEDIA_TAIL,
+  '^(?:我)?(?:已经|已|刚刚|刚才|刚|又|才|这就|就|先)?' +
+  '(?:' +
+    '(?:拍照|自拍)(?:了|啦|哦|喔|呀|哈|呢)' +
+    '|拍(?:(?:了|过)(?:一?[张个])?(?:新(?:的)?)?(?:的)?' + FAKE_MEDIA_NOUN + '?' +
+      '|(?:一?[张个])(?:新(?:的)?)?(?:的)?' + FAKE_MEDIA_NOUN + '?' +
+      '|(?:新(?:的)?)?(?:的)?' + FAKE_MEDIA_NOUN + ')' +
+    '|照(?:(?:了|好|到|完)(?:一?[张个])?(?:新(?:的)?)?(?:的)?)?' + FAKE_MEDIA_NOUN +
+  ')' +
+  '(?:给你)?(?:了|啦|哦|喔|呀|哈|呢)?' + FAKE_MEDIA_TAIL,
 )
 // 照片拍好了 / 图片已经拍完了
 const FAKE_PHOTO_DONE = new RegExp(
   '^(?:这张|新的)?' + FAKE_MEDIA_NOUN + '(?:已经|已)?拍(?:好|完|到|了)(?:了|啦|哦|呀)?' + FAKE_MEDIA_TAIL,
 )
-const FAKE_MEDIA_PAREN = /[（(【]\s*([^（）()【】\n]{1,40}?)\s*[）)】]/gu
+// 照片拍给你了 / 图片拍给你了
+const FAKE_PHOTO_GIVE = new RegExp(
+  '^(?:这张|新的)?' + FAKE_MEDIA_NOUN + '(?:已经|已)?拍(?:给你|给|你)(?:了|啦|哦|喔|呀|哈|呢)?' + FAKE_MEDIA_TAIL,
+)
+// 圆括号/中文方括号与 ASCII 方括号分开配对：不能把「（图片发出]」这种混括号当动作，
+// 也不能漏掉模型常写的 [图片发出] / [照片发你了]；[图片] 仍是占位，不在动作词表里所以保留。
+const FAKE_MEDIA_BRACKETS = [
+  /[（(【]\s*([^（）()【】\n]{1,40}?)\s*[）)】]/gu,
+  /\[([^\[\]\n]{1,40}?)\]/gu,
+]
 const isFakeMediaPhrase = (value) => FAKE_MEDIA_SEND.some((re) => re.test(value)) ||
-  FAKE_PHOTO_ACTION.test(value) || FAKE_PHOTO_DONE.test(value)
+  FAKE_PHOTO_ACTION.test(value) || FAKE_PHOTO_DONE.test(value) || FAKE_PHOTO_GIVE.test(value)
 
 /** 假媒体动作在原文里的删除区间；代码块/行内代码中的示例保持原样。 */
 function fakeMediaActionRanges(raw) {
@@ -107,12 +131,14 @@ function fakeMediaActionRanges(raw) {
   // 代码围栏（``` / ~~~）和行内代码里的示例原样保留。
   const code = [...codeRanges(text), ...fenceRanges(text)]
   const ranges = []
-  for (const match of text.matchAll(FAKE_MEDIA_PAREN)) {
-    const start = match.index
-    const end = start + match[0].length
-    if (insideCode(code, start, end)) continue
-    if (!isFakeMediaPhrase(match[1].trim())) continue
-    ranges.push({ start, end })
+  for (const pattern of FAKE_MEDIA_BRACKETS) {
+    for (const match of text.matchAll(pattern)) {
+      const start = match.index
+      const end = start + match[0].length
+      if (insideCode(code, start, end)) continue
+      if (!isFakeMediaPhrase(match[1].trim())) continue
+      ranges.push({ start, end })
+    }
   }
   return ranges
 }
@@ -580,18 +606,32 @@ export function capOutboundSegments (message, max = MAX_OUTBOUND_CHARS) {
 export function cleanOutboundSegments(message, options) {
   const texts = message.filter((seg) => seg.type === 'text')
   if (!texts.length) return message
-  const raw = texts.map((seg) => String(seg.data?.text || '')).join('')
+  // 相邻 text 段直接拼；中间隔着 image / at / reply 时插入换行当段边界。
+  // 假媒体动作的括号正则不跨换行，所以「（图片」+ 真图 +「发出）」不会被拼成假动作；
+  // 工具调用/提示词等其它清洗仍允许跨段识别（它们本来就可能在多个 text 段里被拆开）。
+  let raw = ''
+  const spans = []
+  let prevText = false
+  for (const seg of message) {
+    if (seg.type !== 'text') { prevText = false; continue }
+    if (raw && !prevText) raw += '\n'
+    const start = raw.length
+    const value = String(seg.data?.text || '')
+    raw += value
+    spans.push({ seg, start, end: start + value.length })
+    prevText = true
+  }
   let ranges
   const clean = cleanOutboundText(raw, { ...options, onRanges: (value) => { ranges = value } })
   if (clean === raw) return message
-  let offset = 0
-  const result = message.flatMap((seg) => {
-    if (seg.type !== 'text') return [seg]
-    const start = offset
-    offset += String(seg.data?.text || '').length
-    const value = clean ? withoutToolRanges(raw, ranges, start, offset) : ''
-    return value ? [{ ...seg, data: { ...seg.data, text: value } }] : []
-  })
+  const result = []
+  let spanIndex = 0
+  for (const seg of message) {
+    if (seg.type !== 'text') { result.push(seg); continue }
+    const span = spans[spanIndex++]
+    const value = clean ? withoutToolRanges(raw, ranges, span.start, span.end) : ''
+    if (value) result.push({ ...seg, data: { ...seg.data, text: value } })
+  }
   // 只剩引用和 @ 不能单独发，尤其是自动 @ 后面只跟着一个结束标记时。
   return result.some((seg) => seg.type === 'text' ? seg.data.text.trim() : !['reply', 'at'].includes(seg.type)) ? result : []
 }
