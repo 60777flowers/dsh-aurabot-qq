@@ -490,20 +490,19 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-deep:#9cc4f5;--ab-sea:#6
 .ab-fold:hover{color:var(--ab-text)}
 .ab-fold-arrow{width:12px;display:inline-block;flex:0 0 12px}
 /* token 用量面板：指标卡 + 小标签 + 数字右对齐，别糊成一坨 */
-.ab-utiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
-.ab-utile{background:var(--ab-foam);border:1px solid var(--ab-line);border-radius:var(--ab-radius);padding:10px 12px}
-.ab-utile .k{font-size:11.5px;color:var(--ab-sub);letter-spacing:.02em}
-.ab-utile .v{font-size:23px;font-weight:700;color:var(--ab-deep);line-height:1.25;font-variant-numeric:tabular-nums}
-.ab-utile .s{font-size:11.5px;color:var(--ab-sub);margin-top:2px;font-variant-numeric:tabular-nums}
-.ab-utile.hi{border-color:rgba(30,120,200,.35);background:linear-gradient(160deg,rgba(30,120,200,.10),transparent 70%)}
-.ab-utile.pick{cursor:pointer;transition:border-color .15s,transform .15s}
-.ab-utile.pick:hover{border-color:rgba(30,120,200,.45);transform:translateY(-1px)}
-.ab-utile.pick:focus-visible{outline:2px solid var(--ab-sea);outline-offset:2px}
-.ab-utile-cur{font-size:11px;color:var(--ab-sea);font-weight:600}
-.ab-upills{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
-.ab-upill{background:var(--ab-foam);border:1px solid var(--ab-line);border-radius:999px;padding:3px 10px;font-size:11.5px;color:var(--ab-sub);font-variant-numeric:tabular-nums}
-.ab-upill b{color:var(--ab-deep);font-weight:600}
-.ab-upill.warn{background:rgba(191,135,0,.08);border-color:rgba(191,135,0,.25);color:var(--ab-text)}
+/* Usage is read-only: one entry card, detailed tables scroll inside the card on phones. */
+.ab-usage{min-width:0}
+.ab-usage>.ab-card{min-width:0;max-width:100%;box-sizing:border-box}
+.ab-usage-summary{display:flex;flex-direction:column;align-items:flex-start;gap:8px;text-align:left;color:var(--ab-text);font:inherit;cursor:pointer;width:100%}
+.ab-usage-summary:hover{border-color:var(--ab-sea)}
+.ab-usage-summary:focus-visible{outline:2px solid var(--ab-sea);outline-offset:2px}
+.ab-usage-number{font-size:30px;line-height:1.2;color:var(--ab-deep);font-variant-numeric:tabular-nums}
+.ab-usage-table{max-width:100%;overflow-x:auto;margin-top:12px}
+.ab-usage-table table{min-width:680px}
+.ab-usage-table th,.ab-usage-table td{white-space:nowrap}
+.ab-usage-table td:first-child{white-space:normal;min-width:150px;max-width:280px;overflow-wrap:anywhere}
+.ab-usage summary{cursor:pointer}
+
 .ab-table.num th:not(:first-child),.ab-table.num td:not(:first-child){text-align:right}
 .ab-table.num td:not(:first-child){font-variant-numeric:tabular-nums}
 .ab-table.num .money{font-weight:600;color:var(--ab-deep)}
@@ -1093,102 +1092,76 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h(Btn, { small: true, kind: 'primary', onClick: claim }, '认领')))
     }
 
+    function UsageSummary({ sessions = {} }) {
+      const [report, setReport] = useState(null)
+      const [open, setOpen] = useState(false)
+      const [range, setRange] = useState('all')
+      const [busy, setBusy] = useState(false)
+      const [failed, setFailed] = useState(false)
+      const request = useRef(null)
+      const load = useCallback((selected) => {
+        request.current?.abort()
+        const controller = new AbortController()
+        request.current = controller
+        setBusy(true); setFailed(false)
+        fetch(API + '/usage?range=' + selected, { signal: controller.signal, cache: 'no-store' })
+          .then(r => { if (!r.ok) throw new Error(); return r.json() })
+          .then(r => { if (!r || r.ok === false || !r.current || !r.ranges) throw new Error(); if (!controller.signal.aborted) setReport(r) })
+          .catch(() => { if (!controller.signal.aborted) setFailed(true) })
+          .finally(() => { if (!controller.signal.aborted) setBusy(false) })
+      }, [])
+      useEffect(() => { load(range); return () => request.current?.abort() }, [range, load])
+      const exact = n => Number(n || 0).toLocaleString('zh-CN')
+      const hit = r => r?.promptTokens ? (r.cacheHitRate * 100).toFixed(2) + '%' : '—'
+      const money = r => typeof r?.cost === 'number' ? ' · 约 ' + fmtCost(r.cost, report.currency) : ''
+      const total = report?.ranges.all
+      const label = k => {
+        const title = sessions[k]?.title
+        return title ? title + ' · ' + chatLabel(k) : chatLabel(k)
+      }
+      const table = (rows, nameOf) => {
+        if (!rows?.length) return h('p', { className: 'ab-muted' }, '这段时间没有已记录的用量。')
+        const priced = rows.some(r => typeof r.cost === 'number')
+        return h('div', { className: 'ab-usage-table', tabIndex: 0, 'aria-label': '用量明细，可横向滚动' },
+          h('table', { className: 'ab-table num' },
+            h('thead', null, h('tr', null, ['对话 / 来源', '已上报调用', '输入 Tokens', '输出 Tokens', '合计 Tokens', '缓存命中率', ...(priced ? ['估算费用'] : [])].map(x => h('th', { key: x }, x)))),
+            h('tbody', null, rows.map(r => h('tr', { key: r.key },
+              h('td', null, nameOf(r.key)), h('td', null, exact(r.runs)),
+              h('td', null, exact(r.promptTokens)), h('td', null, exact(r.completionTokens)),
+              h('td', null, exact(r.totalTokens)), h('td', null, hit(r)),
+              priced ? h('td', null, typeof r.cost === 'number' ? fmtCost(r.cost, report.currency) : '—') : null)))))
+      }
+      const cur = report?.current
+      return h('div', { className: 'ab-grid ab-usage' },
+        h('button', { type: 'button', className: 'ab-card ab-usage-summary', 'aria-expanded': open, onClick: () => { setOpen(!open); if (!open) load(range) } },
+          h('span', { className: 'ab-section-title' }, 'Tokens 用量'),
+          h('strong', { className: 'ab-usage-number' }, total ? exact(total.totalTokens) : busy ? '读取中…' : '暂时无法读取'),
+          h('span', null, '已记录合计 · 输入缓存命中率 ' + hit(total) + money(total)),
+          h('span', { className: 'ab-muted' }, open ? '收起明细 ↑' : '查看各对话用量 →')),
+        open ? h(Card, { title: '用量明细', right: h(Btn, { small: true, onClick: () => load(range), disabled: busy }, busy ? '读取中…' : '刷新'),
+          desc: '只统计已上报的用量；输入包含缓存读取和写入。命中率按输入 Token 数计算，不是请求次数。' },
+          h('div', { className: 'ab-flex', style: { flexWrap: 'wrap', gap: 6 } },
+            [['all','已记录（近 90 天）'],['today','今天'],['yesterday','昨天'],['7','近 7 天'],['30','近 30 天']].map(([value,name]) =>
+              h('button', { key: value, type: 'button', className: cx('ab-btn',range === value && 'primary'), 'aria-pressed': range === value, onClick: () => setRange(value) }, name))),
+          failed ? h('div', { className: 'ab-note warn', role: 'alert' }, '暂时没能读取最新用量，请点刷新重试。' + (report ? '当前仍显示上次结果。' : '')) : null,
+          report?.writeFailed ? h('div', { className: 'ab-note warn', role: 'alert' }, '用量暂未保存成功；重启可能丢失最近的记录。') : null,
+          busy || report?.range !== range ? h('p', { className: 'ab-muted', role: 'status' }, busy ? '正在读取所选时段…' : '请刷新以读取所选时段。') : cur ? h(Fragment, null,
+            h('div', { className: 'ab-note' }, '合计 ' + exact(cur.totalTokens) + ' Tokens · 命中率 ' + hit(cur) + money(cur)),
+            table(cur.byChat, label),
+            cur.background?.runs ? h('div', { className: 'ab-note' }, '未归入具体对话的后台用量：' + exact(cur.background.totalTokens) + ' Tokens · 命中率 ' + hit(cur.background) + money(cur.background) + '。已包含在合计中。') : null,
+            h('details', { style: { marginTop: 12 } }, h('summary', null, '按来源和模型查看'),
+              table(cur.byModule, k => k), table(cur.byModel, k => k))) : null,
+          h('p', { className: 'ab-muted ab-small' },
+            '按北京时间分日，保留近 90 天的数字记录。没有上报用量的调用、搜索或生图等独立 API 费用不计入。',
+            report?.startedAt ? ' 后台用量从 ' + new Date(report.startedAt).toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' }) + ' 起记录；更早的未记录用量无法补算。' : '',
+            ' 没有可靠渠道价格时不显示金额；显示的金额也仅供参考，以账单为准。')) : null)
+    }
+
     function Overview({ st, toast, go }) {
-      const [usage, setUsage] = useState(null)
-      const [usageOpen, setUsageOpen] = useState(false)
-      // 下面三张明细表看哪个区间：today / yesterday / 7 / 30（点指标卡切换）
-      const [usageRange, setUsageRange] = useState('7')
-      const loadUsage = (range) => get('/usage?range=' + (range || usageRange)).then((r) => { if (r && r.ok !== false) setUsage(r) }).catch(() => {})
-      useEffect(() => { loadUsage() }, [])
       const cfg = st.config
       const s = st.stats || {}
       const conn = st.onebot.state === 'connected'
       const quick = (p, body) => async () => { const r = await post(p, body); toast(r.message || (r.ok ? '好了' : '没成功')) }
-      const usageToday = usage && usage.ranges ? usage.ranges.today : null
-      // 维度小表：名称在左，其余数字右对齐；金额加粗提一档
-      const dimTable = (list, nameOf) => (list && list.length
-        ? h('table', { className: 'ab-table num' },
-          h('thead', null, h('tr', null, ['名称', '调用', '合计 tokens', '缓存命中率', '花费'].map((t) => h('th', { key: t }, t)))),
-          h('tbody', null, list.map((x) => h('tr', { key: x.key },
-            h('td', null, nameOf(x.key)),
-            h('td', null, x.runs),
-            h('td', null, fmtTokens(x.totalTokens)),
-            h('td', null, x.promptTokens ? Math.round(x.cacheHitRate * 100) + '%' : '–'),
-            h('td', { className: 'money' }, fmtCost(x.cost, usage.currency))))))
-        : h('div', { className: 'ab-muted ab-small' }, '这段时间没有记录。'))
-      const openUsage = () => {
-        const next = !usageOpen
-        setUsageOpen(next)
-        if (next) loadUsage()
-      }
-      const cur = usage && usage.current
-      const RANGE_LABEL = { today: '今日', yesterday: '昨日', 7: '近 7 天', 30: '近 30 天' }
-      // 点指标卡 = 换下面三张表看的区间（range 参数跟后端对齐：today / yesterday / 7 / 30）
-      const pickRange = (param) => (e) => {
-        if (e && e.stopPropagation) e.stopPropagation()
-        if (usageRange === param) return
-        setUsageRange(param)
-        loadUsage(param)
-      }
-      // 四个区间做成指标卡：大字是 tokens，下面一行是花费 + 调用次数 + 命中率；当前选中的那张高亮
-      const usageTile = ([label, key, param]) => {
-        const r = usage.ranges[key]
-        const active = usageRange === param
-        return h('div', {
-          key, role: 'button', tabIndex: 0,
-          className: cx('ab-utile', 'pick', active && 'hi'),
-          title: active ? '下面三张表就是在看' + label : '点一下，下面三张表换成' + label,
-          onClick: pickRange(param),
-          onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pickRange(param)(e) } },
-        },
-          h('div', { className: 'k' }, label, active ? h('span', { className: 'ab-utile-cur' }, ' · 明细中') : null),
-          h('div', { className: 'v' }, fmtTokens(r.totalTokens)),
-          h('div', { className: 's' }, fmtCost(r.cost, usage.currency) + ' · ' + r.runs + ' 次'
-            + (r.promptTokens ? ' · 命中 ' + Math.round(r.cacheHitRate * 100) + '%' : '')))
-      }
-      const usagePanel = !usageOpen ? null
-        : usage && usage.ranges ? h(Card, {
-        title: 'token 用量与花费',
-        right: h(Btn, { small: true, kind: 'ghost', onClick: () => setUsageOpen(false) }, '收起'),
-        desc: '她每次问模型（聊天回合 + 后台的记忆 / 日记 / 心情 / 目的引擎等）都记一行：时间、哪个聊天、哪个模型、输入 / 缓存命中 / 输出。只记数字不记聊天内容。花费按价目表估算：DeepSeek 用官方价（空闲时段表价，高峰时段=北京时间周一~周五 9:00-12:00、14:00-18:00 翻倍，周末和节假日算空闲），其它厂商按 LiteLLM 价目表 ×7.2 折成人民币。认不出的模型会单列成「未定价」，可以在 config.usage.pricing 里补价。',
-      },
-        h('div', { className: 'ab-utiles' },
-          usageTile(['今日', 'today', 'today']),
-          usageTile(['昨日', 'yesterday', 'yesterday']),
-          usageTile(['近 7 天', 'last7', '7']),
-          usageTile(['近 30 天', 'last30', '30'])),
-        cur
-          ? h('div', { className: 'ab-upills' },
-            h('span', { className: 'ab-upill' }, '新输入 ', h('b', null, fmtCost(cur.freshCost, usage.currency))),
-            h('span', { className: 'ab-upill' }, '缓存命中 ', h('b', null, fmtCost(cur.cachedCost, usage.currency))),
-            h('span', { className: 'ab-upill' }, '输出 ', h('b', null, fmtCost(cur.outputCost, usage.currency))),
-            h('span', { className: cx('ab-upill', usage.peak && 'warn') },
-              '峰时占比 ', h('b', null, Math.round((cur.peakRatio || 0) * 100) + '%'),
-              usage.peak ? '（现在高峰价）' : '（现在空闲价）'),
-            cur.unpricedCalls
-              ? h('span', { className: 'ab-upill warn' }, '未定价 ', h('b', null, cur.unpricedCalls + ' 次'), ' 不算花费')
-              : null,
-            cur.assumedCalls
-              ? h('span', { className: 'ab-upill' }, '含 ', h('b', null, cur.assumedCalls + ' 次'), ' 旧数据按 DeepSeek flash 价估')
-              : null)
-          : null,
-        cur ? h('div', null,
-          h('div', { className: 'ab-section-title' }, '按模块（' + RANGE_LABEL[usageRange] + '）'),
-          dimTable(cur.byModule, (k) => k),
-          h('div', { className: 'ab-section-title' }, '按聊天（' + RANGE_LABEL[usageRange] + ' · 哪个群 / 哪个私聊花得多）'),
-          dimTable(cur.byChat, chatLabel),
-          h('div', { className: 'ab-section-title' }, '按模型（' + RANGE_LABEL[usageRange] + '）'),
-          dimTable(cur.byModel, (k) => k || '（跟随默认）')) : null,
-        cur && cur.unpricedCalls
-          ? h('div', { className: 'ab-note warn', style: { marginTop: 12 } },
-            '有 ' + cur.unpricedCalls + ' 次调用没算进花费（' + fmtTokens(cur.unpricedTokens) + ' tokens）：'
-            + (cur.unpricedModels || []).map((m) => m.model).join('、')
-            + '。这些模型价格表里没有，在 config.usage.pricing 里加一条就会算进去。')
-          : null,
-        h('div', { className: 'ab-muted ab-small', style: { marginTop: 12 } },
-          '数据保留 ' + (usage.days || 90) + ' 天；聊天回合的 token 由 DSH 会话上报，后台任务由插件自己记。'))
-        : h(Card, { title: 'token 用量与花费', right: h(Btn, { small: true, kind: 'ghost', onClick: () => setUsageOpen(false) }, '收起') },
-          h('div', { className: 'ab-muted ab-small' }, '还没读到用量数据…'))
       return h('div', { className: 'ab-grid' },
         h(UpdateNotes, { st, toast }),
         h(ClaimBanner, { st, toast }),
@@ -1205,18 +1178,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         st.outbox && st.outbox.count ? h('div', { className: 'ab-note warn' }, `网关还没就绪：已有 ${st.outbox.count} 条消息排队，连接后会自动补发。`) : null,
         h('div', { className: 'ab-grid ab-g4' },
           [['今天收到', s.received, '📥'], ['今天发出', s.sent, '📤'], ['语音条', s.voice, '🎙️'], ['表情包', s.stickers, '😺']].map(([l, n, ic]) => h('div', { key: l, className: 'ab-card ab-stat' }, h('span', { className: 'ic', 'aria-hidden': true }, ic), h('div', { className: 'n' }, n || 0), h('div', { className: 'l' }, l))),
-          h('div', {
-            key: 'token', className: 'ab-card ab-stat', role: 'button', tabIndex: 0,
-            style: { cursor: 'pointer' },
-            title: '点开看今日 / 昨日 / 近 7 天 / 近 30 天的 token 用量和各模块花费',
-            onClick: openUsage,
-            onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openUsage() } },
-          },
-            h('span', { className: 'ic', 'aria-hidden': true }, '💰'),
-            h('div', { className: 'n' }, usageToday ? fmtTokens(usageToday.totalTokens ?? usageToday.total ?? 0) : '–'),
-            h('div', { className: 'l' }, '今日 token' + (usageToday ? ' · ' + fmtCost(usageToday.cost, usage.currency) : '（点开看明细）') + (usageOpen ? ' · 收起' : ' · 展开'))),
         ),
-        usagePanel,
+        h(UsageSummary, { sessions: st.sessions }),
         h('div', { className: 'ab-grid ab-g2' },
           h(Card, { title: 'ta现在', desc: '心情会随聊天起伏，过一阵子慢慢回到平常。' },
             h('div', { className: 'ab-flex', style: { marginBottom: 8 } }, h('b', null, st.mood.label), h('span', { className: 'ab-muted' }, st.mood.value + ' / 100')),

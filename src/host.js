@@ -34,7 +34,7 @@ import { createMediaAccess } from './core/media.js'
 import { buildFaceIndex } from './chat/faces.js'
 import { FACE_TABLE } from './chat/face-table.js'
 import { dataDir, ensureDir } from './core/store.js'
-import { initUsage, usageReport } from './core/usage.js'
+import { initUsage, usageReport, closeUsage } from './core/usage.js'
 import { createUpdateChecker, changelogSection, hostEnv, updatePlan, repoOf } from './core/update.js'
 import { parseCommand, runCommand, createMutes, commandList } from './chat/commands.js'
 import { isOwner, groupResponseMode } from './chat/access.js'
@@ -188,7 +188,7 @@ export function apply(ctx) {
   secrets()
   seedPersonas()
   // token 用量与花费（面板「概览」）：价格表可以在 config.usage.pricing 里覆盖
-  initUsage(cfg.usage?.pricing, cfg.cost?.offPeakHolidays)
+  initUsage(cfg.usage?.pricing)
 
   // ---------- 人格与规则：通过提示词变量注入到 Aurabot 的两个 preset ----------
   const variable = (n, fn) => ctx.effect(() => ctx.systemPrompt.variable(n, (...args) => captureSystemPrompt(n, cleanText(fn(...args)))), `aurabot: 变量 ${n}`)
@@ -1161,6 +1161,7 @@ export function apply(ctx) {
     dangerGuard?.dispose()
     approvalRelay?.dispose()
     hub.dispose()
+    closeUsage()
     bridge.dispose()
     mods.dispose()
     onebot.stop()
