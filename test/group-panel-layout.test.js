@@ -35,14 +35,14 @@ test('按群设置包含仅旁听的群，添加和切换选中项不会开放�
 test('旁听只改目标名单；响应模式仍使用原有两项配置，不影响接话和人格', () => {
   const p = panel(), before = structuredClone(p.draft)
   let tree = p.render()
-  find(tree, n => n.props.title === `群 ${G} 非白名单时旁听`).props.onChange(true)
+  find(tree, n => n.props.title === `群 ${G} 不响应时仍旁听`).props.onChange(true)
   assert.deepEqual(p.draft.memory.passiveGroups, [P, G])
   assert.deepEqual(p.draft.allow, before.allow); assert.deepEqual(p.draft.group, before.group)
   tree = p.render(); find(tree, n => n.props.ariaLabel === `群 ${G} 响应模式`).props.onChange('modules')
   assert.deepEqual(p.draft.group.moduleOnlyGroups, [G])
   assert.deepEqual(p.draft.group.overrides, before.group.overrides)
   assert.deepEqual(p.draft.persona, before.persona)
-  tree = p.render(); find(tree, n => n.props.title === `群 ${G} 非白名单时旁听`).props.onChange(false)
+  tree = p.render(); find(tree, n => n.props.title === `群 ${G} 不响应时仍旁听`).props.onChange(false)
   assert.deepEqual(p.draft.memory.passiveGroups, [P]); assert.deepEqual(p.draft.allow, before.allow)
 })
 
@@ -66,7 +66,7 @@ test('页面默认展示按群设置，分区切换不修改配置，旧入口�
     find(tree, n => n.type === 'button' && text(n) === label).props.onClick(); tree = p.render(p.Group)
   }
   assert.deepEqual(p.draft, before)
-  assert.match(source, /发言与旁听设置/)
+  assert.match(source, /打开按群设置/)
   assert.match(source, /group: '群聊 发言 白名单 仅模块 主动 窗口 插话 旁听 静默 合并 不回应 不理 屏蔽 黑名单'/)
   assert.match(source, /JSON.stringify\(draft.allow\?\.groups\) !== JSON.stringify\(cfg.allow\?\.groups\)/)
 })

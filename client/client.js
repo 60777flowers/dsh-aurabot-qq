@@ -2109,11 +2109,15 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const id = input.trim()
       const groups = st.config.allow.groups
       return h('div', { className: 'ab-grid' },
-        h(Card, { title: '群白名单', right: h(Btn, { small: true, onClick: () => go('group') }, '发言与旁听设置'), desc: '机器人只在白名单中的群聊响应消息。仅模块群不会触发 AI 接话；发言和旁听可在「按群设置」一起调整。' },
-          h('div', { className: 'ab-flex' },
-            h('input', { className: 'ab-input', 'aria-label': '群号', placeholder: '输入群号', inputMode: 'numeric', value: input, onChange: (e) => setInput(e.target.value) }),
-            h(Btn, { kind: 'primary', disabled: busy || !/^\d{5,}$/.test(id) || groups.includes(id), onClick: async () => { if (await apply(id, 'group', { chat: true })) setInput('') } }, '添加群聊')),
-          groups.map((qq) => h(Row, { key: qq, label: qq, hint: (st.config.group.moduleOnlyGroups || []).includes(qq) ? '仅模块' : '允许 AI 聊天' }, h(Btn, { small: true, disabled: busy, onClick: () => apply(qq, 'group', { chat: false }) }, '移除'))),
+        h(Card, { title: '群消息设置', desc: '选一个群，设置是否聊天、仅用模块，以及旁听。无需另外添加白名单。' },
+          h(Btn, { kind: 'primary', onClick: () => go('group') }, '打开按群设置'),
+          h('details', { style: { marginTop: 16 } },
+            h('summary', { style: { cursor: 'pointer' } }, '直接编辑群白名单'),
+            h('p', { className: 'ab-muted ab-small' }, '这里仅改名单，操作立即生效。新群默认允许 AI 聊天；已有的「仅模块」限制保留。'),
+            h('div', { className: 'ab-flex', style: { flexWrap: 'wrap' } },
+              h('input', { className: 'ab-input', 'aria-label': '群号', placeholder: '输入群号', inputMode: 'numeric', value: input, onChange: (e) => setInput(e.target.value) }),
+              h(Btn, { disabled: busy || !/^\d{5,}$/.test(id) || groups.includes(id), onClick: async () => { if (await apply(id, 'group', { chat: true })) setInput('') } }, '添加群聊')),
+            groups.map((qq) => h(Row, { key: qq, label: qq, hint: (st.config.group.moduleOnlyGroups || []).includes(qq) ? '仅模块' : '允许 AI 聊天' }, h(Btn, { small: true, disabled: busy, onClick: () => apply(qq, 'group', { chat: false }) }, '移除')))),
         ),
         modOn(st, 'group-admin') ? h(GroupRoles, null) : null,
       )
@@ -2254,7 +2258,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             info && info.titles ? h('div', { className: 'ab-psec-add', style: { marginTop: 10 } },
               info.titles.length
                 ? info.titles.slice(0, 30).map((t) => h('button', { key: t.title, type: 'button', className: cx('ab-chip', t.title === tf.title.trim() && 'on'), title: t.members.map((m) => m.name).join('、'), onClick: () => set({ title: t.title }) }, t.title, h('span', { className: 'n' }, t.count + ' 人')))
-                : h('span', { className: 'ab-muted ab-small' }, groups.length ? '这些群里还没有人挂专属头衔。' : '群白名单是空的，先在「权限」页加群。')) : null,
+                : h('span', { className: 'ab-muted ab-small' }, groups.length ? '这些群里还没有人挂专属头衔。' : '先到「聊天 → 按群设置」添加群，选择「仅模块」或「允许 AI 聊天」。')) : null,
             hit ? h('div', { className: 'ab-tf-who' }, '挂着「' + hit.title + '」的：' + hit.members.map((m) => m.name + '（' + m.id + '）').join('、') + (hit.count > hit.members.length ? ' 等 ' + hit.count + ' 人' : '')) : null,
             info && info.message ? h('div', { className: 'ab-muted ab-small', style: { marginTop: 6 } }, info.message) : null)),
         h(Row, { label: '在哪些群生效', hint: '没勾的群照常回。只列白名单里的群。' },
@@ -2279,13 +2283,13 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const on = (gid) => (ob.groups || []).includes(gid)
       const toggle = (gid) => setDraft(setPath(draft, 'group.ownerBrief.groups', on(gid) ? (ob.groups || []).filter((x) => x !== gid) : [...(ob.groups || []), gid]))
       return h(Card, { title: '主人私聊：群聊摘要', right: f.sw('group.ownerBrief.enabled'),
-        desc: '主人在私聊里问起群里的事时，把最近 24 小时的群聊流水当成「ta自己的见闻」补进这一轮上下文。只在「主人私聊 + 这句话提到群相关」时触发，不常驻、不写进记忆；默认关。开启前先在「权限」页把群加进白名单。' },
+        desc: '主人在私聊里问起群里的事时，把最近 24 小时的群聊流水当成「ta自己的见闻」补进这一轮上下文。只在「主人私聊 + 这句话提到群相关」时触发，不常驻、不写进记忆；默认关。先在「聊天 → 按群设置」选择「仅模块」或「允许 AI 聊天」。' },
         h(Row, { label: '每个群给几条', hint: '越少越省上下文；最多 30 条' }, f.range('group.ownerBrief.lines', 1, 30, 1, (v) => v + ' 条')),
         h(Row, { label: '只取哪些群', hint: '没勾 = 所有白名单群；只列白名单里的群' },
           groups.length
             ? h('div', { className: 'ab-flex' }, groups.map((gid) => h('button', { key: gid, type: 'button', className: cx('ab-chip', on(gid) && 'on'), onClick: () => toggle(gid) },
               (on(gid) ? '✓ ' : '') + (nameOf(gid) || '群'), h('span', { className: 'n' }, gid))))
-            : h('span', { className: 'ab-muted ab-small' }, '群白名单是空的，先在「权限」页加群。')),
+            : h('span', { className: 'ab-muted ab-small' }, '先到「聊天 → 按群设置」添加群，选择「仅模块」或「允许 AI 聊天」。')),
         h('div', { className: 'ab-muted ab-small', style: { marginTop: 6 } }, 'ta只会当成自己最近在群里看到的，不会把群聊原文说成是主人发的。'))
     }
 
@@ -2334,7 +2338,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const validGroupId = /^[1-9]\d{4,11}$/.test(groupId)
       const modeLabel = id => !draft.allow.groups.includes(id) ? '不响应' : (draft.group.moduleOnlyGroups || []).includes(id) ? '仅模块' : 'AI 聊天'
       return h('div', { className: 'ab-grid' },
-        h(Card, { title: '按群设置', desc: '选一个群，集中调整发言和旁听。改好后点底部「保存设置」。' },
+        h(Card, { title: '按群设置', desc: '选群、选模式，再点「保存设置」。白名单自动处理，不用在两个页面分别设置。' },
           h('div', { className: 'ab-flex', style: { marginBottom: 12 } },
             h('input', { className: 'ab-input', 'aria-label': '查找或添加群号', placeholder: '查找或添加群号', inputMode: 'numeric', value: newGid, onChange: e => setNewGid(e.target.value) }),
             h(Btn, { small: true, disabled: !validGroupId, onClick: () => {
@@ -2396,12 +2400,12 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
                   h(Btn, { small: true, kind: 'ghost', onClick: () => setSection('defaults') }, '查看默认接话规则'))),
                 h('div', { style: { marginTop: 12 } }, h(Btn, { small: true, kind: 'ghost', onClick: () => setSection('manage') },
                   '管理不回应名单（本群 ' + (draft.memberFilter?.enabled ? (draft.memberFilter.rules || []).filter(r => r.userId !== String(draft.ownerQQ) && (r.scope === 'all' || r.groups.includes(gid))).length : 0) + ' 人）')),
-                h(Row, { label: '非白名单时旁听', hint: mode === 'off' ? '只记住之后收到的文字，不回复。' : '目前在白名单，记忆按原有规则处理；此开关仅在移出白名单后生效。' },
-                  h(Switch, { title: '群 ' + gid + ' 非白名单时旁听', on: (draft.memory.passiveGroups || []).includes(gid), onChange: on => {
+                h(Row, { label: '不响应时仍旁听', hint: mode === 'off' ? '只记住之后收到的文字，不回复。' : '当前记忆按群记忆规则处理；此项仅在切换为「不响应群消息」后生效。' },
+                  h(Switch, { title: '群 ' + gid + ' 不响应时仍旁听', on: (draft.memory.passiveGroups || []).includes(gid), onChange: on => {
                     const ids = draft.memory.passiveGroups || []
                     setDraft(setPath(draft, 'memory.passiveGroups', on ? [...new Set([...ids, gid])] : ids.filter(x => x !== gid)))
                   } })),
-                h('p', { className: 'ab-muted ab-small' }, !draft.enabled ? '总开关已关闭，旁听暂不记录。' : draft.debug ? '调试模式不记录记忆。' : !draft.memory.enabled ? '记忆已关闭，旁听暂不记录。' : '旁听整理可能产生费用；关闭只停止非白名单群新增，不删除旧记忆。'))
+                h('p', { className: 'ab-muted ab-small' }, !draft.enabled ? '总开关已关闭，旁听暂不记录。' : draft.debug ? '调试模式不记录记忆。' : !draft.memory.enabled ? '记忆已关闭，旁听暂不记录。' : '记忆整理可能产生费用；此项不删除旧记忆，也不关闭其他模式的群记忆。'))
             }),
         ),
       )
