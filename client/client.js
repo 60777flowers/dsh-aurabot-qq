@@ -5585,15 +5585,16 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       person: { label: '人物', color: '#6ee7ff' },
       event: { label: '经历', color: '#ff9ecd' },
       core: { label: '核心', color: '#ffd166' },
-      knowledge: { label: '知识', color: '#a9bcd8' },
-      outdated: { label: '已过时', color: '#5b6678' },
-      archived: { label: '已归档', color: '#8b93a7' },
+      // 深色底上原色太淡（#a9bcd8 / #5b6678 / #8b93a7 几乎融进背景），统一提亮
+      knowledge: { label: '知识', color: '#7fb2f0' },
+      outdated: { label: '已过时', color: '#8a97ab' },
+      archived: { label: '已归档', color: '#a9b6cb' },
     }
     const SM_TIER_LABEL = { short: '临时', long: '长期', core: '永久' }
     const SM_EDGE_KINDS = { person: '同一个人', tag: '同标签', similar: '内容相似', conflict: '冲突', assoc: '联想' }
     const SM_EDGE_WHITE = '220, 230, 245'
-    const SM_CHILD_TINTS = ['255, 159, 200', '127, 212, 255', '255, 209, 102', '167, 139, 250', '134, 239, 172', '240, 166, 202', '159, 182, 216']
-    const SM_GROUP_TINTS = ['255, 209, 102', '134, 239, 172', '127, 212, 255', '255, 159, 200', '167, 139, 250', '255, 160, 122', '159, 182, 216', '248, 113, 113']
+    const SM_CHILD_TINTS = ['255, 159, 200', '127, 212, 255', '255, 209, 102', '167, 139, 250', '134, 239, 172', '240, 166, 202', '186, 146, 255']
+    const SM_GROUP_TINTS = ['255, 209, 102', '134, 239, 172', '127, 212, 255', '255, 159, 200', '167, 139, 250', '255, 160, 122', '186, 146, 255', '248, 113, 113']
     const smClamp = (n, min, max) => Math.min(max, Math.max(min, n))
     const smTintIndexOf = (id) => {
       const text = String(id || '')
@@ -5702,11 +5703,23 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       }
       const proj = new Map()
       for (const star of stars) { const p = project(star); if (p) proj.set(star.id, p) }
-      const edgeEndpoint = (id) => {
+      // 局部深度因子：project 里的 p.t 是「归一化到整个星图半径」的深度，聚焦到某个
+      // 子星云后，前后星星的 t 差异只有零点零几，近大远小/深度雾几乎失效，所以放大也
+      // 分不清前后两层。这里按当前视野里实际的最近/最远距离重新归一化出 td（1=近、0=远）。
+      let minDepth = Infinity, maxDepth = -Infinity
+      for (const p of proj.values()) { if (p.depth < minDepth) minDepth = p.depth; if (p.depth > maxDepth) maxDepth = p.depth }
+      const depthSpan = Math.max(1, maxDepth - minDepth)
+      for (const p of proj.values()) p.td = smClamp((maxDepth - p.depth) / depthSpan, 0, 1)
+      // clip=true 时：端点即使跑出画面，也拉回边界外一点继续画，而不是返回 null。
+      // 选中某颗星时它的连线常常连到别的子星云/星团（可能在画面外），
+      // 若按老逻辑丢弃整条边，用户就看不出这颗星和外面还有连接。
+      const edgeEndpoint = (id, clip = false) => {
         const p = proj.get(id)
         if (!p) return null
-        if (p.x < -40 || p.x > W + 40 || p.y < -30 || p.y > H + 30) return null
-        return p
+        const off = p.x < -40 || p.x > W + 40 || p.y < -30 || p.y > H + 30
+        if (!off) return p
+        if (!clip) return null
+        return { x: smClamp(p.x, -24, W + 24), y: smClamp(p.y, -24, H + 24), k: p.k, depth: p.depth, t: p.t }
       }
 
       const groupTints = smTintMapOf(layoutGroups)
@@ -5768,7 +5781,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const edgeWidth = smClamp(0.35 + 0.25 * zoomGain, 0.35, 1.1)
       const baseAlpha = active ? 0.2 : edgeFocusId ? 0.35 : 0.06 * (opt.edgeMode === 'subtle' ? 0.6 : 1)
       for (const e of edgeList) {
-        const a = edgeEndpoint(e.a), b = edgeEndpoint(e.b)
+        // 选中/悬停时启用裁剪：连线的一端跑出画面，也要画到边缘，不能整条断掉。
+        const a = edgeEndpoint(e.a, Boolean(edgeFocusId)), b = edgeEndpoint(e.b, Boolean(edgeFocusId))
         if (!a || !b) continue
         const alpha = smClamp(baseAlpha * zoomGain * (opt.edgeStrength || 1), 0, 0.65)
         if (alpha <= 0) continue
@@ -5886,7 +5900,9 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         ctx.beginPath()
         ctx.arc(p.x, p.y, coreR * 0.42, 0, Math.PI * 2)
         ctx.fill()
-        groupHits.push({ id: group.id, x: p.x, y: p.y, r: Math.max(14, rr), point: group })
+        // 命中圈盖到虚线环（rr*1.12）之外一点，否则点星团边缘那圈虚线/子星云外延
+        // 的空白会掉进「点空白」分支，把视角整个重置掉。
+        groupHits.push({ id: group.id, x: p.x, y: p.y, r: Math.max(14, rr * 1.15), point: group })
       }
 
       // ── 星团标签：按团大小定优先级，避让带粘滞，避免旋转时一闪一闪 ──
@@ -6027,7 +6043,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         const tier = star.tier === 'short' || star.tier === 'core' ? star.tier : 'long'
         const mag = Math.max(0.35, p.k / kBase)
         const baseR = 0.95 + 0.3 * b + 0.3 * hitLevel + (lit ? 0.55 : 0) + (tier === 'core' ? 0.3 : 0)
-        const r = smClamp(baseR * Math.pow(mag, 0.46), 0.9, 6.5)
+        const r = smClamp(baseR * Math.pow(mag, 0.46) * (0.55 + 0.45 * (p.td ?? p.t)), 0.9, 6.5)
         const depthFade = 0.72 + 0.28 * p.t
         const color = colorOf(star)
         if (dim) {
@@ -6037,22 +6053,30 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           ctx.arc(p.x, p.y, Math.max(0.8, r * 0.8), 0, Math.PI * 2)
           ctx.fill()
           ctx.globalAlpha = 1
+          // 变暗但**仍然可点**：筛选只是视觉提示，不该让没被选中的星失联
+          // （用户反馈「自己的经历点不开详细」就是被这行 return 挡掉的）
+          hits.push({ id: star.id, x: p.x, y: p.y, r: Math.max(9, r + 5) })
           return
         }
         if (star.invalidAt) {
-          ctx.globalAlpha = 0.3 * p.t
+          // 已归档/已过时的星：老版本 alpha 0.5~0.85，这里原来 0.3 太淡，
+          // 灰蓝虚线环 + 实心点几乎融进背景，用户反馈「已归档看不清」。
+          const ar = Math.max(1.7, r)
+          ctx.globalAlpha = smClamp(0.5 + 0.3 * p.t, 0, 0.85)
           ctx.fillStyle = color
           ctx.beginPath()
-          ctx.arc(p.x, p.y, r, 0, Math.PI * 2)
+          ctx.arc(p.x, p.y, ar, 0, Math.PI * 2)
           ctx.fill()
-          ctx.globalAlpha = 0.42 * p.t
-          ctx.strokeStyle = color
+          ctx.globalAlpha = smClamp(0.3 + 0.3 * p.t, 0, 0.65)
+          ctx.strokeStyle = 'rgba(190, 200, 218, 0.9)'
           ctx.lineWidth = 1
+          ctx.setLineDash([2, 2])
           ctx.beginPath()
-          ctx.arc(p.x, p.y, r + 2, 0, Math.PI * 2)
+          ctx.arc(p.x, p.y, ar + 2.4, 0, Math.PI * 2)
           ctx.stroke()
+          ctx.setLineDash([])
           ctx.globalAlpha = 1
-          hits.push({ id: star.id, x: p.x, y: p.y, r: Math.max(6, r + 4) })
+          hits.push({ id: star.id, x: p.x, y: p.y, r: Math.max(10, r + 6) })
           return
         }
         if (huge && !lit && !isFocus && !matched) {
@@ -6069,8 +6093,13 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           ctx.arc(p.x, p.y, r * 2.2, 0, Math.PI * 2)
           ctx.fill()
         }
-        const sizeAlpha = smClamp(r / 2.4, 0.55, 1)
-        ctx.globalAlpha = smClamp(p.t * (0.22 + 0.4 * b) * depthFade * sizeAlpha, 0, 0.72)
+        const sizeAlpha = smClamp(r / 2.4, 0.62, 1)
+        // 深度雾：用局部深度因子 td（1=近、0=远）做近亮远淡。之前用全局 p.t，聚焦后
+        // 前后星星的 t 差异几乎为 0，分不清层次；td 按当前视野最近/最远重新归一化后，
+        // 前后层在放大时也能看出深浅。下限从 0.3 降到 0.12，让远处真正雾化（近处仍亮）。
+        const depthFog = smClamp(Math.pow(p.td ?? p.t, 1.4), 0, 1)
+        const rawAlpha = depthFog * (0.35 + 0.45 * b) * depthFade * sizeAlpha
+        ctx.globalAlpha = smClamp(rawAlpha, 0.12, 0.95)
         ctx.fillStyle = color
         ctx.beginPath()
         ctx.arc(p.x, p.y, r, 0, Math.PI * 2)
@@ -6114,7 +6143,9 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           ctx.setLineDash([])
         }
         ctx.globalAlpha = 1
-        if (r >= 2.05) hits.push({ id: star.id, x: p.x, y: p.y, r: Math.max(5, r + 3) })
+        // 所有星都注册命中区：原来 < 2.05 的不登记，导致暗淡的小星星（久远/低重要度的
+        // 记忆，比如自己过去的经历）根本点不开详情。命中半径统一给到 9px 兜底。
+        hits.push({ id: star.id, x: p.x, y: p.y, r: Math.max(9, r + 5) })
         if (!star.invalidAt && starLabelAlpha > 0 && b >= 0.3) {
           labelCandidates.push({ star, x: p.x, y: p.y, r, rank: rankOf(star) + (isFocus ? 5 : 0) })
         }
@@ -6133,7 +6164,11 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       for (const [star, p] of deferred) paintStar(star, p, true)
 
       // ── 记忆中枢：太阳状核心，脉冲 + 十条光线 ──
-      const hubFade = smClamp((view.camScale - 0.55) / 0.3, 0, 1)
+      // 它固定画在画面正中心。聚焦某个星团时星团也被挪到正中心，
+      // 两者会完全重叠——看起来就像「点星团结果聚焦到了记忆中枢」。
+      // 所以选中星团时把中枢淡出。注意这里必须用 opt.groupSelected，
+      // smDraw 是独立函数，没有组件里的 groupSel 变量。
+      const hubFade = opt.groupSelected ? 0 : smClamp((view.camScale - 0.55) / 0.3, 0, 1)
       const pulse = opt.motion ? 1 + Math.sin(now * 0.0007) * 0.018 : 1
       const hubR = Math.max(7, Math.min(W, H) * 0.016) * pulse
       if (opt.motion && hubFade > 0) {
@@ -6375,6 +6410,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
               view.pitch += (view.fPitch - view.pitch) * Math.min(1, dt * 4.5)
               view.vYaw = 0
               view.vPitch = 0
+              // 到达目标角度就解除锁定，否则视角会一直被拽回默认、拖不动
+              if (Math.abs(dy) < 0.005 && Math.abs(view.fPitch - view.pitch) < 0.005) view.focusId = null
             } else {
               view.yaw += view.vYaw * dt * 60
               view.pitch = smClamp(view.pitch + view.vPitch * dt * 60, -1.25, 1.25)
@@ -6386,18 +6423,15 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           }
           view.zoom += (view.targetZoom - view.zoom) * Math.min(1, dt * 9)
           const camLerp = Math.min(1, dt * 3.6)
-          // 安全阀：无论哪条路径改了 camTarget，都不许把镜头挪出星图范围，
-          // 也不许把 camScale 压得太小——那会让整片星图被推出画面，看着像「空的」。
+          // 安全阀：防止镜头被挪到星图外面（只兜住离谱值，不限制正常聚焦）。
+          // 旧版聚焦是「完整移到目标坐标」，所以上限放到 1.1 倍半径；
+          // camScale 下限同步放宽到 0.2（旧版 focusOn 用 0.5、focusPoint 用 0.45）。
           const Rlim = (data.layout && data.layout.radius) || 470
-          // 偏移只给 35%：超过这个量，星团会被挤到屏幕边角、远处的星因为
-          // depth < 60 被整片丢弃，看起来就是「画布空了」。
-          const camLim = Rlim * 0.35
+          const camLim = Rlim * 1.1
           view.camTarget.x = smClamp(view.camTarget.x, -camLim, camLim)
           view.camTarget.y = smClamp(view.camTarget.y, -camLim, camLim)
           view.camTarget.z = smClamp(view.camTarget.z, -camLim, camLim)
-          // camScale 是相机距离系数（camZ = R*3*camScale），压太小会把视锥压扁；
-          // 下限抬到 0.85，保证整片星图始终在视野里。
-          view.camScaleTarget = smClamp(view.camScaleTarget, 0.85, 3)
+          view.camScaleTarget = smClamp(view.camScaleTarget, 0.2, 3)
           view.cam.x += (view.camTarget.x - view.cam.x) * camLerp
           view.cam.y += (view.camTarget.y - view.cam.y) * camLerp
           view.cam.z += (view.camTarget.z - view.cam.z) * camLerp
@@ -6451,7 +6485,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           event.preventDefault()
           const view = viewRef.current
           if (!view) return
-          view.targetZoom = smClamp(view.targetZoom * Math.exp(-event.deltaY * 0.0015), 0.55, 6)
+          view.targetZoom = smClamp(view.targetZoom * Math.exp(-event.deltaY * 0.0015), 0.55, 15)
         }
         canvas.addEventListener('wheel', onWheel, { passive: false })
         return () => canvas.removeEventListener('wheel', onWheel)
@@ -6487,7 +6521,11 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         // 右键那一下会被当成一次拖拽，视角直接被甩走（截图里星点飞了的真因）。
         if (e.button !== 0) return
         dragRef.current = { x: e.clientX, y: e.clientY, yaw: viewRef.current?.yaw || 0.45, pitch: viewRef.current?.pitch || 0.32 }
-        if (viewRef.current) viewRef.current.dragging = true
+        if (viewRef.current) {
+          viewRef.current.dragging = true
+          // 拖拽立即打断「返回动画」的视角锁定，否则镜头会被拽回默认角度
+          viewRef.current.focusId = null
+        }
       }
       const onMove = (e) => {
         const d = dragRef.current
@@ -6523,68 +6561,146 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         dragRef.current = null
         if (viewRef.current) viewRef.current.dragging = false
         if (!d) return
-        const moved = Math.abs(e.clientX - d.x) > 3 || Math.abs(e.clientY - d.y) > 3
+        // 位移阈值对齐旧版（12px）：手在「按下→抬起」间难免微动，3px 太严，
+        // 几乎每次点击都被当成拖拽丢掉，点星团/星星自然「没反应」。
+        const moved = Math.abs(e.clientX - d.x) > 12 || Math.abs(e.clientY - d.y) > 12
         if (moved) return
         const canvas = canvasRef.current
         if (!canvas) return
         const rect = canvas.getBoundingClientRect()
         const mx = e.clientX - rect.left, my = e.clientY - rect.top
         const child = pickChild(mx, my)
-        const star = pick(mx, my)
-        const group = pickGroup(mx, my)
-        if (child) { setGroupSel(child.group); setChildSel(child.id); setSel(null); return }
+        const zoomNow = viewRef.current?.zoom || 1
+        // 星星可点条件对齐旧版 panel.js：放大到 1.75 以上，或已经钻进某个星团/子星云。
+        // 光有 zoom 门槛不够——点星团聚焦后 zoom 只到 1.7（< 1.8），此时想点团内星星会落空。
+        const star = (zoomNow >= 1.75 || groupSel || childSel) ? pick(mx, my) : null
+        const groupHit = pickGroup(mx, my)
+        // 点击点是否落在「当前聚焦子星云」的命中圈内。点错星星时落点可能同时擦到
+        // 兄弟子星云（pickChild 会返回更近的那个）；只要还在当前子星云命中圈内，
+        // 就属于「子星云内空白/点错」，必须不动——这是最高优先级规则。
+        const inCurrentChild = Boolean(childSel) && childHitsRef.current.some((h) => (
+          h.id === childSel && Math.hypot(h.x - mx, h.y - my) <= h.r
+        ))
+        // 退回「只聚焦父团」：清子星云聚焦，镜头回到父团，缩放回团级。供两处复用。
+        // 保留 sel/detail：选中星星的**连接线**要留着——子星团之间的星星常有边，
+        // 转移时清掉选中会让人看不到这些连接（用户明确要求）。
+        const backToParent = () => {
+          setChildSel(''); setEdit(null)
+          const pg = (data.layout?.groups || []).find((x) => String(x.id) === groupSel)
+          if (pg && viewRef.current) {
+            viewRef.current.focusId = null
+            viewRef.current.camTarget = { x: Number(pg.x) || 0, y: Number(pg.y) || 0, z: Number(pg.z) || 0 }
+            viewRef.current.camScaleTarget = 0.5
+            viewRef.current.targetZoom = 1.7
+          }
+        }
+        // 星星优先（点星星要看具体记忆），其次子星云，最后星团——对齐旧版 pick 顺序
+        // star → child → group。星星常会挤在子星云的命中圈内，若让子星云先命中，
+        // 点星星永远被抢走、看不了详情。
+        // 「点歪了不该动」的基准是「当前聚焦的子星云」（不是父团）：
+        // 点在当前子星云内 → 不动；点在子星云外 → 该切换切换、该退回退回。
+
         if (star) {
-          setSel(star.id); setGroupSel(''); setChildSel('')
+          // 不清 groupSel、也不清 childSel：点星星只是「顺便看一眼详情」，不改变
+          // 所在层级（点前在子星云里，点完还在子星云里）。清了会解除「只显示选中
+          // 星团/子星云」的过滤，所有星团重新出现，视觉上像视角被重置。
+          setSel(star.id)
           const full = (data.stars || []).find((s) => s.id === star.id)
+          if (!full) toast('这条记忆已不在星图里', 'err')
           setDetail(full || null)
-          if (full && viewRef.current) {
-            // 同理：星星只挪过去 30%，别把镜头整个压到它身上
+          // 换了一颗星才清编辑框；点同一颗星保留，免得打断正在编辑的内容
+          if (star.id !== sel) setEdit(null)
+          // 点星星**不动镜头**：镜头一挪，当前星团就被甩出画面，看起来像「视角被重置」。
+          if (viewRef.current) viewRef.current.focusId = null
+          return
+        }
+        if (child) {
+          // 点中的子星云 = 当前聚焦的子星云，或点击点仍落在当前子星云命中圈内 →
+          // 都属于「子星云内空白/点错」，不动（最高优先级，点歪了不能被移走视角）。
+          if (child.id === childSel || inCurrentChild) return
+          // 点中「别的子星云」（同团兄弟或跨团）：有意点击，转移聚焦过去。
+          // 保留 sel/detail：选中星星的**连接线**要留着——子星团之间的星星常有边，
+          // 转移时清掉选中会让人看不到这些连接（用户明确要求）。只清编辑框。
+          setGroupSel(child.group); setChildSel(child.id); setEdit(null)
+          // 和旧版 focusPoint 一致：点开子星云时镜头跟到它的绝对坐标。
+          // child.point 已经是「团坐标 + 子星云偏移」的绝对坐标，直接作镜头目标。
+          // camScale 0.26 / zoom 2.6 对齐旧版 focusPoint(child, 2.6, 0.26)：
+          // 比默认更近，让挤成一团的子星云尽量摊开、星星可分辨。
+          const cp = child.point
+          if (cp && viewRef.current) {
             viewRef.current.focusId = null
             viewRef.current.camTarget = {
-              x: (Number(full.x) || 0) * 0.3,
-              y: (Number(full.y) || 0) * 0.3,
-              z: (Number(full.z) || 0) * 0.3,
+              x: Number(cp.x) || 0,
+              y: Number(cp.y) || 0,
+              z: Number(cp.z) || 0,
             }
-            viewRef.current.camScaleTarget = 1
-            viewRef.current.fYaw = viewRef.current.yaw
-            viewRef.current.fPitch = viewRef.current.pitch
-            // zoom 是额外的画面放大（focus 时 2 会把周围的星全部推出屏幕），压到 1.5
-            viewRef.current.targetZoom = 1.5
+            viewRef.current.camScaleTarget = 0.26
+            viewRef.current.targetZoom = 2.6
           }
           return
         }
-        if (group) {
-          setGroupSel(group === groupSel ? '' : group); setSel(null); setChildSel(''); setDetail(null)
-          const g = (data.layout?.groups || []).find((x) => x.id === group)
+        // 星团：走到这里说明这一下既没点中星星、也没点中子星云。
+        if (groupHit) {
+          // 最高优先级：点击点仍在「当前聚焦子星云」命中圈内 → 子星云内空白，不动。
+          // （点错星星时可能同时命中父团/别的团，但都不能移动视角。）
+          if (inCurrentChild) return
+          // 关键：pickGroup 只返回「最近的那个团」，点在大团内部时可能同时压着别的团、
+          // 且别的团圆心更近 → 会误判成「点别的团」。所以这里不认 pickGroup 的结果，
+          // 单独判断「点击点是否落在当前聚焦星团的圆盘内」。
+          const curGroupHit = groupSel ? groupHitsRef.current.find((h) => h.id === groupSel) : null
+          const curDiskR = curGroupHit ? (Number(curGroupHit.rr) || Number(curGroupHit.r) || 0) : 0
+          const inCurrentGroupDisk = Boolean(curGroupHit) && Math.hypot(curGroupHit.x - mx, curGroupHit.y - my) <= curDiskR
+
+          // 点在「当前聚焦星团」的圆盘内 = 团内：
+          //  · 聚焦子星云时 → 这是「子星云外的父团空白」，退回父团
+          //  · 只聚焦星团时 → 这是「团内空白」（当前层级内容），不动
+          // 这样点在大团内部、即使那里同时压着别的大团，也不会被切走。
+          if (inCurrentGroupDisk) {
+            if (childSel) backToParent()
+            return
+          }
+          const groupId = String(groupHit.id || '')
+          if (groupId === groupSel) return
+          // 点中「别的星团」且确实在当前团圆盘外：有意点击目标，正常切过去。
+          // 同样保留 sel/detail（连接线），只清编辑框。
+          setGroupSel(groupId); setChildSel(''); setEdit(null)
+          const g = (data.layout?.groups || []).find((x) => String(x.id) === groupId)
           if (g && viewRef.current) {
-            // 聚焦星团：只把相机「朝它挪一点」，不要直接把相机放到它的绝对坐标上。
-            // 直接赋值（camTarget = {x:g.x,y:g.y,z:g.z}）+ camScale 压到 0.45，
-            // 会让其它星团飘到画面外，整个画布看着像空的（用户截图就是这个现象）。
+            // camScale 0.5：比默认视角近、但仍在「中枢显形阈值 0.55」之下。
             const cx = Number(g.x) || 0, cy = Number(g.y) || 0, cz = Number(g.z) || 0
-            // 挪动幅度只给 35%：再多就会把其它星团推到画面外，看着像空画布
             viewRef.current.focusId = null
-            viewRef.current.camTarget = {
-              x: cx * 0.35,
-              y: cy * 0.35,
-              z: cz * 0.35,
-            }
-            viewRef.current.camScaleTarget = 1
-            // 星团聚焦只轻推一点（1.4），原来按半径算出来的 ~1.84 太近
-            viewRef.current.targetZoom = 1.4
+            viewRef.current.camTarget = { x: cx, y: cy, z: cz }
+            viewRef.current.camScaleTarget = 0.5
+            viewRef.current.targetZoom = 1.7
           }
           return
         }
-        setSel(null); setGroupSel(''); setChildSel(''); setDetail(null)
+        // 点空白（没点中星星/子星云/星团）：点在「当前聚焦星团外」，逐级退回。
+        //  · 聚焦子星云 → 退回聚焦父团
+        //  · 聚焦星团   → 退回全景
+        //  · 全景       → 不动
+        // 退回时同样保留 sel/detail（连接线）：选中星星的边关系在退回全景后
+        // 依然要能看到；要取消选中，点详情卡的「×」或换选另一颗星即可。
+        if (childSel) { backToParent(); return }
+        if (groupSel) { setGroupSel(''); setChildSel(''); setEdit(null); resetView() }
+        return
       }
 
 
       const resetView = () => {
         if (!viewRef.current) return
-        Object.assign(viewRef.current, {
-          yaw: 0.45, pitch: 0.32, targetZoom: 1.2, zoom: 1.2,
-          cam: { x: 0, y: 0, z: 0 }, camTarget: { x: 0, y: 0, z: 0 },
-          camScale: 1, camScaleTarget: 1, focusId: null, vYaw: 0, vPitch: 0,
-        })
+        const v = viewRef.current
+        // 返回动画：zoom / cam / camScale 只设「目标值」，渲染循环会用 lerp 平滑逼近；
+        // 不再直接赋值 zoom/cam/camScale，否则整片星空瞬间跳回默认（闪回）。
+        // yaw/pitch 借 focusId 机制（fYaw/fPitch 是目标角度）平滑转回默认。
+        v.focusId = '__home__'
+        v.fYaw = 0.45
+        v.fPitch = 0.32
+        v.targetZoom = 1.2
+        v.vYaw = 0
+        v.vPitch = 0
+        v.camTarget = { x: 0, y: 0, z: 0 }
+        v.camScaleTarget = 1
       }
 
       const stars = data?.stars || []
@@ -6723,37 +6839,53 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
                 }) : null)
             }),
           ),
+          // 选中的星详情：绝对定位在星图右上角（和左上角清单对称），不占页面流
+          detail ? h('div', {
+            key: 'detail',
+            className: 'ab-card ab-thin-scroll',
+            style: {
+              position: 'absolute', right: 10, top: 10,
+              width: 'min(240px, calc(100% - 20px))', maxHeight: 'calc(100% - 20px)',
+              overflowY: 'auto', overflowX: 'hidden', zIndex: 4, margin: 0,
+              padding: '10px 12px', borderRadius: 8,
+              background: 'rgba(6, 11, 22, 0.88)',
+              border: '1px solid rgba(120, 160, 220, 0.28)',
+              boxShadow: '0 8px 24px rgba(0,0,0,0.45)', backdropFilter: 'blur(6px)',
+            },
+          },
+            h('div', { className: 'ab-flex', style: { justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 } },
+              h('strong', { style: { fontSize: 12, lineHeight: 1.5 } }, detail.text),
+              h('span', {
+                onClick: () => { setDetail(null); setSel(null); setEdit(null) },
+                title: '关闭',
+                style: { flex: '0 0 auto', cursor: 'pointer', color: 'rgba(178,204,240,0.6)', fontSize: 14, lineHeight: 1 },
+              }, '×')),
+            h('div', { className: 'ab-muted ab-small', style: { margin: '6px 0' } },
+              `层级 ${TIER_LABEL[detail.tier] || '长期'} · 清晰度 ${Math.round((detail.brightness || 0) * 100)}% · 重要度 ${Math.round((detail.importance || 0) * 100)}%` +
+              (detail.aboutName ? ` · 关于 ${detail.aboutName}` : '') +
+              (detail.cluster ? ` · 星团 ${detail.cluster}` : '')),
+            h('div', { className: 'ab-flex', style: { gap: 6, flexWrap: 'wrap', marginTop: 6 } },
+              h(Btn, { small: true, onClick: () => post('/memory/graph/review', { id: detail.id }, '已复习') }, '还记得'),
+              h(Btn, { small: true, onClick: () => post('/memory/graph/tier', { id: detail.id, tier: 'short' }, '已改为临时') }, '临时'),
+              h(Btn, { small: true, onClick: () => post('/memory/graph/tier', { id: detail.id, tier: 'long' }, '已改为长期') }, '长期'),
+              h(Btn, { small: true, onClick: () => post('/memory/graph/tier', { id: detail.id, tier: 'core' }, '已改为永久') }, '永久'),
+              detail.archivedAt || detail.invalidAt ? h(Btn, { small: true, onClick: () => post('/memory/graph/restore', { id: detail.id }, '已恢复') }, '恢复') : null,
+              h(Btn, { small: true, onClick: () => setEdit({ text: detail.text, importance: detail.importance ?? 0.5 }) }, '编辑'),
+              h(Btn, { small: true, kind: 'danger', onClick: () => post('/memory/graph/remove', { id: detail.id }, '已删除') }, '删除')),
+            edit ? h('div', { style: { marginTop: 8 } },
+              h('div', { className: 'ab-flex', style: { gap: 6, flexWrap: 'wrap', alignItems: 'center' } },
+                h('input', { className: 'ab-input', style: { flex: '1 1 140px', fontSize: 11 }, value: edit.text, onChange: (e) => setEdit({ ...edit, text: e.target.value }) }),
+                h('input', { className: 'ab-input sm', type: 'number', min: 0, max: 1, step: 0.05, style: { width: 64 }, value: edit.importance, onChange: (e) => setEdit({ ...edit, importance: Number(e.target.value) || 0 }) }),
+                h(Btn, { small: true, onClick: async () => {
+                  if (!edit.text.trim()) { toast('内容不能为空', 'err'); return }
+                  const r = await post('/memory/graph/update', { id: detail.id, patch: { text: edit.text.trim(), importance: edit.importance } }, '已修改')
+                  if (r.ok) setEdit(null)
+                } }, '保存'),
+                h(Btn, { small: true, onClick: () => setEdit(null) }, '取消'))) : null) : null,
         ),
         busy ? h('div', { key: 'busy', className: 'ab-muted ab-small', style: { marginTop: 6 } }, '正在计算星图布局…') : null,
         // 绘制异常时把原因直接显示出来，别再让用户对着空画布猜
         drawErr ? h('div', { key: 'drawnote', className: 'ab-note err', style: { marginTop: 8 } }, '星图绘制失败：' + drawErr + '（下面的星星列表仍可用）') : null,
-
-        // 选中的星详情
-        detail ? h('div', { key: 'detail', className: 'ab-card', style: { marginTop: 10 } },
-          h('div', { className: 'ab-flex' }, h('strong', null, detail.text)),
-          h('div', { className: 'ab-muted ab-small', style: { margin: '6px 0' } },
-            `层级 ${TIER_LABEL[detail.tier] || '长期'} · 清晰度 ${Math.round((detail.brightness || 0) * 100)}% · 重要度 ${Math.round((detail.importance || 0) * 100)}%` +
-            (detail.aboutName ? ` · 关于 ${detail.aboutName}` : '') +
-            (detail.cluster ? ` · 星团 ${detail.cluster}` : '')),
-          h('div', { className: 'ab-flex', style: { gap: 6, flexWrap: 'wrap', marginTop: 8 } },
-            h(Btn, { small: true, onClick: () => post('/memory/graph/review', { id: detail.id }, '已复习') }, '还记得（复习）'),
-            h(Btn, { small: true, onClick: () => post('/memory/graph/tier', { id: detail.id, tier: 'short' }, '已改为临时') }, '临时'),
-            h(Btn, { small: true, onClick: () => post('/memory/graph/tier', { id: detail.id, tier: 'long' }, '已改为长期') }, '长期'),
-            h(Btn, { small: true, onClick: () => post('/memory/graph/tier', { id: detail.id, tier: 'core' }, '已改为永久') }, '永久'),
-            detail.archivedAt || detail.invalidAt ? h(Btn, { small: true, onClick: () => post('/memory/graph/restore', { id: detail.id }, '已恢复') }, '恢复') : null,
-            h(Btn, { small: true, onClick: () => setEdit({ text: detail.text, importance: detail.importance ?? 0.5 }) }, '编辑'),
-            h(Btn, { small: true, kind: 'danger', onClick: () => post('/memory/graph/remove', { id: detail.id }, '已删除') }, '删除')) ,
-          // 编辑框（原版就有：改文字和重要度，走 /update）
-          edit ? h('div', { style: { marginTop: 8 } },
-            h('div', { className: 'ab-flex', style: { gap: 8, flexWrap: 'wrap', alignItems: 'center' } },
-              h('input', { className: 'ab-input', style: { flex: '1 1 220px' }, value: edit.text, onChange: (e) => setEdit({ ...edit, text: e.target.value }) }),
-              h('input', { className: 'ab-input sm', type: 'number', min: 0, max: 1, step: 0.05, style: { width: 80 }, value: edit.importance, onChange: (e) => setEdit({ ...edit, importance: Number(e.target.value) || 0 }) }),
-              h(Btn, { small: true, onClick: async () => {
-                if (!edit.text.trim()) { toast('内容不能为空', 'err'); return }
-                const r = await post('/memory/graph/update', { id: detail.id, patch: { text: edit.text.trim(), importance: edit.importance } }, '已修改')
-                if (r.ok) setEdit(null)
-              } }, '保存'),
-              h(Btn, { small: true, onClick: () => setEdit(null) }, '取消'))) : null) : null,
 
         // 新增（清单已经收进画布左上角，这里不再重复列一遍）
         h('div', { key: 'add', style: { marginTop: 10 } },
