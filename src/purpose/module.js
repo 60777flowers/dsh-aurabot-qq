@@ -5,9 +5,9 @@
 // 本文件负责副作用：状态文件、素材采集（记忆 + 聊天流水适配）、生成（hub.runSystemTurn）、
 // 投递（hub.deliver）、心情 nudge、追问、路由。
 //
-// 使用方式：独立的 purpose 内置模块（src/modules/purpose/index.js），默认关闭；
-// 现有的「主动搭话」模块（speakup，src/features/companion.js）保持默认实现不变，
-// 想换引擎的主人自己开关，迁移说明见 docs/PURPOSE_MODULE_API.md。
+// 使用方式：独立的 purpose 内置模块（src/modules/purpose/index.js）。P1/Q1 拍板起默认开启
+// （ext.purpose.enabled 缺省=开、显式 false 尊重）；旧的「主动搭话」模块（speakup）在迁移期
+// （P1~P3）仍在，companion 会见目的引擎开着而自动让位，迁移说明见 docs/PURPOSE_MODULE_API.md。
 
 import { dataDir, readJson, writeJson } from '../core/store.js'
 import { quietWindowOf } from '../core/time-window.js'
@@ -46,7 +46,7 @@ const clampInt = (v, d, lo, hi) => {
 /**
  * 把 Aurabot 配置映射成引擎配置。
  * 醒着窗口（speakUp.awakeFrom/awakeTo）是唯一真相，引擎的安静时段由它派生；
- * 调参走本模块自己的设置面 cfg.ext.purpose.*（模块默认关：ext.purpose.enabled）。
+ * 调参走本模块自己的设置面 cfg.ext.purpose.*（P1/Q1 拍板：默认开，见下）。
  */
 export function purposeConfig(cfg = {}) {
   const su = cfg.speakUp || {}
@@ -58,9 +58,10 @@ export function purposeConfig(cfg = {}) {
   // normalizePurposeConfig 只认引擎字段，打分模型在归一化后补挂（面板下拉同款结构校验）
   return {
     ...normalizePurposeConfig({
-      // 总开关只看本模块自己的设置（ext.purpose.enabled，默认 false）；
-      // 与旧的「主动搭话」互不影响——两套同时开会重复打扰，迁移说明里提醒主人别同时开。
-      enabled: cfg.enabled !== false && ext.enabled === true,
+      // 总开关只看本模块自己的设置（ext.purpose.enabled）。P1/Q1 拍板默认开：
+      // 键缺省（undefined）= 开；显式 false = 主人关过，尊重不洗回（模块 defaults 填充也只补缺失键）。
+      // 与旧的「主动搭话」互不影响——companion 见 ext.purpose.enabled 会自动让位。
+      enabled: cfg.enabled !== false && ext.enabled !== false,
       ownerUin: cfg.ownerQQ,
       gapMinMs: clampInt(ext.minIntervalMinutes ?? su.minIntervalMinutes, 90, 5, 2880) * MINUTE,
       gapMaxMs: clampInt(ext.maxIntervalMinutes ?? su.maxIntervalMinutes, 240, 5, 2880) * MINUTE,
@@ -75,6 +76,11 @@ export function purposeConfig(cfg = {}) {
     }),
     // 素材打分模型（面板「目的引擎」卡下拉选；不配 = 用关键词法，零额外成本）。
     scoringModel: normalizeSelection(ext.scoringModel),
+    // 追问开关（P1 翻键，方案 §2.1）：读保持双层兼容——ext.purpose.nudge 覆写位优先，
+    // 老用户的 speakUp.nudge 仍生效；两边都没设时默认开（与 speakUp.nudge 默认一致）。
+    // 注意不能把 nudge 放进模块 defaults：defaults 填充会把 ext.purpose.nudge 落成 true，
+    // 老用户「speakUp.nudge=false」的关断就会被覆写位洗掉。
+    nudge: ext.nudge ?? su.nudge ?? true,
   }
 }
 
@@ -769,7 +775,9 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
   async function maybeNudge(cfg, config, state, now = Date.now()) {
     const su = cfg.speakUp || {}
     // 总开关关掉就一步都不做：主人关掉「主动搭话」后追问还会发，是用户实际踩到的那个 bug。
-    if (!cfg.enabled || !su.enabled || !su.nudge) return false
+    // 追问键（P1 翻键）：config.nudge 由 purposeConfig 按 ext.purpose.nudge ?? speakUp.nudge ?? true 算好；
+    // speakUp.enabled 总闸 P1 保留（方案 §4.3 兼容期口径，speakup 模块退场批次再收）。
+    if (!cfg.enabled || !su.enabled || !config.nudge) return false
     const lb = hub.lastBotToOwner || { at: 0, text: '' }
     const quietMs = now - (lb.at || 0)
     if (!lb.at || lb.at <= (hub.lastOwnerChatAt || 0)) return false
@@ -960,7 +968,8 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
   function drivesRule() {
     const cfg = getConfig()
     if (cfg.enabled === false) return ''
-    if (!((cfg.ext && cfg.ext.purpose) || {}).enabled) return '' // 引擎没开就不往提示词里掺驱动
+    // P1/Q1 默认开：键缺省（undefined）也掺驱动；只有主人显式关过（false）才静默。
+    if (((cfg.ext && cfg.ext.purpose) || {}).enabled === false) return ''
     const s = readJson(stateFile(), null)
     if (!s) return ''
     const drives = s.drives || {}

@@ -930,10 +930,10 @@ export function apply(ctx) {
     const say = (msg) => logger.child('出站策略').info(msg)
     const budget = createSharedBudget({ ownerQQ: cfg.ownerQQ, dataDir: dir, log: say })
     try {
-      // 目的引擎（默认关）：模块在跑且配置开着才注册。引擎未启用 / 未 ready 时不注册，
-      // 服务自己会处理 managed=false 与 deny 语义（设计稿故障语义：不得静默 pass）。
+      // 目的引擎（P1/Q1 拍板默认开）：模块在跑且配置未显式关才注册。键缺省=开、显式 false 不注册；
+      // 引擎未 ready 时不注册，服务自己会处理 managed=false 与 deny 语义（设计稿故障语义：不得静默 pass）。
       const pu = use('purpose')
-      if (cfg.ext?.purpose?.enabled === true && pu) {
+      if (cfg.ext?.purpose?.enabled !== false && pu) {
         const policy = createPurposePolicy({
           getConfig, engine: pu, state: () => pu.state?.() || null,
           dataDir: dir, log: say, budget,
@@ -1344,7 +1344,7 @@ export function apply(ctx) {
     const quiet = quietWindowOf(awakeFrom, awakeTo)
     return {
       available: typeof pu?.status === 'function',
-      enabled: ext.enabled === true,
+      enabled: ext.enabled !== false, // P1/Q1 默认开：键缺省=开，显式 false 才算关（与 purposeConfig 同口径）
       status: pu?.status?.() ?? null,
       count: pu?.state?.().count ?? 0,
       carrier: ext.carrier === 'pet' ? 'pet' : 'qq',
@@ -1539,6 +1539,8 @@ export function apply(ctx) {
     const patch = {}
     const extPatch = {}
     if (typeof b.enabled === 'boolean') extPatch.enabled = b.enabled
+    // 追问开关（P1 翻键）：写入口从 speakUp.nudge 翻到 ext.purpose.nudge（读侧 purposeConfig 双层兼容）。
+    if (typeof b.nudge === 'boolean') extPatch.nudge = b.nudge
     if (b.carrier === 'qq' || b.carrier === 'pet') extPatch.carrier = b.carrier
     if (typeof b.petFallbackToQQ === 'boolean') extPatch.petFallbackToQQ = b.petFallbackToQQ
     if (['conservative', 'default', 'active'].includes(b.pacing)) extPatch.pacing = b.pacing
