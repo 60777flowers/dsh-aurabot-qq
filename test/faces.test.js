@@ -109,3 +109,11 @@ test('语音文本拆分：Breeze 音频标签保持原样（句首 / 连续标�
   assert.deepEqual(splitSpeakable('（鳍耳竖起来）[咯咯笑]好啦'), { spoken: '[咯咯笑]好啦', extras: '' }, '括号动作照常摘，音频标签不受影响')
   assert.deepEqual(splitSpeakable('[笑]'), { spoken: '[笑]', extras: '' }, '只有音频标签的语音也要能念')
 })
+
+test('#6 语音不念 QQ 号和尖括号标签：@ 挪到单独发的文字里，长串号码不念', () => {
+  assert.deepEqual(splitSpeakable('好呀 <at:1234567890> 来了'), { spoken: '好呀 来了', extras: '<at:1234567890>' })
+  assert.equal(splitSpeakable('那个人叫 1234567890 你认识吗').spoken.includes('1234567890'), false)
+  assert.equal(splitSpeakable('<reply:3>好的</poke>').spoken, '好的')
+  assert.equal(splitSpeakable('今年 2026 年，价格 199 块').spoken, '今年 2026 年，价格 199 块')
+  assert.equal(splitSpeakable('[咯咯笑][叹气]你好').spoken, '[咯咯笑][叹气]你好')
+})

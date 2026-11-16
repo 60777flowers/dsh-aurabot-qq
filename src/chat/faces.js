@@ -99,6 +99,8 @@ const KAOMOJI_CHAR = /[￣▽△▲･´｀＾﹏Ωﾟω()（）و✧☆★]/gu
 const AUDIO_TAG = /\[[^\[\]\r\n]{1,30}\]/gu
 function cleanSpeechPart (s) {
   return String(s)
+    // 7 位以上的连续数字不念：正常说话里没有这么长的数，基本都是 QQ 号、手机号这类号码（#6：语音把群友 QQ 号念出来）
+    .replace(/\d{7,}/g, ' ')
     // 括号里成段的东西整块摘掉：只擦括号符号的话，TTS 会把「鳍耳竖起来」这类动作描写照念出来。
     .replace(/[（(][^（）()]{0,40}[）)]/gu, ' ')
     .replace(SYMBOL_RUN, ' ')
@@ -138,7 +140,9 @@ export function splitSpeakable (text) {
   const raw = String(text ?? '')
   // emoji 的那一段：图形符号之外还要算上区域指示符（🇨🇳 这类国旗不在 Extended_Pictographic 里，单列会漏掉、被 TTS 念出来）、
   // 键帽（1️⃣ 要连前面的数字一起拆走）、连接符 / 变体选择符、肤色修饰符（👋🏽）、标签字符（🏴󠁧󠁢󠁳󠁣󠁴󠁿 的尾巴）。
-  const re = /<face:[^>]{1,12}?>(?:\s*<\/face>)?|<sticker:[^>]*>(?:\s*<\/sticker>)?|<poke\s*\/?>|[#*0-9]\uFE0F?\u20E3|[\p{Extended_Pictographic}\p{Regional_Indicator}\u200D\uFE0F\u20E3\u{1F3FB}-\u{1F3FF}\u{E0020}-\u{E007F}]/gu
+  // <at:QQ号> 不念（念出来就是一串号码加「大于号小于号」），挪到 extras 里单独发，照样能真 @ 到人；
+  // 其他尖括号格式标签（<reply:3>、</poke>、<state> 之类）整个不念（#6）。
+  const re = /<face:[^>]{1,12}?>(?:\s*<\/face>)?|<sticker:[^>]*>(?:\s*<\/sticker>)?|<poke\s*\/?>|<at:\d{5,12}>|<\/?(?!face[:\s>])[A-Za-z][\w-]{0,20}(?:[:\s][^<>\r\n]{0,60})?\s*\/?>|[#*0-9]\uFE0F?\u20E3|[\p{Extended_Pictographic}\p{Regional_Indicator}\u200D\uFE0F\u20E3\u{1F3FB}-\u{1F3FF}\u{E0020}-\u{E007F}]/gu
   let spoken = ''
   let extras = ''
   let last = 0
@@ -147,6 +151,7 @@ export function splitSpeakable (text) {
     spoken += raw.slice(last, m.index)
     if (!m[0].startsWith('<')) extras += m[0] // 不是标签：emoji / 国旗 / 键帽，要补发
     else if (m[0].startsWith('<face:')) extras += m[0].replace(/\s*<\/face>\s*$/i, '') // 只留开头标签，</face> 不补发
+    else if (m[0].startsWith('<at:')) extras += m[0] // @ 人单独补发
     last = m.index + m[0].length
   }
   spoken += raw.slice(last)
