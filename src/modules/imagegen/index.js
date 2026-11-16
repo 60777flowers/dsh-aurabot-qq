@@ -125,10 +125,16 @@ export default {
       try { if (external && external.ready && external.ready()) return true } catch (error) {}
       return false
     }
-    // 能力提示随本条消息追加，纠正旧回复；不改历史/系统前缀，不替代执行时授权。
+    // 编号只指向已收到的短期缓存，不另建图库、不抓取模型提供的消息 ID。
     api.on?.('prompt', (content, { chat }) => {
       if (chat.kind === 'system' || !canDraw()) return content
-      return [...content, { type: 'text', text: '【绘图能力】qq_draw_image 能在当前群聊或私聊画图并发出；历史回复里“群里不能画、必须私聊”的说法不代表当前能力。收到新的明确画图请求，需求和参考图明确时调用 qq_draw_image，由工具按本轮请求检查权限，不用先让对方转私聊，也不要沿用上一轮的拒绝。改图必须传入明确的参考图；引用文字不是引用原图。缺图或目标图不明确时，请提出请求的人引用目标原图重新提出改图请求，不能省略参考图生成一张新图来代替。仅在能确认最近一张就是目标图时用 last。工具拒绝权限时如实说明授权条件，不要承诺转私聊就能放行。' }]
+      const recent = hub.recentMedia?.(chat.chatId) || []
+      const labeled = content.flatMap((block) => {
+        if (block.type !== 'image') return [block]
+        const item = recent.find((x) => /^-?[1-9]\d*$/.test(x.messageId || '') && block.name === `qqref-${x.messageId}-${x.imageIndex}`)
+        return item ? [{ type: 'text', text: `【参考图 msg:${item.messageId}:${item.imageIndex}，发送者 QQ ${item.userId}】` }, block] : [block]
+      })
+      return [...labeled, { type: 'text', text: '【绘图能力】能在当前群聊或私聊画图并发出，权限按本轮工具检查，不沿用旧回复的“必须私聊”。新请求需求明确时调用工具。改图优先将目标图旁的 msg 编号填入 image；编号指向固定图片，不随群友新图变化。没有编号时才按明确的目标选择 quote/last；缺图或不确定时请对方引用原图，不能省略参考图生成一张新图来代替。' }]
     })
     api.tool(({ chat, sessionId }) => ((chat.kind !== 'system' && canDraw()) ? defineTool({
       name: 'qq_draw_image',
@@ -137,7 +143,7 @@ export default {
         prompt: str('画面描述'),
         format: { type: 'string', enum: ['static', 'gif'], description: '默认 static 静态图。只有对方明确要求 GIF、动图或让画面动起来时才用 gif（需面板开启），并在 prompt 描述动作和循环。普通画画、动态姿势仍用静态。GIF 默认小尺寸、8 帧约 1.6 秒，不要为普通回复擅自改成动图' },
         notice: str('结合对方的要求和当前对话写一句自然简短的回应，开始画图前会直接发送'),
-        image: str('可选参考图：self（自己/人设图）= 当前人格形象；last = 当前聊天最近收到的一张图；quote = 当前聊天引用消息里的图；或图库中的画作文件名。禁止本地路径、网址。quote 只适用于引用消息确实带图的情况，引用机器人的文字回复不等于引用原图；只有确定最近一张就是目标图时才用 last。多图混聊无法确定时，请提出改图请求的人引用目标原图重新提出请求，不要随便用最新图，也不要省略 image 改成无参考生成。'),
+        image: str('可选参考图：self（自己/人设图）= 当前人格形象；last = 当前聊天最近收到的一张图；quote = 当前聊天引用消息里的图；或图库中的画作文件名。禁止本地路径、网址。优先填目标图旁提供的 msg:消息号:图片序号，以绑定具体图片。quote 用于引用带图的消息，引用机器人的文字回复不等于引用原图；只有确定最近一张就是目标图时才用 last。不确定就请对方引用目标原图。'),
         images: { type: 'array', items: { type: 'string' }, maxItems: 16, description: '可选多张参考图（图库文件名或 last / quote）；只有支持多图参考的接法能用，失败会说明原因' },
         shape: { type: 'string', enum: ['square', 'portrait', 'landscape', 'wide'], description: 'square 方图 1:1；portrait 竖图 2:3；landscape 横图 3:2；wide 宽幅 16:9。可不填' },
         size: { type: 'string', enum: SIZE_OPTIONS, description: '可选尺寸，例如 2048x2048（2K）、4096x4096（4K）；优先于 shape / 面板默认，不填沿用原逻辑' },

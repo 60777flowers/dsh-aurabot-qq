@@ -2231,7 +2231,12 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
   async function referenceImage(chat, source = 'last') {
     if (disposed) throw disposedError()
     let seg
-    if (source === 'quote') {
+    if (String(source).startsWith('msg:')) {
+      const match = /^msg:(-?[1-9]\d*):([1-9]\d*)$/.exec(source)
+      const item = match && recentMediaOf(chat.chatId).find((x) => x.messageId === match[1] && x.imageIndex === Number(match[2]))
+      if (!item) throw new Error('这张指定图片已过期、已被缓存淘汰或不在当前聊天中，请重新发送或引用目标原图；不会改用其他图片')
+      seg = item.seg
+    } else if (source === 'quote') {
       const now = Date.now()
       const q = [...quoteCache.values()].findLast((item) => item.chatId === chat.chatId && item.ok && item.at <= now && now - item.at < 30 * 60_000)
       seg = q?.images.at(-1) || q?.stickers.at(-1)
@@ -2364,7 +2369,8 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
         const buf = await fitForModel(raw)
         const mime = mimeOf(buf)
         if (!mime.startsWith('image/')) continue
-        out.push({ data: buf.toString('base64'), mediaType: mime, frames })
+        const source = msg.chatId && recentMediaOf(msg.chatId).find((x) => x.seg === seg && /^-?[1-9]\d*$/.test(x.messageId || ''))
+        out.push({ data: buf.toString('base64'), mediaType: mime, frames, ...(source ? { name: `qqref-${source.messageId}-${source.imageIndex}` } : {}) })
       } catch (error) {
         log.debug('图片下载失败：', error.message)
       }
@@ -2464,7 +2470,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     // 最近发来的图片 / 表情记几张（「把刚才那张存下来」时用）
     if (msg.stickers.length || msg.images.length) {
       // 保留同一条消息里图片 / 表情的实际顺序，last 才真的是最后一张。
-      recentMedia.remember(msg.chatId, segmentsOf(event).filter((seg) => msg.images.includes(seg) || msg.stickers.includes(seg)).map((seg) => ({ seg, userId: msg.userId, sticker: msg.stickers.includes(seg) })))
+      recentMedia.remember(msg.chatId, segmentsOf(event).filter((seg) => msg.images.includes(seg) || msg.stickers.includes(seg)).map((seg, index) => ({ seg, userId: msg.userId, sticker: msg.stickers.includes(seg), messageId: String(msg.messageId || ''), imageIndex: index + 1 })))
     }
     // 主人命令（/silent /active …）：总开关关着也处理，回复直接发
     if (onCommand && (fromOwner || msg.kind === 'private') && /^\s*[/／]/.test(msg.text)) {
@@ -2656,7 +2662,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     if (imgs.length && groupEntry) groupEntry.mediaPending = true // 这些图已经进 pending.images，groupPrompt 不用再带
     if (imgs.length) {
       // 图片先留着，prompt 钩子里的模块可以接管（#167）；模型看不了图时 pushToSession 再换成文字
-      for (let i = 0; i < imgs.length; i++) content.push({ type: 'image', data: imgs[i].data, mediaType: imgs[i].mediaType, name: `qq-${msg.messageId}-${i + 1}` })
+      for (let i = 0; i < imgs.length; i++) content.push({ type: 'image', data: imgs[i].data, mediaType: imgs[i].mediaType, name: imgs[i].name || `qq-${msg.messageId}-${i + 1}` })
       if (animatedNote(imgs) && (await canSeeFor(msg)) !== false) content.push({ type: 'text', text: animatedNote(imgs) })
     }
     // 引用里的图 / 表情包也给她看（最多 2 张，总数不超过 4；看不了图的模型靠上面的文字说明）
@@ -2747,7 +2753,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     if (!p || p.images.length >= MAX_MESSAGE_IMAGES) return
     try {
       const imgs = await imagesOf(msg)
-      for (let i = 0; i < imgs.length && p.images.length < MAX_MESSAGE_IMAGES; i++) p.images.push({ type: 'image', data: imgs[i].data, mediaType: imgs[i].mediaType, name: `qq-${msg.messageId}-${i + 1}` })
+      for (let i = 0; i < imgs.length && p.images.length < MAX_MESSAGE_IMAGES; i++) p.images.push({ type: 'image', data: imgs[i].data, mediaType: imgs[i].mediaType, name: imgs[i].name || `qq-${msg.messageId}-${i + 1}` })
       if (imgs.length && entry) entry.mediaPending = true // 这些图已经进 pending.images，groupPrompt 不用再带
       if (animatedNote(imgs) && (await canSeeFor(p.chat)) !== false) p.images.push({ type: 'text', text: animatedNote(imgs) })
     } catch (error) {}
@@ -2757,7 +2763,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
   const GROUP_IMAGE_WINDOW_MS = 5 * 60_000
   const GROUP_IMAGE_MAX = 2
 
-  async function freshGroupImages(fresh, room) {
+  async function freshGroupImages(fresh, room, chatId) {
     const take = Math.min(GROUP_IMAGE_MAX, room)
     if (take <= 0) return []
     const out = []
@@ -2767,11 +2773,11 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       if (got >= take) break
       if (x.mediaPending || !x.t || x.t < cutoff || (!x.images?.length && !x.stickers?.length)) continue
       try {
-        const imgs = await imagesOf(x)
+        const imgs = await imagesOf({ ...x, chatId })
         for (const img of imgs) {
           if (got >= take) break
           got++
-          out.push({ type: 'image', data: img.data, mediaType: img.mediaType, name: `qq-${x.mid || 'group'}-${got}` })
+          out.push({ type: 'image', data: img.data, mediaType: img.mediaType, name: img.name || `qq-${x.mid || 'group'}-${got}` })
         }
         const note = animatedNote(imgs)
         if (note) out.push({ type: 'text', text: note })
@@ -2849,7 +2855,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       if ((await canSeeFor(chat)) === false) {
         mediaNote = '\n（这一段里对方一共发了 ' + mediaCount + ' 张图/表情，你现在的模型看不了图，只能知道有这回事；别猜图里是什么，也别当成自己看过）'
       } else {
-        extraImages = await freshGroupImages(fresh, Math.max(0, imageRoom - quotedImages.length))
+        extraImages = await freshGroupImages(fresh, Math.max(0, imageRoom - quotedImages.length), chat.chatId)
       }
     }
     const archiveMessages = fresh.filter(x => x.text).map(x => ({ role: 'user', text: x.text,
