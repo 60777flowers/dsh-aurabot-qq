@@ -38,11 +38,12 @@ export async function shouldUseCnMirror(mode, fetchImpl = fetch) {
 }
 const LEGACY_ROOT = 'C:\\Aurabot\\rvc'
 
-// RVC 推理要的预训练文件（Applio 放在 HuggingFace 上）：[远端相对路径, 本地相对 Applio 的路径]
+// RVC 推理要的预训练文件（Applio 放在 HuggingFace 上）：[远端相对路径, 本地相对 Applio 的路径, sha256]
+// 带上校验值：下完核对，镜像给错文件会换源；证书校验失败时也能安全地改用不校验证书的连接重下（#3）
 const PREREQS = [
-  ['predictors/rmvpe.pt', 'rvc/models/predictors/rmvpe.pt'],
-  ['embedders/contentvec/config.json', 'rvc/models/embedders/contentvec/config.json'],
-  ['embedders/contentvec/pytorch_model.bin', 'rvc/models/embedders/contentvec/pytorch_model.bin'],
+  ['predictors/rmvpe.pt', 'rvc/models/predictors/rmvpe.pt', '6d62215f4306e3ca278246188607209f09af3dc77ed4232efdd069798c4ec193'],
+  ['embedders/contentvec/config.json', 'rvc/models/embedders/contentvec/config.json', '2ddde063b795d38d9051a7215a092fecf4cfe148b54251e38de51d88d356898b'],
+  ['embedders/contentvec/pytorch_model.bin', 'rvc/models/embedders/contentvec/pytorch_model.bin', 'd8dd400e054ddf4e6be75dab5a2549db748cc99e756a097c496c099f65a4854e'],
 ]
 // 国内直连 HuggingFace 常常很慢：先试镜像，太慢或卡住再换官方
 const HF_HOSTS = ['https://hf-mirror.com', 'https://huggingface.co']
@@ -53,8 +54,8 @@ const FETCH_SCRIPT = fileURLToPath(new URL('./fetch_file.py', import.meta.url))
  * 下载一个预训练文件：已经有了就跳过。用翻唱环境里的 Python 下（会走系统代理），
  * 断了从断点接着下，卡住 30 秒就换下一个源，几轮都不行才算失败。
  */
-async function downloadWithMirror(python, rel, dest, note, log, onProgress) {
-  return fetchFile(python, dest, HF_HOSTS.map((host) => `${host}/IAHispano/Applio/resolve/main/Resources/${rel}`), note, log, onProgress, rel)
+async function downloadWithMirror(python, rel, dest, note, log, onProgress, sha256 = '') {
+  return fetchFile(python, dest, HF_HOSTS.map((host) => `${host}/IAHispano/Applio/resolve/main/Resources/${rel}`), note, log, onProgress, rel, sha256)
 }
 
 // uv 的下载源：PyPI 上的 uv 安装包（固定版本，里面带 uv.exe）走国内镜像，最后才试 GitHub。
@@ -160,6 +161,7 @@ export function explainInstallError(msg) {
   if (/ENOENT/.test(m)) return `找不到需要的程序（${(m.match(/spawn (\S+)/) || [])[1] || '?'}）。点「重新检查 / 修复安装」再试一次；还不行就把报错发给作者`
   if (/ENOSPC|No space|磁盘空间|not enough space/i.test(m)) return '磁盘空间不够了。换一个空间大的盘（上面「装到哪里」），保存后再装'
   if (/timed? ?out|超时|30 秒没进度|operation timed/i.test(m)) return '网络太慢、超时了。打开「用国内镜像下载」或者开着代理，再点安装（已下好的不会重下）'
+  if (/CERTIFICATE_VERIFY_FAILED|unable to get local issuer certificate|self[- ]signed certificate|certificate verify failed/i.test(m)) return 'HTTPS 证书校验没通过（unable to get local issuer certificate）。通常是网络里有代理、加速器或安全软件在中间换了证书：先关掉它们再点安装；还不行就按手册「翻唱 → 手动放置预训练文件」把文件下好放进去，已下好的不会重下'
   if (/connection|connect|reset|TLS|SSL|dns|resolve|Failed to fetch|Failed to download|error sending request|无法连接|网络/i.test(m)) return '网络连接断了。打开「用国内镜像下载」或者开着代理，再点安装（已下好的不会重下）'
   if (/CUDA|nvidia|GPU/i.test(m)) return '和显卡驱动有关，可能需要更新 NVIDIA 驱动。' + m.slice(0, 160)
   return m.slice(0, 300)
@@ -211,7 +213,16 @@ export function importSeparator(dir, filename, buf) {
   return { ok: false, message: `「${filename}」不是插件要的人声分离模型（校验对不上），要下 ${BS_ROFORMER}.ckpt` }
 }
 // 分离工具每次运行都要的模型清单（缺了会去 raw.githubusercontent.com 拉，国内常常连不上）
-const SEPARATOR_LIST = ['download_checks.json', ['https://raw.githubusercontent.com/TRvlvr/application_data/main/filelists/download_checks.json', 'https://cdn.jsdelivr.net/gh/TRvlvr/application_data@main/filelists/download_checks.json']]
+// raw.githubusercontent.com 和 cdn.jsdelivr.net 在国内常被重置连接（#8），多给几个 jsDelivr 节点和 GitHub 代理
+const SEPARATOR_LIST_PATH = 'TRvlvr/application_data/main/filelists/download_checks.json'
+const SEPARATOR_LIST = ['download_checks.json', [
+  `https://fastly.jsdelivr.net/gh/TRvlvr/application_data@main/filelists/download_checks.json`,
+  `https://gcore.jsdelivr.net/gh/TRvlvr/application_data@main/filelists/download_checks.json`,
+  `https://testingcf.jsdelivr.net/gh/TRvlvr/application_data@main/filelists/download_checks.json`,
+  `https://ghfast.top/https://raw.githubusercontent.com/${SEPARATOR_LIST_PATH}`,
+  `https://raw.githubusercontent.com/${SEPARATOR_LIST_PATH}`,
+  `https://cdn.jsdelivr.net/gh/TRvlvr/application_data@main/filelists/download_checks.json`,
+]]
 
 /** 电脑上的盘和剩余空间，给面板「装到哪个盘」用：[{drive, root, freeGB, totalGB}] */
 export function listDrives() {
@@ -717,10 +728,10 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, say,
       })
       await step('准备 ffmpeg', '几秒钟', async () => setupFfmpeg())
       await step('下载 RVC 需要的预训练文件（音高、音色特征）', '约 560 MB，看网速几分钟', async () => {
-        for (const [rel, dest] of PREREQS) {
+        for (const [rel, dest, sha] of PREREQS) {
           await downloadWithMirror(p.python, rel, join(p.applio, dest), note, log, (done, total) => {
             install.progress = { kind: 'file', name: rel.split('/').pop(), done, total }
-          })
+          }, sha)
         }
       })
       await step('下载人声分离模型', '约 640 MB，看网速几分钟；下好以后第一次点歌就不用再等', async () => {
