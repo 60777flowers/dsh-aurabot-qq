@@ -134,7 +134,7 @@ export default {
         const item = recent.find((x) => /^-?[1-9]\d*$/.test(x.messageId || '') && block.name === `qqref-${x.messageId}-${x.imageIndex}`)
         return item ? [{ type: 'text', text: `【参考图 msg:${item.messageId}:${item.imageIndex}，发送者 QQ ${item.userId}】` }, block] : [block]
       })
-      return [...labeled, { type: 'text', text: '【绘图能力】能在当前群聊或私聊画图并发出，权限按本轮工具检查，不沿用旧回复的“必须私聊”。新请求需求明确时调用工具。改图优先将目标图旁的 msg 编号填入 image；编号指向固定图片，不随群友新图变化。没有编号时才按明确的目标选择 quote/last；缺图或不确定时请对方引用原图，不能省略参考图生成一张新图来代替。' }]
+      return [...labeled, { type: 'text', text: '【绘图参考】改图优先将目标图旁的 msg 编号填入 image；编号指向固定图片，不随群友新图变化。没有编号时才按明确的目标选择 quote/last；缺图或不确定时请对方引用原图，不能省略参考图生成一张新图来代替。' }]
     })
     api.tool(({ chat, sessionId }) => ((chat.kind !== 'system' && canDraw()) ? defineTool({
       name: 'qq_draw_image',

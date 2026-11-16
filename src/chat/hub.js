@@ -1,4 +1,4 @@
-import { identityNote, flatHistory } from './identity.js'
+import { identityNote, flatHistory, requestIdentity } from './identity.js'
 import { ignoredGroupMember } from './member-filter.js'
 import { preserveReplyStickers } from './sticker-policy.js'
 // 消息中枢：QQ 会话 ↔ DSH 会话。
@@ -3242,6 +3242,9 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       content = [{ type: 'text', text: `【你之前在这个聊天里主动说过（是在别处安排下发的，这里的人都看到了）】\n${lines.join('\n')}\n` }, ...content]
     }
     // 群聊、私聊、图片、主动搭话和插话都从这里经过；时间只进本轮内容。
+    // 只追加到新消息尾部，不改历史、系统提示或工具定义，保持可缓存前缀稳定。
+    const requestSource = requestIdentity(getConfig(), [senderId, ...(opts.extraSenders || [])])
+    if (chat.kind === 'group' || chat.kind === 'private') content = [...content, { type: 'text', text: requestSource.note }]
     content = cleanContent([...content, { type: 'text', text: currentTimeLine() }])
     content = await seedHistoryOnce(sessionId, chat, content)
     const admitted = await admit(agent, content)
@@ -3260,9 +3263,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     }
     // 告诉同一会话里的其他插件是谁在说（#145）：说话的全是主人才标 owner，混着别人或不知道是谁都是 guest。
     // chat 标私聊还是群聊：群里主人说话也是 owner，但回复全群都看得到，要不要放私事由插件自己判断
-    const speakers = [senderId, ...(opts.extraSenders || [])].filter(Boolean).map(String)
-    const speakerRole = speakers.length && speakers.every((u) => isOwner(getConfig(), u)) ? 'owner' : 'guest'
-    const message = { id: randomUUID(), role: 'user', content: admitted, source: { kind: SOURCE_KIND, speaker: { role: speakerRole, chat: chat.kind } } }
+    const message = { id: randomUUID(), role: 'user', content: admitted, source: { kind: SOURCE_KIND, speaker: { role: requestSource.role, chat: chat.kind } } }
     // 所有异步准备完成后，按实际投递路径登记轮次状态；中间不能再 await，
     // 否则上一轮可能先结束，把待登记的回执接走或清掉（#90）。
     // 空闲 agent 的 steer 不会开启新一轮，必须改用 followup。
