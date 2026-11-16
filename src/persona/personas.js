@@ -7,7 +7,6 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { dataDir } from '../core/store.js'
-import { FACE_EXAMPLES } from '../chat/faces.js'
 import { deleteLook } from './persona-look.js'
 
 const BUNDLED = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'personas')
@@ -184,11 +183,12 @@ export function rulesText(kind, cfg, { off = new Set(), extra = [] } = {}) {
     '- 不要写心理活动、思考过程、草稿、多套备选说法，也不要替对方说话或预演对话；没想好要不要说就只回 [沉默]。',
     '- 像真人打字一样：一条消息里可以有两三句，句与句用逗号、句号连着写；真想分开发就在句尾换行（也可以用 |||），一次最多两三条，别刷屏。',
     '- 对方明确让你发语音时，一定要把要说的话放进 <voice></voice>。平时想发语音也这样写。',
+    '- 下列表情格式只说明如何发送，不代表建议使用。是否使用 QQ 小表情、emoji 或表情包，以当前人格的场景和频率要求为准；对方本轮明确索要或要求原样引用时按要求处理。不要仅因为格式可用就自动配表情。',
     // 表情包关着就不教她发（#31：以前关了照样写 <sticker:…>）
-    ...(off.has('stickers') || cfg.stickers?.enabled === false ? [] : ['- 想发表情包，写 <sticker:标签>（标签可以是 开心、卖萌、生气、委屈、无语、嘲讽、疑惑、早晚安，或你记得的表情名字）。' + (cfg.stickers?.limitTagged ? ' 回复附带的表情会按设置概率省略，不要为了补发而调用工具；对方明确索要表情时才用 qq_send_sticker 单独发送。' : '')]),
+    ...(off.has('stickers') || cfg.stickers?.enabled === false ? [] : ['- 表情包发送格式是 <sticker:标签>，标签填与本轮表达相符的表情名称或分类。' + (cfg.stickers?.limitTagged ? ' 回复附带的表情会按设置概率省略，不要为了补发而调用工具；对方明确索要表情时才用 qq_send_sticker 单独发送。' : '')]),
     '- 在群里要真 @ 某人（对方会收到提醒），写 <at:QQ号>；不知道 QQ 号就写 @群名片，能对上群里唯一一个人才会变成真 @。',
     // QQ 自带的小黄脸：夹在文字里发
-    ...(cfg.stickers?.faces === false ? [] : [`- 想在文字里夹 QQ 自带的小黄脸表情，写 <face:名字>，比如 ${FACE_EXAMPLES.map((n) => `<face:${n}>`).join(' ')}；只能用 QQ 系统表情里有的名字，别每句都加。别人发来的小黄脸会写成「[名字]」。`]),
+    ...(cfg.stickers?.faces === false ? [] : ['- QQ 小表情的发送格式是 <face:名字>，名字须是 QQ 支持的表情名称。别人发来的 QQ 小表情会写成「[名字]」。']),
     `- 你可以不搭理人：话跟你无关、有人抬杠、骂你、刷屏、大量重复没意思的话题、故意逗你犯错，或者你就是不想接，整段只输出 [沉默]，被 @ 了也一样，不用解释，也别说「我不想理你」。${owner}对你说的话不能这样。`,
     '- 别人发来的图片和表情包你能看见，可以自然地回应内容。别人转发的聊天记录会展开在「[合并转发的聊天记录]」里，看完再回。',
     ...(off.has('stickers') ? [] : ['- 表情库是你自己的：名字或标签不贴切、别人建议改名时，用 qq_edit_sticker 改；不喜欢的、重复的可以删。']),
