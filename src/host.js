@@ -16,7 +16,8 @@ import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import net from 'node:net'
 import { isDeepStrictEqual } from 'node:util'
-import { loadConfig, saveConfig, publicConfig, mergeFromPanel, ownerAuthorizationRevision } from './core/config.js'
+import { randomUUID } from 'node:crypto'
+import { loadConfig, saveConfig, commitConfig, configRevision, publicConfig, mergeFromPanel, ownerAuthorizationRevision } from './core/config.js'
 import { quietWindowOf } from './core/time-window.js'
 import { createLogger } from './core/logger.js'
 import { encodeResponse } from './core/http-compress.js'
@@ -143,6 +144,13 @@ export function isChatSession(hub, session) {
 export function apply(ctx) {
   const logger = createLogger({ dsh: ctx })
   const log = logger.child('core')
+  // ---------- 面板首屏提速（方案 §二） ----------
+  // bootId：本次宿主装配的唯一标识，面板用它判定「同一进程」的读写与保存回执；重启即换新。
+  const bootId = randomUUID()
+  // 核心配置与面板路由就绪前，三条轻量 GET（/panel/bootstrap|pulse|config）回 503 BOOTSTRAPPING。
+  let panelCoreReady = false
+  // 模块目录尚未就绪时 bootstrap 里 modulesReady=false（面板先画已知入口，占位等确认）。
+  let modsReady = false
   // 恢复备份必须在读配置之前：读完配置后内存里的旧状态会写回去
   try {
     const restored = applyPendingRestore()
@@ -150,12 +158,12 @@ export function apply(ctx) {
   } catch (error) { log.error('恢复备份失败：', error.message) }
   let cfg = loadConfig()
   if (cfg.ownerQQ && !ownerAuthorizationRevision(cfg)) {
-    try { cfg = saveConfig(cfg, cfg) }
+    try { cfg = commitConfig(cfg, cfg) }
     catch { log.warn('初始化主人授权记录失败，本次启动使用会话授权') }
   }
   // 全新安装（根目录还没有记忆、会话和流水）：当前人格直接认领根目录。老用户升级要主人在面板里认领。
   if (!dataOwner(cfg) && !hasRootData()) {
-    try { cfg = saveConfig({ ...cfg, persona: { ...cfg.persona, dataOwner: safeId(cfg.persona.current) || 'dafeiyu' } }, cfg) }
+    try { cfg = commitConfig({ ...cfg, persona: { ...cfg.persona, dataOwner: safeId(cfg.persona.current) || 'dafeiyu' } }, cfg) }
     catch { log.warn('记录数据归属人格失败，本次启动所有人格共用根目录') }
   }
   let mods = null
@@ -173,7 +181,9 @@ export function apply(ctx) {
   const secrets = () => { for (const k of ['webuiPassword', 'httpToken', 'wsToken']) registerSecret(cfg.snowluma[k]); registerSecret(cfg.imageGen.apiKey); for (const e of cfg.imageGen.fallbacks || []) registerSecret(e.apiKey); registerSecret(cfg.bridge.token); registerSecret(cfg.backup?.remote?.token); registerSecret(cfg.backup?.remote?.webdav?.password) } // backup 令牌/WebDAV 密码也按密钥脱敏（云备份）
   const setConfig = (next) => {
     const before = cfg
-    cfg = saveConfig(next, before)
+    // 统一提交函数（方案 §2.2）：落盘 + 发布 + configRevision 递增都收敛在 commitConfig 里；
+    // 值与已发布配置完全一致时不落盘不递增（面板「只提交没变化字段」回执取接纳时版本）。
+    cfg = commitConfig(next, before)
     // 改机器人号后旧连接的核对结果立刻失效，必须重新核对才能处理消息或完成向导。
     if (before.botQQ !== cfg.botQQ) {
       wrongAccount = ''
@@ -237,6 +247,9 @@ export function apply(ctx) {
   // 连上后先核对登录的是不是机器人号，核对通过前不处理任何消息；不是就断开，不再自动重连
   let loginOk = false
   let wrongAccount = ''
+  // 已核验登录快照（方案 §二「连接摘要」）：checkLogin 核对时顺手缓存，面板轻量接口只读它，
+  // 绝不为了首屏现打 get_login_info（5 秒超时那个就是首屏卡顿的元凶）。断线即作废。
+  let loginSnapshot = { uin: '', nickname: '', at: 0 }
   // 核对期间收到的事件先攒着：核对通过就补处理，核对失败就丢掉。
   // 直接丢弃的话，刚连上那几百毫秒里主人发的消息就没了（登录核对要等一次 get_login_info 往返）。
   let verifying = false
@@ -250,9 +263,12 @@ export function apply(ctx) {
     pendingEvents = []
     try {
       let uin = ''
+      let info = null
       try {
-        const info = await onebot.call('get_login_info', {}, { timeoutMs: 10000 })
+        info = await onebot.call('get_login_info', {}, { timeoutMs: 10000 })
         uin = String(info?.user_id ?? '')
+        // 核对往返顺带更新登录快照（昵称一起缓存；核对本身不增加任何额外网络调用）
+        loginSnapshot = { uin, nickname: info?.nickname || '', at: Date.now() }
       } catch (error) {
         logger.child('onebot').warn('核对登录的 QQ 号失败：', error.message)
       }
@@ -320,7 +336,7 @@ export function apply(ctx) {
       onebotState = s
       if (s === 'connected' || s === 'stopped' || s === 'unconfigured') { gatewayWarmSince = 0; warmupPhase = { phase: '', label: '' } }
       else if (!gatewayWarmSince && cfg.enabled) gatewayWarmSince = Date.now()
-      if (s !== 'connected') { loginOk = false; pendingEvents = [] }
+      if (s !== 'connected') { loginOk = false; pendingEvents = []; loginSnapshot = { uin: '', nickname: '', at: loginSnapshot.at } }
       else checkLogin().then(() => { if (loginOk) flushOutbox() }).catch((error) => log.warn('核对登录号出错：', error.message))
       // 预热阶段 connecting/disconnected 会每 3 秒来回刷：首次和每 20 秒记一条 info，其余进 debug
       const line = `QQ 网关：${s}${d ? '（' + d + '）' : ''}`
@@ -793,6 +809,85 @@ export function apply(ctx) {
   core.bridge = bridge
   core.modules = mods
 
+  // ---------- 面板首屏：三条轻量只读接口（GET /panel/bootstrap|pulse|config，方案 §二/§2.1） ----------
+  // 铁规矩：只读宿主内存——绝不触发 SnowLuma/OneBot 网络探测、不启动网关、不重扫模块目录。
+  // 鉴权/Host/CSRF 与其它管理面一致（route() 内统一过闸）；no-store 由 send() 统一带上。
+  // 常用开关的界面显示值（试运行口径与 publicConfig 相同：调试开着时试运行显示为关）。
+  const controlsView = () => ({
+    enabled: Boolean(cfg.enabled),
+    dryRun: Boolean(cfg.dryRun && !cfg.debug),
+    debug: Boolean(cfg.debug),
+    safeMode: Boolean(cfg.safeMode),
+  })
+  // 连接快照：QQ 直连只用事件状态（onebotState）+ 已核验登录快照（checkLogin 顺带缓存），
+  // 原因码只给可公开的机器值（reason），不给内部细节。
+  const connectionsView = () => {
+    const connected = onebotState === 'connected'
+    const verified = connected && loginOk
+    let stage = 'connecting'
+    let reason = 'gateway_connecting'
+    if (!cfg.enabled) { stage = 'disabled'; reason = 'disabled_in_config' }
+    else if (connected && verified) { stage = 'connected'; reason = 'ok' }
+    else if (connected) { stage = 'verifying'; reason = wrongAccount ? 'wrong_account' : 'verifying_login' }
+    else if (onebotState === 'unconfigured') { stage = 'unconfigured'; reason = 'gateway_unconfigured' }
+    else if (onebotState === 'stopped') { stage = 'disconnected'; reason = 'gateway_disconnected' }
+    else if (gatewayWarmSince) { reason = 'gateway_warming' }
+    return [{
+      platform: 'qq',
+      instanceId: 'onebot',
+      enabled: Boolean(cfg.enabled),
+      stage, // connected | verifying | connecting | disconnected | unconfigured | disabled
+      verified,
+      reason, // ok | wrong_account | verifying_login | gateway_warming | gateway_connecting | gateway_disconnected | gateway_unconfigured | disabled_in_config
+      login: verified ? { uin: loginSnapshot.uin, nickname: loginSnapshot.nickname } : null,
+      warmupSeconds: gatewayWarmSince ? Math.max(0, Math.round((Date.now() - gatewayWarmSince) / 1000)) : 0,
+    }]
+  }
+  // 导航摘要：mods 尚未装配时给空表（bootstrap 用 modulesReady=false 提示面板先占位）。
+  const navSummary = () => (mods ? mods.summarizeModules() : { navigationRevision: 0, modules: [] })
+  const navRevision = () => (mods ? mods.navigationRevision() : 0)
+  // 核心配置/路由未就绪：三条轻量 GET 统一回 503 BOOTSTRAPPING（方案 §2.1「启动与失败」）。
+  const bootstrapping = (res) => {
+    if (panelCoreReady) return false
+    send(res, 503, { ok: false, code: 'BOOTSTRAPPING', bootId })
+    return true
+  }
+  route('/panel/bootstrap', async (req, res) => {
+    if (bootstrapping(res)) return
+    const nav = navSummary()
+    return {
+      ok: true,
+      bootId,
+      configRevision: configRevision(),
+      version: VERSION,
+      setupDone: Boolean(cfg.setupDone),
+      controls: controlsView(),
+      connections: connectionsView(),
+      modulesReady: modsReady,
+      navigationRevision: nav.navigationRevision,
+      modules: nav.modules,
+    }
+  })
+  route('/panel/pulse', async (req, res) => {
+    if (bootstrapping(res)) return
+    return {
+      ok: true,
+      bootId,
+      configRevision: configRevision(),
+      navigationRevision: navRevision(),
+      setupDone: Boolean(cfg.setupDone),
+      controls: controlsView(),
+      connections: connectionsView(),
+    }
+  })
+  route('/panel/config', async (req, res) => {
+    if (bootstrapping(res)) return
+    // 面板草稿唯一的初始化/刷新来源：现有 publicConfig 的脱敏结果（密码/token 不回传原文）。
+    return { ok: true, bootId, configRevision: configRevision(), config: publicConfig(cfg) }
+  })
+  // 配置已加载、上述路由已注册：之后轻量读接口直接回 200（503 只覆盖装配早期）。
+  panelCoreReady = true
+
   // 出站门闸接进 hub（第二道保险：模块直调 api.core.hub.sendText / scopedHub 也都被覆盖）。
   // 判定的来源因果由调用方带 sourceModule / enginePolicy 时生效；没带标记的内部发送完全不受影响。
   // settle：admit 放行时会预占一份策略源预算，不结算就永远挂着（下一轮变成 busy），
@@ -971,6 +1066,7 @@ export function apply(ctx) {
   let unloaded = false
   const community = createCommunity({ mods, getConfig, setConfig, log, version: VERSION, alive: () => !unloaded })
   const booted = mods.boot()
+  booted.then(() => { modsReady = true /* 模块目录就绪：bootstrap 的 modulesReady 转 true */ }).catch(() => {})
   booted.then(() => injectPetPort()).catch(() => {})
   booted.then(() => { if (getConfig().debug) hub.ensureDebugSession().catch((error) => log.warn('建调试会话失败：', error.message)) }).catch(() => {})
   // 模块起来之后再把策略源接上（此时 use('speakup') / use('purpose') 才拿得到实例）
@@ -1271,6 +1367,21 @@ export function apply(ctx) {
   // ?range=today|yesterday|7|30|all —— 面板点哪张指标卡就按哪个区间出明细
   route('/usage', async (req) => ({ ok: true, ...usageReport({ range: query(req).range || '7' }) }))
 
+  // JSON Pointer（RFC 6901）小工具：保存回执按 /voice/enabled 这类路径逐字段确认（方案 §2.2）。
+  const pointerGet = (obj, pointer) => String(pointer || '').split('/').slice(1)
+    .map((s) => s.replace(/~1/g, '/').replace(/~0/g, '~'))
+    .reduce((o, k) => (o && typeof o === 'object' ? o[k] : undefined), obj)
+  // 面板提交体 → 提交字段路径：对象逐层展开；数组按整字段确认（不拆下标）；空对象也算整字段。
+  const pointerPaths = (v, prefix = '') => {
+    if (prefix && (Array.isArray(v) || v === null || typeof v !== 'object')) return [prefix]
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return prefix ? [prefix] : []
+    const keys = Object.keys(v)
+    if (!keys.length) return prefix ? [prefix] : []
+    return keys.flatMap((k) => pointerPaths(v[k], prefix + '/' + k.replace(/~/g, '~0').replace(/\//g, '~1')))
+  }
+  // 校验失败的回执：没有发生任何提交，committed/unchanged 都是空、版本取当前值（原返回形状不变，只多字段）。
+  const saveEnvelope = (body) => ({ bootId, configRevision: configRevision(), committedPaths: [], unchangedPaths: [], ...body })
+
   route('/save', async (req) => {
     const body = await readBody(req)
     // 面板草稿可能早于 QQ 的 /quiet /chatty；拒绝覆盖期间改过的群设置。
@@ -1278,18 +1389,18 @@ export function apply(ctx) {
     if (body?.memory && Object.hasOwn(body.memory, 'passiveGroups')) {
       const raw = body.memory.passiveGroups
       const ids = Array.isArray(raw) ? raw : typeof raw === 'string' ? raw.split(/[\s,，;；]+/).filter(Boolean) : null
-      if (!ids || ids.some(id => !/^[1-9]\d{4,11}$/.test(String(id).trim()))) return {
+      if (!ids || ids.some(id => !/^[1-9]\d{4,11}$/.test(String(id).trim()))) return saveEnvelope({
         ok: false, code: 'invalid_passive_groups', message: '旁听名单请填 5～12 位数字群号，用换行或逗号分隔，不要混入文字。本次没有保存。',
-      }
+      })
     }
     for (const ids of [body?.group?.moduleOnlyGroups, ...(body?._groupSettingsBase?.groups ? [body?.allow?.groups] : [])]) {
-      if (ids !== undefined && (!Array.isArray(ids) || ids.some(id => !/^[1-9]\d{4,11}$/.test(String(id))))) return {
+      if (ids !== undefined && (!Array.isArray(ids) || ids.some(id => !/^[1-9]\d{4,11}$/.test(String(id))))) return saveEnvelope({
         ok: false, code: 'invalid_group_ids', message: '群号请填 5～12 位数字，不要混入文字。本次没有保存。',
-      }
+      })
     }
-    if (body && Object.hasOwn(body, 'memberFilter') && !validMemberFilter(body.memberFilter)) return {
+    if (body && Object.hasOwn(body, 'memberFilter') && !validMemberFilter(body.memberFilter)) return saveEnvelope({
       ok: false, code: 'invalid_member_filter', message: '不回应名单未保存：请填有效的 QQ 号和群号（5～12 位数字），每人只添加一次，并明确选择所有群或指定群；最多 100 人、每人 100 个群。',
-    }
+    })
     const expected = body?._groupSettingsBase
     if (body) delete body._groupSettingsBase
     if (expected && (
@@ -1297,12 +1408,29 @@ export function apply(ctx) {
       (Object.hasOwn(expected, 'memberFilter') && !isDeepStrictEqual(expected.memberFilter, cfg.memberFilter)) ||
       (Object.hasOwn(expected, 'group') && !isDeepStrictEqual(expected.group, cfg.group)) ||
       (Object.hasOwn(expected, 'passiveGroups') && !isDeepStrictEqual(expected.passiveGroups, cfg.memory.passiveGroups))
-    )) return { ok: false, code: 'group_settings_conflict', message: '群设置已在别处修改，本次没有保存。请记下要保留的改动，再点「读取最新设置」放弃草稿。' }
+    )) return saveEnvelope({ ok: false, code: 'group_settings_conflict', message: '群设置已在别处修改，本次没有保存。请记下要保留的改动，再点「读取最新设置」放弃草稿。' })
     const before = cfg
+    // ---- 保存回执（方案 §2.2）：按提交前后（归一化后）的实际结果逐字段确认。 ----
+    // body 此时已剥掉 _groupSettingsBase 与 snowluma.webuiPassword（密码走单独通道，不算普通配置字段）。
+    // 提交字段路径先收集，分类在下面 setConfig 之后做（提交前 cfg===before，分类会全落 unchanged）。
+    const submittedPaths = pointerPaths(body)
     // 控制台密码不能只改配置（SnowLuma 那边还是旧的）：拿出来单独去 SnowLuma 改
     const newPw = typeof body?.snowluma?.webuiPassword === 'string' ? body.snowluma.webuiPassword : ''
     if (body?.snowluma) delete body.snowluma.webuiPassword
     setConfig(mergeFromPanel(cfg, body))
+    // committed/unchanged 分类必须在提交之后：commitConfig 返回新的归一化对象（变化时），
+    // 逐字段对比 before（提交前）与 cfg（提交后）——真写了的进 committedPaths，
+    // 显式提交但值相同（含 mergeFromPanel 归一化后等值）的进 unchangedPaths（草稿别一直标脏）。
+    const committedPaths = []
+    const unchangedPaths = []
+    for (const p of submittedPaths) {
+      if (isDeepStrictEqual(pointerGet(cfg, p), pointerGet(before, p))) unchangedPaths.push(p)
+      else committedPaths.push(p)
+    }
+    // 本次请求的回执（定义在提交之后、使用之前，避免 pw 失败分支的 TDZ）：
+    // 版本 = 本次请求触发的全部同步提交后的最高版本（如 SnowLuma 密码自动保存会再提交一次）；
+    // 异步回执不得借用别的请求版本，所以在这里闭包当场取值。
+    const saveReceipt = () => ({ bootId, configRevision: configRevision(), committedPaths, unchangedPaths })
     let pw = null
     if (newPw && newPw !== before.snowluma.webuiPassword) pw = await snowluma.setPassword(newPw)
     const changedConn = before.gateway !== cfg.gateway || ['httpUrl', 'wsUrl', 'httpToken', 'wsToken', 'dir'].some((k) => before.snowluma[k] !== cfg.snowluma[k])
@@ -1317,7 +1445,7 @@ export function apply(ctx) {
     await mods.sync().catch(() => {})
     // 模块启停 / 生图开关变化后工具清单可能变了：已挂载的会话重新挂一遍
     try { hub.remountAll?.('设置已保存') } catch (error) { log.debug('重挂工具失败：', error.message) }
-    if (pw && !pw.ok) return { ...(await overview()), ok: false, message: '其他设置保存了，但控制台密码没改：' + pw.message }
+    if (pw && !pw.ok) return { ...(await overview()), ...saveReceipt(), ok: false, message: '其他设置保存了，但控制台密码没改：' + pw.message }
     let debugNote = ''
     if (cfg.debug) {
       try {
@@ -1327,7 +1455,7 @@ export function apply(ctx) {
         log.debug('建调试会话失败：', error.message)
       }
     }
-    return { ...(await overview()), message: '保存好了' + (pw ? '，' + pw.message : '') + debugNote }
+    return { ...(await overview()), ...saveReceipt(), message: '保存好了' + (pw ? '，' + pw.message : '') + debugNote }
   })
 
   route('/debug/session', async () => {

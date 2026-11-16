@@ -68,7 +68,8 @@ test('页面默认展示按群设置，分区切换不修改配置，旧入口�
   assert.deepEqual(p.draft, before)
   assert.match(source, /打开群聊设置/)
   assert.match(source, /group: '群聊 发言 白名单 仅模块 主动 窗口 插话 旁听 静默 合并 不回应 不理 屏蔽 黑名单 通用设置 继续回应 回复方式 权限与限制'/)
-  assert.match(source, /JSON.stringify\(draft.allow\?\.groups\) !== JSON.stringify\(cfg.allow\?\.groups\)/)
+  assert.match(source, /const base = draftBaseRef\.current \|\| cfg/)
+  assert.match(source, /JSON\.stringify\(draft\.allow\?\.groups\) !== JSON\.stringify\(base\.allow\?\.groups\)/)
 })
 
 
