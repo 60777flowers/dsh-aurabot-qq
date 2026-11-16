@@ -256,6 +256,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-deep:#9cc4f5;--ab-sea:#6
 .ab-finder-empty{padding:12px 10px;color:var(--ab-dim);font-size:12px}
 @media (max-width:640px){.ab-grp{padding:0 10px;gap:5px}.ab-find-btn .t,.ab-find-btn .ab-kbd{display:none}.ab-finder{left:6px;right:6px;width:auto;max-width:none}}
 .ab-grid{display:grid;gap:12px}
+.ab-market-grid{grid-template-columns:repeat(auto-fill,minmax(min(100%,280px),1fr))}
+.ab-market-grid>.ab-card{content-visibility:auto;contain-intrinsic-block-size:auto 180px}
 .ab-permission-grid{display:grid;grid-template-columns:minmax(220px,1fr) minmax(0,2fr);gap:12px;align-items:start}
 .ab-permission-grid>.ab-card{padding:14px 16px}
 .ab-permission-grid>.ab-card h3{margin-bottom:2px}
@@ -7213,11 +7215,6 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const [show, setShow] = useState('all')
       const [cat, setCat] = useState('')
       const [sort, setSort] = useState('hot') // hot | latest | updated | default
-      // 分页：市场模块多了全量渲染会卡，一次只画一页
-      const PAGE_SIZE = 12
-      const [page, setPage] = useState(1)
-      // 筛选/排序条件一变就回第一页，别停在可能超出范围的旧页码
-      useEffect(() => { setPage(1) }, [q, show, cat, sort])
       const load = (force) => get('/modules/community' + (force ? '?force=1' : '')).then(setData)
       useEffect(() => { load() }, [])
       // 模块市场地址：下拉选官方源（GitHub / Gitee 镜像）或自定义。拉当前值与可选源，改完可保存或恢复默认。
@@ -7319,19 +7316,12 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const shown = sortMarketModules(filtered, effectiveSort)
       const missingTimes = timeMode ? shown.filter((m) => !marketTimeOf(m, timeMode)).length : 0
       const dateTextOf = (m) => { const t = marketTimeOf(m, timeMode || 'latest'); return t ? new Date(t).toISOString().slice(0, 10) : '' }
-      const pages = Math.max(1, Math.ceil(shown.length / PAGE_SIZE))
-      const cur = Math.min(page, pages) // 数据变少后旧页码可能越界，夹回来
-      const pageShown = shown.slice((cur - 1) * PAGE_SIZE, cur * PAGE_SIZE)
       // 模块仓库地址：每个市场模块都在模块库 modules/<id> 下，默认深入到它自己的目录
       // /tree/main/modules/<id>（比条目里的 homepage 更准——有的 homepage 指向别处仓库根）；
       // 认不出模块库仓库才退 homepage（只认 http/https，索引是外部数据）
       const repoUrl = (m) => (stats.source
         ? 'https://github.com/' + stats.source + '/tree/main/modules/' + m.id
         : /^https?:\/\//i.test(String(m.homepage || '')) ? m.homepage : '')
-      const pager = pages > 1 ? h('div', { className: 'ab-flex', style: { marginTop: 12, justifyContent: 'center', alignItems: 'center' } },
-        h(Btn, { small: true, disabled: cur <= 1, onClick: () => setPage(cur - 1) }, '上一页'),
-        h('span', { className: 'ab-small ab-muted', style: { margin: '0 10px' } }, '第 ' + cur + ' / ' + pages + ' 页 · 共 ' + shown.length + ' 个'),
-        h(Btn, { small: true, disabled: cur >= pages, onClick: () => setPage(cur + 1) }, '下一页')) : null
       const num = (n) => (Number(n) >= 10000 ? (Number(n) / 10000).toFixed(1).replace(/\.0$/, '') + ' 万' : String(Number(n) || 0))
       const openSettings = (m) => {
         const running = (st.modules || []).find((x) => x.id === m.id)
@@ -7385,8 +7375,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         !data ? h(Empty, { icon: '⏳', text: '加载中…' }) : null,
         data && data.ok === false ? h('div', { className: 'ab-note warn' }, '市场打不开：' + data.message) : null,
         data && data.ok !== false && !shown.length ? h(Empty, { icon: '🐟', text: list.length ? '没有符合条件的模块' : '市场里还没有模块' }) : null,
-        shown.length ? h('div', { className: 'ab-grid', style: { gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' } }, pageShown.map(card)) : null,
-        pager,
+        shown.length ? h('div', { className: 'ab-grid ab-market-grid' }, shown.map(card)) : null,
         h(ModuleTutorial, { toast }))
     }
 
