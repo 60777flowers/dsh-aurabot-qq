@@ -365,13 +365,13 @@ test('引用文字缺图时不静默改用 last 或无参考生成；新请求�
 })
 
 
-test('能力提示追加在本条消息后，不改原消息、不改历史或工具前缀', t => {
+test('参考图提示追加在本条消息后，不改原消息、不改历史或工具前缀', t => {
   sandbox(t)
   const cfg = config()
   const owner = drawTool(cfg), guest = drawTool(cfg, { turnSendersAllOwner: () => false })
   const original = [{ type: 'text', text: '请改这张图' }, { type: 'image', attachment: 'test-image' }]
   const out = owner.prompt(original, groupChat), text = out.at(-1).text
-  assert.match(text, /能在当前群聊或私聊画图并发出/)
+  assert.match(text, /改图优先将目标图旁的 msg 编号填入 image/)
   assert.match(text, /不能省略参考图生成一张新图来代替/)
   assert.deepEqual(out.slice(0, -1), original)
   assert.equal(original.length, 2)
