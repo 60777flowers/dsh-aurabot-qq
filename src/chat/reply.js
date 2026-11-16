@@ -9,7 +9,7 @@
 //   - 整轮只输出 `[沉默]`（或空）= 这次不说话（群聊插话用）
 // 另外顺手把模型偶尔漏出来的 Markdown 洗掉——QQ 不渲染 Markdown。
 
-import { contextInjectionRanges, currentPromptSources, promptFingerprint, promptTextRanges } from '../security/leak-guard.js'
+import { chatRecordRanges, contextInjectionRanges, currentPromptSources, promptFingerprint, promptTextRanges } from '../security/leak-guard.js'
 import { stripMarkers } from './reply-marker.js'
 import { stripHtmlFragments } from './html-fragments.js'
 
@@ -440,8 +440,10 @@ export function cleanOutboundText(text, { warn, promptSources, fingerprint, user
   // 沉默标记也按区间删：turn/end 之外（空间说说、模块代发等）同样不能把标记当正文发出去。
   const silence = silenceMarkRanges(raw)
   const stateRanges = stateTagRanges(raw)
+  // 模型自己编的格式化聊天记录同样不是提示词复读，按整行删除，避免冒充「对方发言」。
+  const recordRanges = chatRecordRanges(raw)
   const noiseCount = toolRanges.length + contextRanges.length + htmlCuts.length
-  const tools = [...toolRanges, ...contextRanges, ...silence, ...stateRanges]
+  const tools = [...toolRanges, ...contextRanges, ...silence, ...stateRanges, ...recordRanges]
     .sort((a, b) => a.start - b.start || b.end - a.end)
   const baseRanges = mergeRanges([...tools, ...htmlCuts])
   const toolClean = withoutToolRanges(raw, baseRanges)
@@ -464,7 +466,7 @@ export function cleanOutboundText(text, { warn, promptSources, fingerprint, user
     ranges = mergeRanges([...baseRanges, ...prompts.map((p) => ({ start: offsets[p.start], end: offsets[p.end - 1] + 1 }))])
   }
   let clean = withoutToolRanges(raw, ranges)
-  // 只有沉默标记或 state 标签时属于正常沉默/模型内部标签漏出，不要误报成工具调用/提示词复读。
+  // 只有沉默标记/state 标签/中文时间注入/伪造聊天记录时按沉默处理，不要误报成工具调用或提示词复读。
   if ((noiseCount > 0 || removePrompts) && isSilence(visibleContent(clean))) {
     warn?.(removePrompts ? '模型输出整段都是提示词复读，已拦下并按沉默处理' : '模型输出整段都是工具调用文字，已拦下并按沉默处理')
     clean = ''

@@ -53,9 +53,11 @@ const RUNTIME_CONTEXT_LINE = /^(?:Current |Approval policy:|Browser time zone|[\
 // 宿主 time-context 每一步都注入一段三行文本（Time sampled … / Browser time zone … / Elapsed since …），
 // 模型会顺着它往下续写。这里只认前缀不认整句 —— 续写时模型会改写后半句
 // （otherwise-unqualified dates and times → amongst questions），整句指纹拦不住。
+// 插件自己每轮还会追加一行中文【当前本机时间】（src/chat/time-context.js）；它同样不是提示词复读，
+// 而且不在 fingerprint 来源里，必须按行前缀直接拦（2026-11-15 私聊事故：整行被当正文发出）。
 // 注意：matchAll 会沿用共享 /g 正则的 lastIndex，这里用源头字符串每次新建。
-const TIME_CONTEXT_HEAD_SOURCE = '^[ \\t]*Time sampled while preparing turn \\d+, step \\d+:'
-const TIME_CONTEXT_LINE = /^(?:Time sampled while preparing turn \d+, step \d+:|Browser time zone for this request:|Elapsed since the preceding (?:model-visible message|step context):)/
+const TIME_CONTEXT_HEAD_SOURCE = '^[ \\t]*(?:Time sampled while preparing turn \\d+, step \\d+:|【当前本机时间】)'
+const TIME_CONTEXT_LINE = /^(?:Time sampled while preparing turn \d+, step \d+:|Browser time zone for this request:|Elapsed since the preceding (?:model-visible message|step context):|【当前本机时间】)/
 
 function runtimeContextEnd(text, start) {
   let end = start
@@ -74,6 +76,37 @@ function timeContextEnd(text, start) {
     end += line.length + 1
   }
   return Math.min(end, text.length)
+}
+
+/**
+ * 出站格式化聊天记录识别：模型会把上下文里「【私聊】[HH:MM] 昵称(QQ号)：内容」的格式
+ * 当成自己要说的话编一条发出来（2026-11-15 私聊事故：「【私聊】[10:19] 某人(QQ号): 不酸 我睡够了」，
+ * 而对方从未说过这句）。群聊块的行格式则是「[HH:MM] 昵称(QQ号)：内容」（src/chat/hub.js）。
+ *
+ * 判断刻意保守：整行必须同时命中「可选序号 + 可选来源标签 + 方括号时间 + 名字 + 括号里的
+ * 5–12 位数字 QQ + 冒号 + 内容」，且从行首匹配到行尾。正常转述（「你刚才在私聊里说 10:19…」）
+ * 不会整行同时具备这些格式元素，因此不误伤；只删命中的整行（连同行尾换行），其他正文保留。
+ */
+// QQ 号按真实形态是 5–12 位数字；同时兼容工单/日志脱敏后的「QQ号」占位写法，便于回归。
+const QQ_ID = '(?:\\d{5,12}|[QqｑＱ]{2}[ \\t]*[号號]?)'
+const CHAT_RECORD_LINE = new RegExp(
+  '^[ \\t]*(?:\\[\\d{1,2}\\][ \\t]*)?(?:【(?:私聊|群聊)[^】\\n]*】[ \\t]*)?' +
+  '\\[(?:\\d{1,2}:\\d{2}|昨天[ \\t]+\\d{1,2}:\\d{2}|\\d{2}-\\d{2}[ \\t]+\\d{1,2}:\\d{2}|\\d{4}-\\d{2}-\\d{2}[ \\t]+\\d{1,2}:\\d{2})\\][ \\t]+' +
+  `[^()\\n（）]{1,40}[（(]\\s*${QQ_ID}\\s*[）)][ \\t]*[：:][ \\t]*\\S[^\\n]*$`,
+  'gm',
+)
+
+/** 返回伪造聊天记录整行的删除区间（含行尾换行）。 */
+export function chatRecordRanges(text) {
+  const raw = String(text ?? '')
+  const ranges = []
+  const re = new RegExp(CHAT_RECORD_LINE.source, 'gm')
+  for (const m of raw.matchAll(re)) {
+    let end = m.index + m[0].length
+    if (raw[end] === '\n') end += 1
+    ranges.push({ start: m.index, end })
+  }
+  return ranges
 }
 
 /**
