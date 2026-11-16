@@ -1771,8 +1771,15 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     }
     items = limitReplyStickers(items)
     const inGroup = chatId.startsWith('group:')
-    // 群里别刷屏：一段最多 3 条
-    if (inGroup && items.length > 3) items = items.slice(0, 3)
+    // 群里别刷屏：一段最多 3 条。超了不静默截断——整段并成一条发出去，条数照样不涨
+    if (inGroup && items.length > 3) {
+      const mergedText = items.filter((i) => i.kind === 'text').map((i) => i.value.trim()).filter(Boolean).join('\n')
+      if (mergedText) {
+        items = [{ kind: 'text', value: mergedText }, ...items.filter((i) => i.kind !== 'text')]
+        log.debug(`[chat] ${chatId}：拆多条会超群聊 3 条上限，这一段并成 1 条发（${mergedText.length} 字）`)
+      }
+      if (items.length > 3) items = items.slice(0, 3)
+    }
     // 按概率补一张表情（群里已经有两条以上就不补了）
     if (!interim && cfg.stickers.enabled && !items.some((i) => i.kind === 'sticker') && !(inGroup && items.length >= 2) && allowReplySticker()) {
       const pick = stickers.pickForReply(texts.map((t) => t.value).join(' '))
