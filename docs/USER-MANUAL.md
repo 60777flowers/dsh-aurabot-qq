@@ -263,6 +263,7 @@ QQ 指令中的「窗口」对应面板的「聊起来后继续回应」，现�
 | 她说 @ 了人，对方却没收到提醒 | 她只认群名片和 QQ 昵称，认不出你手机上给好友设的备注。告诉她对方的群名片或 QQ 号再让她 @ 一次。 |
 | 群里她不说话 | 在「聊天 → 群聊」检查模式：只有「允许 AI 聊天」才会由 AI 接话；再检查总开关和暂停。 |
 | 某个功能的标签页不见了 | 去「已安装」页看看对应的模块是不是关了。 |
+| 翻唱安装报「HTTPS 证书校验没通过」 | 网络里的代理、加速器或安全软件在中间换了证书。先关掉它们再点安装；插件会对能核对校验值的文件自动换一种连接重下。还不行就按下面「手动放置预训练文件」把文件放进去。 |
 | 翻唱说「读不了某个模型文件」 | 多半是杀毒软件（360、火绒、Defender）拦住了。把翻唱目录（比如 `E:\Aurabot\rvc`）加进杀毒软件的信任区；还不行就删掉提示里那个文件，在「翻唱」页重新下载。 |
 | 装了自己写的模块后她不对劲 | 「已安装」页打开「安全模式」，你写的模块全部不加载。恢复正常就说明是那个模块的问题，看它那一行的报错。 |
 | 语音发不出来 | 会自动改发文字。想要更好听的声音，在「语音」标签点「安装 edge-tts」。 |
@@ -272,6 +273,18 @@ QQ 指令中的「窗口」对应面板的「聊起来后继续回应」，现�
 
 所有日志都在：`%USERPROFILE%\.dsh\plugins-data\aurabot\logs\`
 所有数据（设置、人格、表情、日记、记忆）都在：`%USERPROFILE%\.dsh\plugins-data\aurabot\`
+
+### 翻唱：手动放置预训练文件
+
+「下载 RVC 需要的预训练文件」这一步一直失败时，可以用浏览器把下面三个文件下好，放到翻唱安装目录（面板「翻唱」页「装到哪里」那一栏，默认 `C:\Aurabot\rvc`）里的对应位置，再点安装，已经有的文件不会重下：
+
+| 文件 | 放到安装目录下的 |
+|---|---|
+| [rmvpe.pt](https://hf-mirror.com/IAHispano/Applio/resolve/main/Resources/predictors/rmvpe.pt) | `Applio\rvc\models\predictors\rmvpe.pt` |
+| [config.json](https://hf-mirror.com/IAHispano/Applio/resolve/main/Resources/embedders/contentvec/config.json) | `Applio\rvc\models\embedders\contentvec\config.json` |
+| [pytorch_model.bin](https://hf-mirror.com/IAHispano/Applio/resolve/main/Resources/embedders/contentvec/pytorch_model.bin) | `Applio\rvc\models\embedders\contentvec\pytorch_model.bin` |
+
+文件夹没有就自己建。链接打不开就把 `hf-mirror.com` 换成 `huggingface.co` 再试。
 
 ## 五、关于账号安全
 
