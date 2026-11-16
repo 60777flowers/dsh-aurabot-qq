@@ -3,19 +3,21 @@
 
 import { spawn, execFileSync } from 'node:child_process'
 import { autoShift, medianF0, pcm16ToFloat, voiceKind } from './pitch.js'
-import { existsSync, mkdirSync, readdirSync, statSync, statfsSync, writeFileSync, readFileSync, rmSync, copyFileSync, renameSync, openSync, readSync, closeSync } from 'node:fs'
-import { join, basename, dirname, isAbsolute } from 'node:path'
+import { chmodSync, existsSync, mkdirSync, readdirSync, statSync, statfsSync, writeFileSync, readFileSync, rmSync, copyFileSync, renameSync, openSync, readSync, closeSync } from 'node:fs'
+import { join, basename, dirname, delimiter, posix, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 import { createHash } from 'node:crypto'
 import { dataDir, readJson, writeJson } from '../core/store.js'
 import { searchSongs, songUrl, account } from './netease.js'
 import { readZip } from './zip.js'
+import { installLinuxUv } from './linux-uv.js'
 import { SongClipError, validateSongClip, selectedWindow, clipCacheParts, clipLabel, clipFade } from './segment.js'
 
 export const APPLIO_REPO = 'https://github.com/IAHispano/Applio.git'
 export const APPLIO_COMMIT = 'c817f1f83f689ef72e0dfeb1c17ae990b9248506'
 const TORCH_INDEX = 'https://download.pytorch.org/whl/cu128'
+const TORCH_CPU_INDEX = 'https://download.pytorch.org/whl/cpu'
 // 国内镜像：PyPI 和 PyTorch 都用阿里云（PyTorch 那边是文件列表，用 --find-links；Applio 固定了 torch 版本，挑得到 cu128 的），Python 本体用 npmmirror
 const CN_PYPI = 'https://mirrors.aliyun.com/pypi/simple'
 const CN_TORCH = 'https://mirrors.aliyun.com/pytorch-wheels/cu128/'
@@ -148,8 +150,8 @@ export function dirSize(dir) {
 }
 
 /** 翻唱环境的根目录：老安装沿用 C:\Aurabot\rvc，新安装放用户目录下。 */
-export function defaultRoot() {
-  return existsSync(LEGACY_ROOT) ? LEGACY_ROOT : join(homedir(), 'Aurabot', 'rvc')
+export function defaultRoot(platform = process.platform) {
+  return platform === 'win32' && existsSync(LEGACY_ROOT) ? LEGACY_ROOT : join(homedir(), 'Aurabot', 'rvc')
 }
 
 /**
@@ -241,10 +243,12 @@ export function listDrives() {
   return out
 }
 
-export function checkRoot(path) {
+export function checkRoot(path, platform = process.platform) {
   const p = String(path || '').trim()
   if (!p) return { ok: true, path: '', message: '', warn: '', freeGB: null }
-  if (!isAbsolute(p) || !/^[A-Za-z]:\\/.test(p.replace(/\//g, '\\'))) return { ok: false, path: p, message: '要写完整路径，比如 D:\\Aurabot\\rvc', warn: '', freeGB: null }
+  const linux = platform === 'linux'
+  const valid = linux ? posix.isAbsolute(p) : win32.isAbsolute(p) && /^[A-Za-z]:\\/.test(p.replace(/\//g, '\\'))
+  if (!valid) return { ok: false, path: p, message: linux ? '要写完整路径，比如 /home/ubuntu/Aurabot/rvc' : '要写完整路径，比如 D:\\Aurabot\\rvc', warn: '', freeGB: null }
   const warn = /[^\x21-\x7e]/.test(p) ? '路径里有中文或空格，个别工具可能出问题，最好换成全英文、不带空格的路径' : ''
   let freeGB = null
   try {
@@ -257,16 +261,23 @@ export function checkRoot(path) {
   return { ok: true, path: p, message: '', warn: warn || (freeGB !== null && freeGB < 10 ? `这个盘只剩 ${freeGB} GB，装完要 8 GB 左右，安装时还要临时多占几 GB` : ''), freeGB }
 }
 
-export function pathsOf(root) {
+export function pathsOf(root, { platform = process.platform, allowLegacy = true } = {}) {
+  // 旧 Linux 手工部署可能已有 Scripts/*.exe 转发脚本，原生程序在位时优先用原生路径。
+  const binary = (windows, linux) => {
+    const legacy = join(root, ...windows)
+    if (platform !== 'linux') return legacy
+    const native = join(root, ...linux)
+    return allowLegacy && !existsSync(native) && existsSync(legacy) ? legacy : native
+  }
   return {
     root,
-    python: join(root, 'env', 'Scripts', 'python.exe'),
-    separatorExe: join(root, 'env', 'Scripts', 'audio-separator.exe'),
+    python: binary(['env', 'Scripts', 'python.exe'], ['env', 'bin', 'python']),
+    separatorExe: binary(['env', 'Scripts', 'audio-separator.exe'], ['env', 'bin', 'audio-separator']),
     applio: join(root, 'Applio'),
     models: join(root, 'models'),
     separatorModels: join(root, 'separator-models'),
     bin: join(root, 'bin'),
-    ffmpeg: join(root, 'bin', 'ffmpeg.exe'),
+    ffmpeg: binary(['bin', 'ffmpeg.exe'], ['bin', 'ffmpeg']),
     rmvpe: join(root, 'Applio', 'rvc', 'models', 'predictors', 'rmvpe.pt'),
     contentvec: join(root, 'Applio', 'rvc', 'models', 'embedders', 'contentvec', 'pytorch_model.bin'),
   }
@@ -573,9 +584,10 @@ export async function cutFirstWith({
   return { file: out, cut: true, length: w.length }
 }
 
-export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, say, onSung, local, readPcm: readPcmInjected } = {}) {
+export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, say, onSung, local, readPcm: readPcmInjected, platform = process.platform, runInstallCommand = run } = {}) {
   const cfg = () => getConfig().song
-  const P = () => pathsOf(cfg().root || defaultRoot())
+  const linux = platform === 'linux'
+  const P = () => pathsOf(cfg().root || defaultRoot(platform), { platform })
   const work = () => dataDir('songs')
   // 确认过没有人声的歌（网易云 id），下次直接跳过，不用再花几分钟分离一遍
   const noVocalFile = () => join(work(), 'no-vocals.json')
@@ -628,8 +640,8 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, say,
       enabled: cfg().enabled,
       ready,
       root: p.root,
-      defaultRoot: defaultRoot(),
-      rootCheck: checkRoot(p.root),
+      defaultRoot: defaultRoot(platform),
+      rootCheck: checkRoot(p.root, platform),
       pypiMirror: cfg().pypiMirror || 'auto',
       parts,
       voices: voices.map((v) => ({ id: v.id, hasIndex: Boolean(v.index) })),
@@ -646,7 +658,7 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, say,
   // ---------- 一键安装（几个 GB，要十几分钟）----------
   async function runInstall() {
     if (install.running) return { ok: false, message: '已经在装了' }
-    const p = P()
+    let p = P()
     install = { running: true, step: '', stepIndex: -1, steps: INSTALL_STEPS, stepHint: '', stepAt: 0, startedAt: Date.now(), progress: null, log: [], ok: null, message: '' }
     const note = (s) => { install.log.push(s); if (install.log.length > 200) install.log.shift() }
     const step = async (name, hint, fn) => {
@@ -672,11 +684,13 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, say,
       mkdirSync(p.root, { recursive: true })
       mkdirSync(p.models, { recursive: true })
       await step('创建 Python 环境', '第一次要下载 Python 3.12（约 30 MB）和安装工具，一般 1~3 分钟', async () => {
-        uv = await ensureUv(note)
-        if (existsSync(p.python)) return note('  已经有了，跳过')
+        uv = await ensureUv(p, note)
+        if (linux ? probeEnv(p).python : existsSync(p.python)) return note('  已经有了，跳过')
+        if (linux) p = pathsOf(p.root, { platform, allowLegacy: false })
         const stop = watchDownload(join(p.root, 'python'))
         try {
-          await run(uv, ['venv', '-q', join(p.root, 'env'), '--python', '3.12'], { log, onLine: note, env: uvEnv, timeoutMs: 30 * 60_000 })
+          const keepExisting = linux ? ['--allow-existing'] : []
+          await runInstallCommand(uv, ['venv', '-q', ...keepExisting, join(p.root, 'env'), '--python', '3.12'], { log, onLine: note, env: uvEnv, timeoutMs: 30 * 60_000 })
         } finally {
           stop()
         }
@@ -697,6 +711,7 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, say,
               install.progress = { kind: 'file', name: 'Applio', done, total }
             })
           } catch (error) {
+            if (linux) throw error
             note('  换个方式再下一次')
             await fetchWithProgress(urls[0], zip)
           }
@@ -704,14 +719,14 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, say,
         await downloadApplio()
         rmSync(tmp, { recursive: true, force: true })
         try {
-          await expandZip(zip, tmp)
+          await expandZip(p.python, zip, tmp)
         } catch (error) {
-          // Expand-Archive 失败通常是下载不完整/镜像返回了 HTML：清掉坏包重下一次，不能一直拿坏包重试。
+          // 解压失败通常是下载不完整或镜像返回了 HTML，清掉坏包重下一次。
           rmSync(tmp, { recursive: true, force: true })
           rmSync(zip, { force: true })
           note('  压缩包不完整，已清理并重新下载')
           await downloadApplio()
-          await expandZip(zip, tmp)
+          await expandZip(p.python, zip, tmp)
         }
         const inner = readdirSync(tmp).find((n) => existsSync(join(tmp, n, 'core.py')))
         if (!inner) throw new Error('下载的 Applio 压缩包不完整')
@@ -722,13 +737,15 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, say,
       await step('安装 PyTorch、RVC 和人声分离（最大的一步）', '要下载约 3~4 GB，看网速一般 10~40 分钟；下面的「已下载」在涨就说明没卡住', async () => {
         const stop = watchDownload(cacheDir)
         try {
-          await run(uv, ['pip', 'install', '--python', p.python, '-r', join(p.applio, 'requirements-engine.txt'), 'audio-separator[gpu]', 'imageio-ffmpeg',
-            ...mirror, ...(cn ? ['--find-links', CN_TORCH] : ['--extra-index-url', TORCH_INDEX]), '--index-strategy', 'unsafe-best-match'], { log, onLine: note, env: uvEnv, timeoutMs: 120 * 60_000 })
+          const separator = linux ? 'audio-separator[cpu]' : 'audio-separator[gpu]'
+          const torch = linux ? ['--extra-index-url', TORCH_CPU_INDEX] : cn ? ['--find-links', CN_TORCH] : ['--extra-index-url', TORCH_INDEX]
+          await runInstallCommand(uv, ['pip', 'install', '--python', p.python, '-r', join(p.applio, 'requirements-engine.txt'), separator, 'imageio-ffmpeg',
+            ...mirror, ...torch, '--index-strategy', 'unsafe-best-match'], { log, onLine: note, env: uvEnv, timeoutMs: 120 * 60_000 })
         } finally {
           stop()
         }
       })
-      await step('准备 ffmpeg', '几秒钟', async () => setupFfmpeg())
+      await step('准备 ffmpeg', '几秒钟', async () => setupFfmpeg(p))
       await step('下载 RVC 需要的预训练文件（音高、音色特征）', '约 560 MB，看网速几分钟', async () => {
         for (const [rel, dest, sha] of PREREQS) {
           await downloadWithMirror(p.python, rel, join(p.applio, dest), note, log, (done, total) => {
@@ -776,23 +793,29 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, say,
     if (!existsSync(dest) || !statSync(dest).size) throw new Error('下载失败：' + url)
   }
 
-  /** 解压 zip（用 Windows 自带的 Expand-Archive）。 */
-  async function expandZip(zip, dir) {
+  /** Linux 用翻唱环境的 zipfile，Windows 沿用 Expand-Archive。 */
+  async function expandZip(python, zip, dir) {
     mkdirSync(dir, { recursive: true })
-    await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Expand-Archive -LiteralPath $env:AB_ZIP -DestinationPath $env:AB_DIR -Force'],
+    if (linux) return runInstallCommand(python, ['-m', 'zipfile', '-e', zip, dir], { log, timeoutMs: 10 * 60_000 })
+    await runInstallCommand('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Expand-Archive -LiteralPath $env:AB_ZIP -DestinationPath $env:AB_DIR -Force'],
       { log, env: { AB_ZIP: zip, AB_DIR: dir }, timeoutMs: 10 * 60_000 })
   }
 
   /** 准备 uv（装 Python 和各种包的工具）：电脑上有就用，没有就下一个放进安装目录。 */
-  async function ensureUv(note) {
+  async function ensureUv(p, note) {
     if (process.env.AURABOT_UV) return process.env.AURABOT_UV
-    const p = P()
-    const local = join(p.bin, 'uv.exe')
+    const local = join(p.bin, linux ? 'uv' : 'uv.exe')
     if (existsSync(local)) return local
     try {
-      await run('uv', ['--version'], { log, timeoutMs: 15_000 })
+      await runInstallCommand('uv', ['--version'], { log, timeoutMs: 15_000 })
       return 'uv'
     } catch (error) {}
+    if (linux) {
+      const installed = [join(homedir(), '.local', 'bin', 'uv'), join(homedir(), '.cargo', 'bin', 'uv')].find(existsSync)
+      if (installed) return installed
+      note('  电脑上没有 uv，下载一个放进安装目录')
+      return installLinuxUv(local, { note })
+    }
     note('  电脑上没有 uv，下载一个放进安装目录')
     const zip = join(p.root, 'downloads', 'uv.zip')
     const tmp = join(p.root, 'downloads', 'uv')
@@ -802,7 +825,7 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, say,
         await fetchWithProgress(src.url, zip, 5 * 60)
         if (src.sha256 && createHash('sha256').update(readFileSync(zip)).digest('hex') !== src.sha256) throw new Error('下载的文件校验对不上')
         rmSync(tmp, { recursive: true, force: true })
-        await expandZip(zip, tmp)
+        await expandZip(p.python, zip, tmp)
         const exe = findFile(tmp, 'uv.exe')
         if (!exe) throw new Error('里面没找到 uv.exe')
         mkdirSync(p.bin, { recursive: true })
@@ -832,20 +855,20 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, say,
     return () => clearInterval(t)
   }
 
-  /** 把 imageio-ffmpeg 带的 ffmpeg 复制成 bin\ffmpeg.exe（人声分离要在 PATH 里找到 ffmpeg）。 */
-  async function setupFfmpeg() {
-    const p = P()
+  /** 把 imageio-ffmpeg 带的程序放到翻唱目录的 bin，供人声分离使用。 */
+  async function setupFfmpeg(p) {
     if (existsSync(p.ffmpeg)) return
-    const out = await run(p.python, ['-c', 'import imageio_ffmpeg;print(imageio_ffmpeg.get_ffmpeg_exe())'], { log })
+    const out = await runInstallCommand(p.python, ['-c', 'import imageio_ffmpeg;print(imageio_ffmpeg.get_ffmpeg_exe())'], { log })
     const src = out.trim().split(/\r?\n/).pop()
     mkdirSync(p.bin, { recursive: true })
     copyFileSync(src, p.ffmpeg)
+    if (linux) chmodSync(p.ffmpeg, 0o755)
   }
 
   // ---------- 做一首 ----------
   const pyEnv = () => {
     const p = P()
-    return { PATH: p.bin + ';' + process.env.PATH, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' }
+    return { PATH: p.bin + delimiter + process.env.PATH, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' }
   }
 
   async function ffprobeDuration(file) {

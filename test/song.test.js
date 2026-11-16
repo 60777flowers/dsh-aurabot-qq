@@ -1,7 +1,7 @@
 // 翻唱：截取位置、音色列表、网易云加密和 Cookie 解析、点歌的前置检查、/sing 命令。
 import { test, before } from 'node:test'
 import assert from 'node:assert/strict'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { nudgeMoodAfterSong } from '../src/modules/song/index.js'
@@ -215,6 +215,64 @@ test('翻唱环境：解释器真能跑才算 python 就绪，包缺了分离器
   assert.equal(st.parts.python, true)
   assert.equal(st.parts.separator, false, '没放 audio-separator.exe，分离器不能报就绪')
   assert.equal(st.ready, false)
+})
+
+test('Linux 一键安装从 uv 到 ffmpeg 走原生路径，保留残留的手工安装文件', { timeout: 5000 }, async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'aurabot-song-linux-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const oldPython = makeShim(root, '#!/bin/sh\nexit 127\n')
+  const p = studio.pathsOf(root, { platform: 'linux', allowLegacy: false })
+  assert.equal(studio.pathsOf(root, { platform: 'linux' }).python, oldPython)
+  assert.equal(p.python, join(root, 'env', 'bin', 'python'))
+  assert.equal(p.separatorExe, join(root, 'env', 'bin', 'audio-separator'))
+  assert.equal(studio.checkRoot('/srv/aurabot/rvc', 'linux').ok, true)
+  assert.equal(studio.checkRoot('C:\\Aurabot\\rvc', 'linux').ok, false)
+
+  const separatorModel = Object.keys(studio.SEPARATOR_FILES)[0]
+  const config = normalize({ song: { root, pypiMirror: 'off', separatorModel } })
+  const zip = join(root, 'downloads', 'applio.zip')
+  const uv = join(root, 'bin', 'uv')
+  const ffmpegSource = join(root, 'ffmpeg-source')
+  const localFiles = [zip, uv, ffmpegSource, join(p.separatorModels, 'download_checks.json'),
+    ...studio.SEPARATOR_FILES[separatorModel].map(([name]) => join(p.separatorModels, name))]
+  for (const file of localFiles) {
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, file === zip ? 'PK' : 'fixture')
+  }
+  const commands = []
+  let finish
+  const finished = new Promise((resolve) => { finish = resolve })
+  const s = studio.createSongStudio({
+    platform: 'linux',
+    getConfig: () => config,
+    log: {
+      info: (message) => { if (message === '翻唱环境装好了') finish() },
+      warn: (message, error) => finish(error || message),
+    },
+    runInstallCommand: async (command, args) => {
+      commands.push([command, args])
+      if (args[0] === 'venv') {
+        mkdirSync(dirname(p.python), { recursive: true })
+        writeFileSync(p.python, 'fixture')
+      } else if (args[1] === 'zipfile') {
+        const unpacked = join(args.at(-1), 'Applio-unpacked')
+        for (const relative of ['core.py', 'requirements-engine.txt', 'rvc/models/predictors/rmvpe.pt',
+          'rvc/models/embedders/contentvec/config.json', 'rvc/models/embedders/contentvec/pytorch_model.bin']) {
+          const file = join(unpacked, relative)
+          mkdirSync(dirname(file), { recursive: true })
+          writeFileSync(file, 'fixture')
+        }
+      } else if (args[0] === '-c') return ffmpegSource
+      return ''
+    },
+  })
+  s.install()
+  assert.equal(await finished, undefined)
+  assert.equal(s.status().install.ok, true)
+  assert.deepEqual(commands.map(([command, args]) => [command, args[0]]), [[uv, 'venv'], [p.python, '-m'], [uv, 'pip'], [p.python, '-c']])
+  assert.ok(commands[2][1].includes('audio-separator[cpu]'))
+  assert.ok(existsSync(oldPython))
+  assert.equal(readFileSync(p.ffmpeg, 'utf8'), 'fixture')
 })
 
 test('/sing：歌名和变调', async () => {
