@@ -1163,7 +1163,12 @@ function nudgeScene({
   hub.runTurnInChat = async (chatId, prompt, opts = {}) => {
     hub.chatTurns.push({ chatId, prompt, opts })
     if (hub.turnInChatResult) return hub.turnInChatResult
-    return { ok: true, sent: typeof reply === 'function' ? reply(prompt, opts) : reply }
+    const sent = typeof reply === 'function' ? reply(prompt, opts) : reply
+    // 真实 hub 在这个私聊里真发出话之后，会把 lastBotToOwner 换成「她刚说的这句」
+    // （src/chat/hub.js，且发生在 onTurnEnd 之前）。fake 必须照这个时序更新，
+    // 否则上一轮写下的 nudgedFor 一直等于这一轮还没变的 lb.at，后面的循环用例会被误挡。
+    if (sent) hub.lastBotToOwner = { at: Date.now(), text: String(sent) }
+    return { ok: true, sent }
   }
   const { p, cfg } = makePurpose(hub, {
     speakUp: { enabled: true, awakeFrom: 0, awakeTo: 24, idleMinutes: 30, minIntervalMinutes: 5, maxIntervalMinutes: 5, maxPerDay: 10, nudge: true, ...speakUp },
