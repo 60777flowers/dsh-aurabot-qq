@@ -814,6 +814,15 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     return failure ? { ...failure, chatId, retryAt: failure.until } : null
   }
 
+  /** 任意 chatId 的会话冷却（QQ 私聊也会因为挂不上工作区进入退避）。
+   *  systemSessionCooldown 只认 `system:<name>`；迁进私聊会话的主动回合要查自己那条。 */
+  function chatCooldown(chatId) {
+    const id = String(chatId || '')
+    if (!id) return null
+    const failure = [sessionFailure(id), systemFailures.get(id)].find((item) => item && Date.now() < item.until)
+    return failure ? { ...failure, chatId: id, retryAt: failure.until } : null
+  }
+
   /** 只处理 create 明确报告的新建孤儿；不能拿恢复失败或普通错误里的 id 去删会话。 */
   async function cleanOrphan(error, ws, c) {
     const match = String(error?.message || '').match(/session ["']([^"']+)["'] was created but could not attach to workspace ["']([^"']+)["']/i)
@@ -1982,7 +1991,9 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       }
       st.thinking = null
       st.toolText = ''
-      if (completed && text && st.archiveNamespace && !chatId.startsWith('system:') && getConfig().conversationContext?.enabled === true) {
+      // suppressDelivery 的回合不算「她在这个聊天里说过话」：原文还没清洗、也还没定载体，
+      // 真发出去由调用方走 deliver 自己落档。这里先不写，避免没发的话被当成说过。
+      if (completed && text && st.archiveNamespace && !st.suppressDelivery && !chatId.startsWith('system:') && getConfig().conversationContext?.enabled === true) {
         try { conversationArchive(st.archiveNamespace).append(chatId, { role: 'assistant', text, id: key + ':turn:' + d.turn, contextAt: st.archiveContextAt, speakerId: getConfig().botQQ || '' }) }
         catch (error) { log.warn('对话记忆保存失败：', error.message) }
       }
@@ -1996,6 +2007,9 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       const onDelivered = st.onDelivered
       st.onDelivered = st.pendingOnDelivered || null
       st.pendingOnDelivered = null
+      const suppressDelivery = Boolean(st.suppressDelivery)
+      st.suppressDelivery = st.pendingSuppressDelivery || false
+      st.pendingSuppressDelivery = false
       const onTurnEnd = st.onTurnEnd
       st.onTurnEnd = st.pendingOnTurnEnd || null
       st.pendingOnTurnEnd = null
@@ -2025,7 +2039,15 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       }
       if (chatId.startsWith('system:')) return // 已超时的后台轮次不能误发到 QQ
       if (!text) {
-        try { onTurnEnd?.({ ok: true, silent: true }) } catch (error) { log.debug('本轮结束回执出错：', error.message) }
+        try { onTurnEnd?.({ ok: true, silent: true, text: '' }) } catch (error) { log.debug('本轮结束回执出错：', error.message) }
+        return release(chatId, turnToken)
+      }
+      // suppressDelivery：这一轮原文交给调用方，不发 QQ（目的回合要自己清洗掉内部备忘再选载体）。
+      // 仍然要让对话记忆/流水知道「她这轮写了什么」是不对的——她可能根本不发，
+      // 所以这里连 archive 也不写（上面那段 archive 只认 completed && text，已在下面之前执行过一次，
+      // 用 suppress 标记跳过它由调用方自己决定）。这里只做「放开轮次 + 交回原文」。
+      if (suppressDelivery) {
+        try { onTurnEnd?.({ ok: true, silent: false, text, result: null, suppressed: true }) } catch (error) { log.debug('本轮结束回执出错：', error.message) }
         return release(chatId, turnToken)
       }
       // 发完再放开：发送期间来的消息也攒到下一段。
@@ -3272,6 +3294,11 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       // 回执跟着它所属的轮次走；排队的主动搭话不能算到上一轮。
       if (queuedNextTurn) st.pendingOnDelivered = opts.onDelivered || null
       else st.onDelivered = opts.onDelivered || null
+      // 这一轮照常在她自己的会话里生成（上下文是真的），但**不自动发到 QQ**：
+      // 原文经 onTurnEnd 交给调用方，由它自己清洗、自己选载体投递。
+      // 目的回合必须这么做——它的原始输出末尾带「内部备忘」，直接发出去就泄到聊天里了。
+      if (queuedNextTurn) st.pendingSuppressDelivery = Boolean(opts.suppressDelivery)
+      else st.suppressDelivery = Boolean(opts.suppressDelivery)
     }
     // 给调用方一个「这一轮真的结束了」的回执（小闹钟失败重试用）；不改没有回执的旧路径。
     if (onTurnEnd) {
@@ -3296,6 +3323,117 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     try {
       if (dsh.sessions && typeof dsh.sessions.flush === 'function') await dsh.sessions.flush(agent.session)
     } catch (error) {}
+  }
+
+  /**
+   * 在指定聊天里跑一轮「她主动开口」（#446 / #298 的核心入口）。
+   *
+   * 为什么要有它：主动搭话原来在 system:purpose / system:purpose-nudge 两条独立会话里生成，
+   * 和用户真正的 private:<QQ> 会话不是同一条 DSH 会话，模型可见的上下文不连续，
+   * 还会把 DSH 注入的「距上次调用过了多久」误当成 QQ 私聊的静默时长（说出「22 小时没回了」）。
+   * 在这里生成，上下文就是目标私聊的真实时间线，elapsed 天然正确。
+   *
+   * 三条硬约束（作者与维护者都点过）：
+   *   · 不能拿工具：noTools 时本轮临时收走全局工具，turn/end 与异常路径都释放；
+   *   · 不打断主人：busy（主人正在跟她说话）一律让位，返回 { ok:false, reason:'busy' }，
+   *     由调用方决定不消耗这次机会——宁可这一轮丢掉，也不能收走主人那轮的工具；
+   *   · 不复用 runSystemTurn 的装配：全程走 pushToSession，保留 turnState / running / turn/end 的完整时序，
+   *     否则会踩 #90 那类 running 泄漏。
+   *
+   * 回复不在这里发：turn/end 对非 system 会话会照常 deliver（logChat + saidElsewhere + 心情链路全复用），
+   * 这里再发一次就是双发。本函数等这一轮真结束，把结局如实报给调用方。
+   *
+   * @returns {Promise<{ok:boolean, reason?:string, sent?:string}>}
+   *   ok:true 且 sent 非空 = 真发出去了；ok:true 且 sent 空 = 她选择沉默；ok:false = 让位/失败/超时。
+   */
+  async function runTurnInChat(chatId, prompt, { noTools = false, timeoutMs = 120_000, userText = '', kind = 'proactive', suppressDelivery = false } = {}) {
+    assertActive()
+    const id = String(chatId || '')
+    const tgt = targetOf(id)
+    // 只支持私聊：这轮改动的目的就是「归入目标聊天的时间线」，群聊的装载/编号逻辑另有一套，不在这里碰。
+    if (!tgt || tgt.kind !== 'private') return { ok: false, reason: 'unsupported-chat' }
+    // 第一道 busy 判定：主人正在跟她说话，这一轮没资格插进去。
+    if (isBusy(id) || running.has(id)) return { ok: false, reason: 'busy' }
+    const cfg = getConfig()
+    const chat = { chatId: id, kind: 'private', userId: tgt.id, groupId: '', nickname: cfg.ownerName || '主人' }
+    // 先拿到会话（可能新建）：restrict 需要 agent 句柄。
+    const { agent } = await agentFor(chat)
+    assertActive()
+    // 第二道 busy 判定（Lead 要求）：等会话的这段 await 里主人可能刚发来消息。
+    // 任一次不满足就直接让位，绝不在「主人正说话」的会话上收工具。
+    if (isBusy(id) || running.has(id)) return { ok: false, reason: 'busy' }
+    let gateOff = null
+    // 本轮临时收走全局工具（只在这一轮、只在这个会话上生效；插件自己的 qq_* 工具不归 restrict 管）。
+    if (noTools) {
+      try { gateOff = agent.ctx.tools.restrict({ allow: [] }) } catch (error) { log.debug(`本轮收工具失败（${id}）：`, error.message) }
+    }
+    const releaseGate = () => {
+      if (!gateOff) return
+      try { gateOff() } catch (error) { log.debug(`恢复工具失败（${id}）：`, error.message) }
+      gateOff = null
+    }
+    // 兜底定时器：turn/end 永远不来时也要把工具还回去，不能让主人一直没工具。
+    let timer = null
+    let finished = false
+    let resolveEnd = null
+    const ended = new Promise((resolve) => { resolveEnd = resolve })
+    let turnToken = null
+    const settle = (value) => {
+      if (finished) return
+      finished = true
+      if (timer) { clearTimeout(timer); timer = null }
+      releaseGate()
+      resolveEnd(value)
+    }
+    timer = setTimeout(() => {
+      // 超时：turn/end 不会来了，这一轮的后备状态得自己清干净，
+      // 否则 st.suppressDelivery 一直挂着 true，主人下一条消息都会被判成「不投递」而永远发不出去。
+      try {
+        const cur = map().chats[id]
+        const key = cur?.sessionId ? sessionKey(cur.sessionId) : ''
+        const st = key ? turnState.get(key) : null
+        if (st) { st.suppressDelivery = false; st.pendingSuppressDelivery = false }
+      } catch (error) { log.debug('超时清理 suppress 标记失败：', error.message) }
+      settle({ ok: false, reason: 'timeout' })
+      if (turnToken) release(id, turnToken)
+    }, Math.max(5000, Number(timeoutMs) || 120_000))
+    timer.unref?.()
+    // 按 flush() 私聊分支的同一套时序登记轮次：turn/end → release(chatId, turnToken) 靠 busyTurns 比对，
+    // 漏设这一个 busy 就再也不会被清掉，后面主人说话会一直被当成 busy。
+    turnToken = { signature: turnSignature(id) }
+    busyTurns.set(id, turnToken)
+    busySessions.delete(id)
+    clearRunning(id)
+    busy.set(id, Date.now())
+    try {
+      await pushToSession(chat, [{ type: 'text', text: String(prompt) }], '', {
+        queryText: userText || '',
+        turnToken,
+        suppressDelivery,
+        // 这一轮不插话、不合并、不改写；只等它结束拿结局
+        onTurnEnd: (r) => {
+          // suppressDelivery：原文交回调用方，它自己清洗、自己选载体投递。
+          // 这里不能报 sent（还没发），只把 raw 给她。
+          if (suppressDelivery) return settle({ ok: true, silent: !String(r?.text || ''), raw: String(r?.text || '') })
+          // 结局要分清三件事，调用方靠它决定「要不要回滚追问机会」：
+          //   · 轮次正常结束、但一个字都没发（她选了沉默 / 出站守卫拦下）→ ok:true, sent:''；
+          //     这是「她决定不说」，算追过，不能再追一次。
+          //   · 真发了 → ok:true, sent 是实际发出的正文。
+          //   · 投递出错（有 error）→ ok:false，调用方保守处理，不重试以免双发。
+          const error = String(r?.error || '')
+          const sent = String(r?.result?.sent || '')
+          if (error) return settle({ ok: false, reason: 'send-failed', error, sent })
+          settle({ ok: true, silent: !sent, sent })
+        },
+      })
+    } catch (error) {
+      // 提交失败：轮次没开起来，自己把 busy 放开（turn/end 不会来）并还工具
+      settle({ ok: false, reason: 'submit-failed', error: error?.message || String(error) })
+      release(id, turnToken)
+      throw error
+    }
+    const result = await ended
+    return result
   }
 
   /** 已验证主人身份的外部入口；复用已有聊天、记忆、转写和投递路径。调用方负责鉴权。 */
@@ -3909,10 +4047,12 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     checkSendableFile,
     sendSegments,
     pushToSession,
+    runTurnInChat,
     receiveOwnerMessage,
     titleFilter,
     runSystemTurn,
     systemSessionCooldown,
+    chatCooldown,
     sessionHealth: () => [...sessionFailures.keys()].map((chatId) => ({ chatId, ...sessionFailure(chatId) })).filter((row) => row.message),
     runSubagentTurn,
     subagentFor,
