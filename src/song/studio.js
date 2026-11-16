@@ -2,6 +2,7 @@
 // 推理引擎用 Applio（MIT，固定版本），人声分离用 audio-separator，都装在一个独立的 Python 环境里，不碰系统环境。
 
 import { spawn, execFileSync } from 'node:child_process'
+import { autoShift, medianF0, pcm16ToFloat, voiceKind } from './pitch.js'
 import { existsSync, mkdirSync, readdirSync, statSync, statfsSync, writeFileSync, readFileSync, rmSync, copyFileSync, renameSync, openSync, readSync, closeSync } from 'node:fs'
 import { join, basename, dirname, isAbsolute } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -324,9 +325,10 @@ export function deleteVoice(modelsDir, id) {
 /** 缓存目录只留最新的 keep 个文件。 */
 export function pruneCache(dir, keep) {
   let files = []
-  try { files = readdirSync(dir).map((n) => ({ n, t: statSync(join(dir, n)).mtimeMs })) } catch (error) { return 0 }
+  // 只按成品 mp3 计数；旁边记变调的 .json 跟着成品一起删（#10）
+  try { files = readdirSync(dir).filter((n) => !n.endsWith('.mp3.json')).map((n) => ({ n, t: statSync(join(dir, n)).mtimeMs })) } catch (error) { return 0 }
   const old = files.sort((a, b) => b.t - a.t).slice(keep)
-  for (const f of old) rmSync(join(dir, f.n), { force: true })
+  for (const f of old) { rmSync(join(dir, f.n), { force: true }); rmSync(join(dir, f.n + '.json'), { force: true }) }
   return old.length
 }
 
@@ -874,6 +876,20 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, say,
   }
 
   /** 人声轨的平均音量（dB）；纯音乐分出来的人声几乎是静音。 */
+  /** 原唱人声的中位基频（#10）：最多分析 90 秒，转成 8 kHz 单声道裸数据交给 YIN；失败返回 null。 */
+  async function probeF0(file) {
+    return new Promise((resolve) => {
+      const c = spawn(P().ffmpeg, ['-hide_banner', '-loglevel', 'error', '-i', file, '-t', '90', '-ac', '1', '-ar', '8000', '-f', 's16le', '-'], { windowsHide: true })
+      const chunks = []
+      c.stdout.on('data', (b) => chunks.push(b))
+      c.on('exit', (code) => {
+        if (code !== 0) return resolve(null)
+        try { resolve(medianF0(pcm16ToFloat(Buffer.concat(chunks)), 8000)) } catch (error) { resolve(null) }
+      })
+      c.on('error', () => resolve(null))
+    })
+  }
+
   async function meanVolume(file) {
     return new Promise((resolve) => {
       const c = spawn(P().ffmpeg, ['-hide_banner', '-i', file, '-af', 'volumedetect', '-f', 'null', '-'], { windowsHide: true })
@@ -1014,7 +1030,10 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, say,
     const c = cfg()
     const voice = listVoices(P().models).find((v) => v.id === (job.voice || c.voice)) || listVoices(P().models)[0]
     if (!voice && !local?.active('song')) throw new Error('还没有可用的音色模型')
-    const pitch = Number.isFinite(Number(job.pitch)) ? Math.max(-24, Math.min(24, Math.round(Number(job.pitch)))) : Number(c.pitch) || 0
+    // 没指定变调、开着自动定变调时（默认），分离出人声后按原唱男声 / 女声和她的声线定 0 / +12 / -12（#10）
+    const manual = Number.isFinite(Number(job.pitch))
+    const auto = !manual && c.autoPitch !== false
+    let pitch = manual ? Math.max(-24, Math.min(24, Math.round(Number(job.pitch)))) : Number(c.pitch) || 0
     const dir = join(work(), Date.now().toString(36))
     mkdirSync(dir, { recursive: true })
     job.workDir = dir
@@ -1024,10 +1043,12 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, say,
     // 同一首歌、同一个音色、音高和截取方式做过的，直接复用
     // v3：副歌定位从固定 30% 改成音频分析，旧缓存（可能截在非副歌处）一律不用
     // v2：0.6.2 起才检查有没有人声，之前缓存的可能是只有伴奏的成品，一律不用
-    const key = createHash('md5').update(['v3', job.songKey || song, local?.active('song') ? 'local:' + (voice?.id || '') : voice.id, pitch, ...clipCacheParts(job.clip, c), ...(job.acapella ? ['acapella'] : [])].join('|')).digest('hex').slice(0, 16)
+    const key = createHash('md5').update(['v3', job.songKey || song, local?.active('song') ? 'local:' + (voice?.id || '') : voice.id, auto ? `auto:${c.selfVoice === 'male' ? 'male' : 'female'}` : pitch, ...clipCacheParts(job.clip, c), ...(job.acapella ? ['acapella'] : [])].join('|')).digest('hex').slice(0, 16)
     const cached = join(work(), 'cache', key + '.mp3')
     if (existsSync(cached)) {
       log.info(`翻唱：「${job.title}」做过了，直接用缓存`)
+      // 自动定的变调记在旁边，复用缓存时照实报出来
+      try { const meta = JSON.parse(readFileSync(cached + '.json', 'utf8')); if (Number.isFinite(meta.pitch)) pitch = meta.pitch } catch (error) {}
       return { file: cached, voice: voice?.id, pitch, dir }
     }
     current.stage = '截取要唱的那一段'
@@ -1048,6 +1069,13 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, say,
       current.stage = '换一版重下'
       return process1(job)
     }
+    if (auto) {
+      current.stage = '听原唱定变调'
+      const f0 = await probeF0(vocals)
+      const shift = autoShift(f0, c.selfVoice === 'male' ? 'male' : 'female')
+      if (shift !== null) pitch = shift
+      log.info(`翻唱：原唱人声中位音高 ${f0 ? Math.round(f0) + ' Hz（' + (voiceKind(f0) === 'male' ? '男声' : '女声') + '）' : '测不出来'}，变调 ${pitch > 0 ? '+' : ''}${pitch}`)
+    }
     current.stage = '换成她的声音'
     const converted = await convert(vocals, dir, voice, pitch)
     current.stage = '混音'
@@ -1055,6 +1083,7 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, say,
     const out = part.cut ? await fade(mixed, dir, part.length) : mixed
     mkdirSync(join(work(), 'cache'), { recursive: true })
     copyFileSync(out, cached)
+    try { writeFileSync(cached + '.json', JSON.stringify({ pitch, auto })) } catch (error) {}
     pruneCache(join(work(), 'cache'), 40)
     return { file: cached, voice: voice?.id, pitch, dir }
   }

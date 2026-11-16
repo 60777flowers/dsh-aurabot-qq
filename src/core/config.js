@@ -389,7 +389,9 @@ export const DEFAULTS = {
     enabled: false,
     root: '', // 翻唱环境目录，留空 = 自动（老安装 C:\Aurabot\rvc，新安装在用户目录下）
     voice: '', // 用哪个音色（models 目录里的 .pth 文件名），留空 = 第一个
-    pitch: 0, // 默认变调（半音）；她点歌时会按原唱是男声还是女声自己定
+    pitch: 0, // 默认变调（半音）：自动定变调关着、或者测不出原唱音高时用
+    autoPitch: true, // 没指定变调时，分离出人声后按原唱男声 / 女声自动定 0 / +12 / -12
+    selfVoice: 'female', // 她当前音色的声线：female / male
     neteaseCookie: '', // 网易云 Cookie（MUSIC_U），下会员歌用
     separatorModel: 'model_bs_roformer_ep_317_sdr_12.9755.ckpt', // 人声分离模型
     maxVoiceSec: 120, // 语音条最长多少秒，歌更长就截一段
@@ -1021,6 +1023,8 @@ export function normalize(raw) {
   c.song.enabled = bool(c.song.enabled, false)
   c.song.ownerOnly = bool(c.song.ownerOnly, true)
   c.song.pitch = num(c.song.pitch, 0, -24, 24)
+  c.song.autoPitch = bool(c.song.autoPitch, true)
+  if (!['female', 'male'].includes(c.song.selfVoice)) c.song.selfVoice = 'female'
   c.song.maxVoiceSec = num(c.song.maxVoiceSec, 120, 1, BIG)
   c.song.vocalVolume = num(c.song.vocalVolume, 1, 0, 10)
   c.song.instVolume = num(c.song.instVolume, 0.8, 0, 10)
