@@ -802,7 +802,7 @@ export function apply(ctx) {
         return { get image() { return references[0]?.image || null }, references, appearance: id ? readLook(id).appearance : '' }
       },
     },
-    getConfig, setConfig,
+    getConfig,
   }
   mods = createModules({ ctx, core, getConfig, setConfig, logger, version: VERSION, builtins: BUILTINS })
   bridge = createBridge({ ctx, getConfig, setConfig, hub, mods, log: logger.child('bridge'), version: VERSION, apiVersion: API_VERSION, overview: () => overview() })

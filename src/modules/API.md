@@ -150,6 +150,8 @@ export default {
 | `api.route('/路径', async (req, res) => 返回值, options?)` | 加一个网页接口：地址是 `/aurabot/api/ext/<id>/路径`；返回对象就当 JSON 回；要自己回（比如图片）就用 `api.core.http.send(res, 200, buf, 'image/png')`。1.3.0 起管理接口可传 `{ access: 'panel' }`，复用宿主回环/可信代理、Host 与 CSRF 闸；不传时保持现有行为，由模块验证客户端凭据 |
 | `api.onDispose(fn)` | 模块停下时要做的收尾 |
 
+进入 `onDispose` 或导出的 `dispose` 时，`api.setConfig` 和 `api.saveSettings` 已停止写入。模块在停用时若要恢复它临时改过的配置，可以在同步收尾里调用 `api.core.setConfig({ ...要恢复的字段 })`。先用 `api.config()` 核对当时的值，免得盖掉用户后来的修改。异步收尾可写自己的 `api.dataDir()`。
+
 QQ 主人命令的参数或回执涉及隐私时，可用 `api.command({ name: 'private-query', sensitive: true, run })`。宿主的命令日志只记命令名，回执发送失败时结束本次发送。敏感命令仅主人可用，即使同时声明 `delegatable: true`。
 宿主在执行敏感命令和发送回执前复核主人及授权代次。模块可以按需限制为主人私聊，并单独处理模拟命令。
 
@@ -180,7 +182,7 @@ QQ 主人命令的参数或回执涉及隐私时，可用 `api.command({ name: '
 | `http` | 写接口用的小工具：`body(req)` 读 JSON、`raw(req, 最大字节)` 读原始内容、`query(req)` 读网址参数、`send(res, 状态码, 内容, 类型)` |
 | `personas` | 人格：`list()` `read(id)` `current()`（正文）；`look(sessionId?)` 返回会话所属人格（未传时取当前异步上下文人格）的 `{ image: Buffer \| null, appearance: string, references: { id, note, image: Buffer }[] }`，`references` 仅含已开启的参考图及备注，`image` 为其中第一张（兼容旧调用）；全部关闭时返回空数组和 null，与提示词使用相同的缺失人格回退规则。人设图仅供识图和生图，不直接加入聊天上下文 |
 | `modules` | 模块内核本身（`status()` `reload(id)` ……） |
-| `getConfig()` / `setConfig(cfg)` | 同 `api.config` / 整份替换配置 |
+| `getConfig()` / `setConfig(patch)` | 读取当前配置 / 深合并对象补丁。兼容同步收尾的配置恢复，收尾结束后拒绝写入 |
 | `logger` | 插件的日志器（`logger.child('名字')` 拿一个分类） |
 | `root` | 插件自己的安装目录 |
 

@@ -440,8 +440,10 @@ function governScopedCall(core, id, name, args, log) {
  * - scopedCore：Proxy 转发 core 的其余属性（bridge / modules 后挂的也可见），
  *   但 getPrototypeOf 掐成 null —— Object.getPrototypeOf(api.core).hub 也绕不回去。
  */
-export function scopeCoreForModule(core, id) {
-  if (!core || !core.hub || typeof core.hub.subagentFor !== 'function') return core || {}
+export function scopeCoreForModule(core, id, setCoreConfig) {
+  if (!core || !core.hub || typeof core.hub.subagentFor !== 'function') {
+    return setCoreConfig ? { ...core, setConfig: setCoreConfig } : core || {}
+  }
   const obLog = outboundLogOf(core)
   const scopedHub = {}
   for (const name of Object.getOwnPropertyNames(core.hub)) {
@@ -472,6 +474,7 @@ export function scopeCoreForModule(core, id) {
   return new Proxy(core, {
     get(target, key, recv) {
       if (key === 'hub') return scopedHub
+      if (key === 'setConfig' && setCoreConfig) return setCoreConfig
       // 出站治理服务不下发给模块：模块能拿到原始 svc 就能自己填 moduleId 冒充别人，
       // 也会绕过 api.proactive 的身份绑定。模块只能走 api.proactive（见 makeApi）。
       if (key === 'outbound') return undefined
@@ -510,8 +513,8 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
   function makeApi(id, source, rec) {
     const mlog = logger.child(id)
     const active = () => !disposed && !rec.stopped && live.get(id) === rec
-    const writable = (label, fn) => (...args) => {
-      if (!active()) {
+    const writable = (label, fn, allowed = active) => (...args) => {
+      if (!allowed()) {
         const error = new Error(`模块「${id}」已停止，不能调用 ${label}`)
         mlog.warn(error.message)
         throw error
@@ -539,10 +542,16 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
     // 内置模块和替换它的版本用原来的路径（内置的面板页照常能用）；新模块放在 /ext/模块id/ 下
     const prefix = routesAtRoot(id) ? '' : `/ext/${id}`
     const def = rec.def
+    const setModuleConfig = writable('setConfig', (patch) => setConfig(typeof patch === 'function' ? patch(getConfig()) : deepMerge(getConfig(), patch)))
+    // 兼容在同步收尾里恢复设置的模块；迟到的回调和旧实例不能再写。
+    const setCoreConfig = writable('core.setConfig', (patch) => {
+      if (!isObj(patch)) throw new TypeError('core.setConfig 需要配置对象')
+      return setConfig(deepMerge(getConfig(), patch))
+    }, () => active() || (rec.cleaning && !live.has(id)))
     // 模块拿到的 core：hub 换成「宿主按模块身份封装」的白名单副本（三审 #177：原型链斩断，
     // 模块摸不到原始 runSubagentTurn / subagentFor）；core 本体用 Proxy 转发，
     // getPrototypeOf 也掐断，防 getPrototypeOf(api.core).hub 绕回原始入口。
-    const scopedCore = scopeCoreForModule(core, id)
+    const scopedCore = scopeCoreForModule(core, id, setCoreConfig)
     // 出站治理的日志口（模块快捷发送层的判定/结算都往这里记；未注入服务时不会用到）
     const obLog = outboundLogOf(core)
     const api = {
@@ -555,7 +564,7 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
       log: mlog,
       // ---- 配置 ----
       config: () => getConfig(),
-      setConfig: writable('setConfig', (patch) => setConfig(typeof patch === 'function' ? patch(getConfig()) : deepMerge(getConfig(), patch))),
+      setConfig: setModuleConfig,
       settings: () => ({ ...(def.defaults || {}), ...(getConfig().ext?.[id] || {}) }),
       saveSettings: writable('saveSettings', (patch) => {
         const cfg = getConfig()
@@ -754,8 +763,13 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
     generation++ // 停止或替换也使会话工具缓存失效
     bumpNavigation() // 模块停了/被替换：导航摘要可能变
     rec.stopped = true
-    for (const off of rec.offs.splice(0).reverse()) cleanup(off)
-    cleanup(() => rec.exports?.dispose?.())
+    rec.cleaning = true
+    try {
+      for (const off of rec.offs.splice(0).reverse()) cleanup(off)
+      cleanup(() => rec.exports?.dispose?.())
+    } finally {
+      rec.cleaning = false
+    }
     rec.exports = null
     // 路由和监听器由各自的 off 按实例撤销，清理期间可能已经启动了同名新实例。
     if (rec.dshTools.length) core.bridge?.refresh()
