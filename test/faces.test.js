@@ -54,7 +54,7 @@ test('收到的系统表情按名字给她看，认不出才写 [表情]', () =>
 })
 
 test('提示词：开着就教她写 <face:名字>，关了就不提', () => {
-  assert.match(rulesText('private', normalize({ ownerQQ: '1' })), /<face:捂脸>/)
+  assert.match(rulesText('private', normalize({ ownerQQ: '1' })), /<face:名字>/)
   assert.doesNotMatch(rulesText('private', normalize({ ownerQQ: '1', stickers: { faces: false } })), /<face:/)
 })
 test('语音文本拆分：表情不念出来，但要留着补发（<face:名字> 原文保留）', () => {
