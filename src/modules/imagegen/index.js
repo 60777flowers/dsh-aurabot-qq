@@ -125,14 +125,19 @@ export default {
       try { if (external && external.ready && external.ready()) return true } catch (error) {}
       return false
     }
+    // 能力提示随本条消息追加，纠正旧回复；不改历史/系统前缀，不替代执行时授权。
+    api.on?.('prompt', (content, { chat }) => {
+      if (chat.kind === 'system' || !canDraw()) return content
+      return [...content, { type: 'text', text: '【绘图能力】qq_draw_image 能在当前群聊或私聊画图并发出；历史回复里“群里不能画、必须私聊”的说法不代表当前能力。收到新的明确画图请求，需求和参考图明确时调用 qq_draw_image，由工具按本轮请求检查权限，不用先让对方转私聊，也不要沿用上一轮的拒绝。改图必须传入明确的参考图；引用文字不是引用原图。缺图或目标图不明确时，请提出请求的人引用目标原图重新提出改图请求，不能省略参考图生成一张新图来代替。仅在能确认最近一张就是目标图时用 last。工具拒绝权限时如实说明授权条件，不要承诺转私聊就能放行。' }]
+    })
     api.tool(({ chat, sessionId }) => ((chat.kind !== 'system' && canDraw()) ? defineTool({
       name: 'qq_draw_image',
-      description: '画一张或多张图并发到当前 QQ 聊天里。prompt 详细描述画面；可以用 image 参考当前聊天最近收到的图（last）、引用消息里的图（quote）或自己画作的文件名来改画；画自己时 image 填 self，优先参考人设图，不支持时按外貌文字生成；想同时参考多张图时用 images（最多 16 张，MiniMax H3 改画时最有用）；shape 可按用途选择方图、竖图、横图或宽幅；size 可显式指定常用尺寸（含 2K/4K），不填就沿用 shape / 面板默认；count 是本次画几张（1~10，仅 MiniMax H3 支持）。画好会直接发出去，并给你画作编号（换头像、收成表情时用这个编号）。回复里简单说一句就行。',
+      description: '画一张或多张图并发到当前 QQ 聊天里。prompt 详细描述画面；可以用 image 参考当前聊天最近收到的图（last）、引用消息里的图（quote）或自己画作的文件名来改画；画自己时 image 填 self，优先参考人设图，不支持时按外貌文字生成；想同时参考多张图时用 images（最多 16 张，MiniMax H3 改画时最有用）；shape 可按用途选择方图、竖图、横图或宽幅；size 可显式指定常用尺寸（含 2K/4K），不填就沿用 shape / 面板默认；count 是本次画几张（1~10，仅 MiniMax H3 支持）。画好会直接发出去，并给你画作编号（换头像、收成表情时用这个编号）。回复里简单说一句就行。群聊和私聊都支持绘图，权限由工具按本轮请求检查。有新的明确绘图请求时应调用工具，不要沿用旧轮次的拒绝结论。失败时区分权限不足、缺少参考图和生成失败，按实际返回说明，不要把权限不足说成必须私聊。',
       properties: {
         prompt: str('画面描述'),
         format: { type: 'string', enum: ['static', 'gif'], description: '默认 static 静态图。只有对方明确要求 GIF、动图或让画面动起来时才用 gif（需面板开启），并在 prompt 描述动作和循环。普通画画、动态姿势仍用静态。GIF 默认小尺寸、8 帧约 1.6 秒，不要为普通回复擅自改成动图' },
         notice: str('结合对方的要求和当前对话写一句自然简短的回应，开始画图前会直接发送'),
-        image: str('可选参考图：self（自己/人设图）= 当前人格形象；last = 当前聊天最近收到的一张图；quote = 当前聊天引用消息里的图；或图库中的画作文件名。禁止本地路径、网址'),
+        image: str('可选参考图：self（自己/人设图）= 当前人格形象；last = 当前聊天最近收到的一张图；quote = 当前聊天引用消息里的图；或图库中的画作文件名。禁止本地路径、网址。quote 只适用于引用消息确实带图的情况，引用机器人的文字回复不等于引用原图；只有确定最近一张就是目标图时才用 last。多图混聊无法确定时，请提出改图请求的人引用目标原图重新提出请求，不要随便用最新图，也不要省略 image 改成无参考生成。'),
         images: { type: 'array', items: { type: 'string' }, maxItems: 16, description: '可选多张参考图（图库文件名或 last / quote）；只有支持多图参考的接法能用，失败会说明原因' },
         shape: { type: 'string', enum: ['square', 'portrait', 'landscape', 'wide'], description: 'square 方图 1:1；portrait 竖图 2:3；landscape 横图 3:2；wide 宽幅 16:9。可不填' },
         size: { type: 'string', enum: SIZE_OPTIONS, description: '可选尺寸，例如 2048x2048（2K）、4096x4096（4K）；优先于 shape / 面板默认，不填沿用原逻辑' },
@@ -144,7 +149,7 @@ export default {
       execute: async ({ prompt, format, shape, image, images, count, size, notice }) => {
         const cfg = api.config()
         const ownerRequest = hub.turnSendersAllOwner(sessionId) || (chat.kind === 'group' && hub.turnDirectFromOwner?.(sessionId))
-        if (cfg.imageGen.ownerOnly && !ownerRequest && !privateCapabilityAllowed(cfg, chat, 'image')) return { ok: false, message: '画图只给主人画哦；群里请主人单独 @ 我或引用回复我提出请求，多人同时提出请求时请分开发送。' }
+        if (cfg.imageGen.ownerOnly && !ownerRequest && !privateCapabilityAllowed(cfg, chat, 'image')) return { ok: false, message: '本轮未获绘图授权（当前开启了“只给主人画”），尚未开始生成。群聊也能画：请主人在群里直接 @ 我提出请求，改图时同时引用目标原图；多人同时提出请求时请分开发送。私聊也需要授权，转私聊不会自动放行。后续新请求会重新检查权限。' }
         try { drawFormat(format) } catch (error) { return { ok: false, message: error.message } }
         if (format === 'gif' && !api.config().imageGen.allowGif) return { ok: false, message: 'GIF 动图还没开启，请主人在生图设置中打开「允许按需生成 GIF」' }
         // 工具常驻，真正能不能画在执行时判断（Codex 登录状态可能刚变过）

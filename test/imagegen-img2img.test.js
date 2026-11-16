@@ -255,7 +255,7 @@ test('quote 复用 hub 引用解析缓存，按聊天隔离，支持私聊并保
 
 function drawTool(cfg, overrides = {}) {
   let build
-  const generated = [], sent = [], events = [], references = []
+  const generated = [], sent = [], events = [], references = [], prompts = []
   const hub = {
     turnSendersAllOwner: () => true,
     sendText: async () => ({ message_id: 1 }),
@@ -265,10 +265,10 @@ function drawTool(cfg, overrides = {}) {
     ...overrides,
   }
   imagegenModule.setup({ config: () => cfg, log, dsh: {}, lazy: () => ({ addEvent: (event) => events.push(event) }),
-    route() {}, tool: (fn) => { build = fn },
+    route() {}, on: (event, fn) => { if (event === 'prompt') prompts.push(fn) }, tool: (fn) => { build = fn },
     core: { hub, local: { active: () => true, call: async (slot, args) => { generated.push({ slot, args }); return OTHER } } },
   })
-  return { tool: build({ chat: privateChat, sessionId: 'img-test' }), generated, sent, events, references }
+  return { tool: build({ chat: privateChat, sessionId: 'img-test' }), generated, sent, events, references, prompt: (content, chat) => prompts.reduce((out, fn) => fn(out, { chat, sessionId: 'img-test' }), content) }
 }
 
 test('qq_draw_image 的 image 可选；quote 来源传递；沿用发送、存盘、经历和 seeOwn', async (t) => {
@@ -330,4 +330,53 @@ test('发送失败沿用原流程：不保存画作、不记成功经历', async
   assert.match(out.message, /没有发到 QQ/)
   assert.equal(s.events.length, 0)
   assert.ok(!readdirSync(dir).includes('imagegen'))
+})
+
+test('绘图说明区分本轮权限与参考图来源，工具定义不随请求者改变', t => {
+  sandbox(t)
+  const owner = drawTool(config()).tool
+  const guest = drawTool(config(), { turnSendersAllOwner: () => false }).tool
+  assert.equal(owner.description, guest.description)
+  assert.deepEqual(owner.parameters, guest.parameters)
+  assert.match(owner.description, /群聊和私聊都支持绘图/)
+  assert.match(owner.description, /不要沿用旧轮次的拒绝结论/)
+  assert.match(owner.parameters.properties.image.description, /引用机器人的文字回复不等于引用原图/)
+  assert.match(owner.parameters.properties.image.description, /只有确定最近一张就是目标图时才用 last/)
+})
+
+test('引用文字缺图时不静默改用 last 或无参考生成；新请求可使用明确底图', async t => {
+  sandbox(t)
+  const sources = []
+  const s = drawTool(config(), { referenceImage: async (_chat, source) => {
+    sources.push(source)
+    if (source === 'quote') throw new Error('当前聊天没有可用的引用图片，请引用带图的消息再试')
+    return PNG
+  } })
+  const missing = await s.tool.execute({ prompt: '修改这张图', image: 'quote' })
+  assert.equal(missing.ok, false)
+  assert.match(missing.message, /没有可用的引用图片/)
+  assert.deepEqual(sources, ['quote'])
+  assert.equal(s.generated.length + s.sent.length + s.events.length, 0)
+  const retry = await s.tool.execute({ prompt: '修改刚刚单独发送的目标图', image: 'last' })
+  assert.equal(retry.ok, true, retry.message)
+  assert.deepEqual(sources, ['quote', 'last'])
+  assert.equal(s.generated.length, 1)
+  assert.equal(s.generated[0].args.image, b64)
+})
+
+
+test('能力提示追加在本条消息后，不改原消息、不改历史或工具前缀', t => {
+  sandbox(t)
+  const cfg = config()
+  const owner = drawTool(cfg), guest = drawTool(cfg, { turnSendersAllOwner: () => false })
+  const original = [{ type: 'text', text: '请改这张图' }, { type: 'image', attachment: 'test-image' }]
+  const out = owner.prompt(original, groupChat), text = out.at(-1).text
+  assert.match(text, /能在当前群聊或私聊画图并发出/)
+  assert.match(text, /不能省略参考图生成一张新图来代替/)
+  assert.deepEqual(out.slice(0, -1), original)
+  assert.equal(original.length, 2)
+  assert.equal(text, guest.prompt(original, groupChat).at(-1).text)
+  assert.equal(text, owner.prompt(original, privateChat).at(-1).text)
+  assert.doesNotMatch(text, new RegExp(OWNER))
+  assert.deepEqual(owner.prompt(original, { kind: 'system' }), original)
 })
