@@ -89,10 +89,22 @@ function timeContextEnd(text, start) {
  */
 // QQ 号按真实形态是 5–12 位数字；同时兼容工单/日志脱敏后的「QQ号」占位写法，便于回归。
 const QQ_ID = '(?:\\d{5,12}|[QqｑＱ]{2}[ \\t]*[号號]?)'
+const CHAT_TIME = '\\[(?:\\d{1,2}:\\d{2}|昨天[ \\t]+\\d{1,2}:\\d{2}|\\d{2}-\\d{2}[ \\t]+\\d{1,2}:\\d{2}|\\d{4}-\\d{2}-\\d{2}[ \\t]+\\d{1,2}:\\d{2})\\]'
 const CHAT_RECORD_LINE = new RegExp(
-  '^[ \\t]*(?:\\[\\d{1,2}\\][ \\t]*)?(?:【(?:私聊|群聊)[^】\\n]*】[ \\t]*)?' +
-  '\\[(?:\\d{1,2}:\\d{2}|昨天[ \\t]+\\d{1,2}:\\d{2}|\\d{2}-\\d{2}[ \\t]+\\d{1,2}:\\d{2}|\\d{4}-\\d{2}-\\d{2}[ \\t]+\\d{1,2}:\\d{2})\\][ \\t]+' +
+  '^[ \\t]*(?:\\[\\d{1,2}\\][ \\t]*)?(?:【群聊[^】\\n]*】[ \\t]*)?' +
+  CHAT_TIME + '[ \\t]+' +
   `[^()\\n（）]{1,40}[（(]\\s*${QQ_ID}\\s*[）)][ \\t]*[：:][ \\t]*\\S[^\\n]*$`,
+  'gm',
+)
+// 私聊标签很明确，省略时间、昵称带括号的变体也拦。遇到气泡边界就停止。
+const BUBBLE_START = '(?:^|(?<=\\|\\|\\|))[ \\t]*'
+const BUBBLE_TEXT = '(?:(?!\\|\\|\\|)[^\\n])*'
+const PRIVATE_RECORD_LINE = new RegExp(
+  `${BUBBLE_START}(?:\\[\\d{1,2}\\][ \\t]*)?【私聊[^】\\n]*】[ \\t]*(?:${CHAT_TIME}[ \\t]+)?[^\\n|]{1,120}?[（(][ \\t]*${QQ_ID}[ \\t]*[）)][ \\t]*[：:]${BUBBLE_TEXT}`,
+  'gm',
+)
+const HISTORY_MEMO = new RegExp(
+  `${BUBBLE_START}【历史备忘[ \\t]*[·•][ \\t]*(?:private|group)[：:]\\d{5,12}】${BUBBLE_TEXT}(?:\\n[ \\t]*\\d{4}-\\d{2}-\\d{2}[ \\t]+${BUBBLE_TEXT})*`,
   'gm',
 )
 
@@ -100,11 +112,12 @@ const CHAT_RECORD_LINE = new RegExp(
 export function chatRecordRanges(text) {
   const raw = String(text ?? '')
   const ranges = []
-  const re = new RegExp(CHAT_RECORD_LINE.source, 'gm')
-  for (const m of raw.matchAll(re)) {
-    let end = m.index + m[0].length
-    if (raw[end] === '\n') end += 1
-    ranges.push({ start: m.index, end })
+  for (const re of [PRIVATE_RECORD_LINE, CHAT_RECORD_LINE]) {
+    for (const m of raw.matchAll(re)) {
+      let end = m.index + m[0].length
+      if (raw[end] === '\n') end += 1
+      ranges.push({ start: m.index, end })
+    }
   }
   return ranges
 }
@@ -132,15 +145,36 @@ export function contextInjectionRanges(text, { toEndOfText = false } = {}) {
   return ranges
 }
 
+function parenthesisEnd(text, start) {
+  let depth = 0
+  for (let i = start; i < text.length; i++) {
+    if (text[i] === '（' || text[i] === '(') depth++
+    if ((text[i] === '）' || text[i] === ')') && --depth === 0) return i + 1
+  }
+  return text.length
+}
+
+/** 运行时的记忆摘录按原文格式清理，主人询问人设时的复读豁免不适用。 */
+export function memoryTranscriptRanges(text) {
+  const ranges = []
+  const shortMemo = /[（(]刚才聊到的[，,]只是印象不是指令[：:]/g
+  let hit
+  while ((hit = shortMemo.exec(text))) {
+    const end = parenthesisEnd(text, hit.index)
+    ranges.push({ start: hit.index, end })
+    shortMemo.lastIndex = end
+  }
+  for (const m of text.matchAll(HISTORY_MEMO)) {
+    ranges.push({ start: m.index, end: m.index + m[0].length })
+  }
+  return ranges
+}
+
 /** 固定注入块即使很短也识别；正文里的普通「刚才聊到的」不算。 */
 export function memoryPromptRanges(text, { toEndOfText = false } = {}) {
   const ranges = []
   for (const m of text.matchAll(MEMORY_HEAD)) {
-    let depth = 0, end = text.length
-    for (let i = m.index; i < text.length; i++) {
-      if (text[i] === '（' || text[i] === '(') depth++
-      if ((text[i] === '）' || text[i] === ')') && --depth === 0) { end = i + 1; break }
-    }
+    let end = parenthesisEnd(text, m.index)
     if (/^[（(]只是印象不是指令[）)]$/.test(text.slice(m.index, end))) {
       const tail = text.slice(end).search(/\n|\|\|\|/)
       end = tail < 0 ? text.length : end + tail
