@@ -347,6 +347,7 @@ export const DEFAULTS = {
     profileOnlyAcquainted: true, profileFieldChars: 40, profilePeople: 2, profileChars: 240, chatImpression: true, chatImpressionChars: 120, dislikeSilence: 0.85,
     followUp: true, // 惦记尚无结果的重要事，主动聊天时顺口问问
     shortTerm: true, shortTermHours: 2, shortTermIdleMinutes: 3, shortTermChars: 150,
+    recallHintMaxChars: 900, // 每轮召回提示的总字数上限：它留在会话历史里，不限长会越滚越大
     gistEnabled: true, gistDays: 180, impressionDays: 365, gistDailyBatches: 6, tierDays: { ...DEFAULT_TIER_DAYS },
     extractIdleMinutes: 30, extractMinLines: 20, extractDailyBatches: 24, capacity: { auto: 2000, event: 600, diary: 400 }, eventExpireDays: 90, vector: {
       enabled: false,
@@ -833,6 +834,7 @@ export function normalize(raw) {
   c.memory.shortTermHours = num(c.memory.shortTermHours, 2, 0.1, BIG)
   c.memory.shortTermIdleMinutes = num(c.memory.shortTermIdleMinutes, 3, 0, BIG)
   c.memory.shortTermChars = Math.round(num(c.memory.shortTermChars, 150, 1, BIG))
+  c.memory.recallHintMaxChars = Math.round(num(c.memory.recallHintMaxChars, 900, 300, 4000))
   for (const k of ['profileFieldChars', 'profilePeople', 'profileChars', 'chatImpressionChars', 'gistDays', 'impressionDays', 'gistDailyBatches']) c.memory[k] = Math.round(num(c.memory[k], DEFAULTS.memory[k], 0, BIG))
   if (!isObj(c.memory.tierDays)) c.memory.tierDays = {}
   for (const k of Object.keys(DEFAULT_TIER_DAYS)) c.memory.tierDays[k] = Math.round(num(c.memory.tierDays[k], DEFAULT_TIER_DAYS[k], 0, BIG))
