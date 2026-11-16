@@ -28,6 +28,9 @@ export function parseCommand(text, extra = []) {
   return pre ? { name: ALIASES[pre], arg: (m[1].slice(pre.length) + ' ' + m[2]).trim() } : null
 }
 
+// Only command-shaped messages: ordinary paths, URLs and prose remain chat content.
+export const isSlashCommand = (text) => /^[/／]\s*[A-Za-z一-龥][A-Za-z0-9一-龥_-]*(?:\s+[\s\S]*)?$/.test(String(text || '').trim())
+
 const ALIASES = {
   闭嘴: 'silent', 安静: 'silent', 静音: 'silent', shutup: 'silent', mute: 'silent',
   说话: 'active', 醒醒: 'active', 解除静音: 'active', unmute: 'active',

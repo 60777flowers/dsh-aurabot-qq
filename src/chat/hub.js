@@ -1,3 +1,4 @@
+import { isSlashCommand } from './commands.js'
 // 消息中枢：QQ 会话 ↔ DSH 会话。
 //   收：OneBot 事件 → 白名单 / 群聊策略 → 拼好文案（带发言人、群上下文、图片、语音转写）→ 喂进对应 DSH 会话
 //   发：DSH 会话一轮结束 → 取最终正文 → 拆条 / 语音 / 表情 → 发回原来的 QQ 会话
@@ -2301,7 +2302,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       recentMedia.remember(msg.chatId, segmentsOf(event).filter((seg) => msg.images.includes(seg) || msg.stickers.includes(seg)).map((seg) => ({ seg, userId: msg.userId, sticker: msg.stickers.includes(seg) })))
     }
     // 主人命令（/silent /active …）：总开关关着也处理，回复直接发
-    if (onCommand && (fromOwner || msg.kind === 'private') && /^\s*[/／]/.test(msg.text)) {
+    if (onCommand && (fromOwner || msg.kind === 'private' || (cfg.enabled && !isMuted?.(msg.chatId) && msg.mentioned)) && /^\s*[/／]/.test(msg.text)) {
       let sensitiveCommand = ''
       const ownerStillCurrent = () => {
         const current = getConfig()
@@ -2313,6 +2314,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
           return ownerStillCurrent()
         }, ownerStillCurrent)
         if (disposed || (sensitiveCommand && !ownerStillCurrent())) return
+        if (reply !== null && reply !== undefined && groupEntry) groupBuf.set(msg.groupId, (groupBuf.get(msg.groupId) || []).filter((entry) => entry !== groupEntry))
         if (reply) {
           log.info(sensitiveCommand || `QQ 命令 ${msg.text.trim().slice(0, 30)} → ${reply.split('\n')[0]}`)
           await sendSegments(msg.chatId, [{ type: 'text', data: { text: reply } }], sensitiveCommand || reply.slice(0, 60), {
@@ -2386,6 +2388,11 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       }
     }
     if (disposed || wasCleared()) return
+    if ((msg.kind === 'private' || msg.mentioned || isOwner(cfg, msg.userId)) && isSlashCommand(msg.text)) {
+      if (groupEntry) groupBuf.set(msg.groupId, (groupBuf.get(msg.groupId) || []).filter((entry) => entry !== groupEntry))
+      await sendSegments(msg.chatId, [{ type: 'text', data: { text: '没有识别到这个聊天命令，没有执行任何操作。' } }], '未识别的聊天命令')
+      return
+    }
 
     // 贴表情和「回不回复」分家：她可以只看不说话，顺手给这条消息贴一个表情。
     // 放在群聊「要不要插话」的判定之前，所以不回复也会贴；闭嘴（isMuted）时不贴。

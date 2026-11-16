@@ -448,9 +448,15 @@ export function cleanOutboundSegments(message, options) {
 
 /** 解析一轮回复；在拆气泡/语音前清洗，避免协议里的竖线被误作气泡分隔符。 */
 export function parseReply(text, options) {
+  const original = String(text || '')
+  const quotedCode = codeRanges(original)
+  // Repair a model's missing '<' only at a bubble/line prefix; preserve code examples.
+  const repaired = original.replace(/(^|\n|\|{3,})([ \t]*)\/reply:\s*(\d+)\s*>/gi, (tag, boundary, space, id, offset) =>
+    insideCode(quotedCode, offset + boundary.length, offset + tag.length) ? tag : `${boundary}${space}<reply:${id}>`)
+
   // 模型偶尔把「戳人」写成方括号动作（[戳了戳你：尾巴往回一收]），插件不认这种写法，
   // 会原样当文字发出去。这里统一转成 <poke>，让戳一戳变成真的系统动作。
-  const forwarded = String(text || '').replace(/[[【]\s*戳了戳(?:你|他|她)?[^\]】]*[\]】]/g, '<poke>')
+  const forwarded = repaired.replace(/[[【]\s*戳了戳(?:你|他|她)?[^\]】]*[\]】]/g, '<poke>')
   // 模型偶尔把换行写成 HTML `<br>`：当真正的换行处理；代码示例里的字面量保留。
   const cleaned = stripModelArtifacts(cleanOutboundText(forwarded, options))
   const code = codeRanges(cleaned)
