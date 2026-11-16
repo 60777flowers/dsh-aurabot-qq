@@ -425,12 +425,9 @@ export function createSpeakUp({ getConfig, hub, log, isMuted, memory }) {
     const cfg = getConfig()
     const c = cfg.speakUp
     if (!cfg.enabled || !c.enabled) return
-    if (await tickReminders()) return
-    // 目的引擎开着时由它主动找人，两套都跑同一个人会被找两次（tickReminders 在上面已先行，
-    // 小闹钟不受让位影响）。P1 起目的引擎默认开：真实安装 boot 时播种逻辑会把
-    // ext.purpose.enabled=true 显式落盘（modules/purpose/index.js），所以这里保持精确判即可——
-    // 手改配置删掉该键属边缘态，重启播种即恢复互斥。
-    if (cfg.ext?.purpose?.enabled === true) return
+    // P2b：小闹钟已迁进目的引擎（purpose/module.js 的 tickReminders），这里不再触发，
+    // 免得双引擎各响一遍。下面的 reminder 函数群保留到 P5 清理批次再删（@deprecated）。
+    if (cfg.ext?.purpose?.enabled === true) return // 目的引擎开着时由它主动找人，两套都跑同一个人会被找两次
     if (isMuted?.(`private:${cfg.ownerQQ}`) || memory?.()?.dislikes?.(cfg.ownerQQ)) { // 主人在私聊里让她闭嘴了：只管主人这边，白名单照旧
       const s = load()
       if (!(await tickFriends(cfg, s))) save(s)
