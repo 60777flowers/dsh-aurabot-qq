@@ -136,6 +136,19 @@ function silenceMarkRanges(text) {
   return ranges
 }
 
+// 戳一戳只有 <poke> / <poke/> 是动作；</poke> 是模型收尾时漏出来的闭合标签，
+// 任何出口都不能把标签文字发出去（2026-11 群友截图：「嗯？ <poke>」）。
+// 只删闭合标签，<poke> 原样留给 parseReply 触发真戳一戳。
+const POKE_CLOSE_TAG = /[ \t]*<\s*\/\s*poke\s*>[ \t]*/gi
+
+/** 收集 poke 闭合标签的删除区间；统一出站清洗和 parseReply 共用。 */
+function pokeCloseTagRanges(text) {
+  const ranges = []
+  const re = new RegExp(POKE_CLOSE_TAG.source, 'gi')
+  for (const m of String(text || '').matchAll(re)) ranges.push({ start: m.index, end: m.index + m[0].length })
+  return ranges
+}
+
 const ZERO_WIDTH_CHARS = new Set(['\u200B', '\u200C', '\u200D', '\uFEFF', '\u2060'])
 const stripZeroWidth = (s) => { let out = ''; for (const ch of String(s || '')) if (!ZERO_WIDTH_CHARS.has(ch)) out += ch; return out }
 const FULLWIDTH = (s) => String(s || '').replace(/[！-～]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
@@ -442,8 +455,9 @@ export function cleanOutboundText(text, { warn, promptSources, fingerprint, user
   const stateRanges = stateTagRanges(raw)
   // 模型自己编的格式化聊天记录同样不是提示词复读，按整行删除，避免冒充「对方发言」。
   const recordRanges = chatRecordRanges(raw)
+  const pokeRanges = pokeCloseTagRanges(raw)
   const noiseCount = toolRanges.length + contextRanges.length + htmlCuts.length
-  const tools = [...toolRanges, ...contextRanges, ...silence, ...stateRanges, ...recordRanges]
+  const tools = [...toolRanges, ...contextRanges, ...silence, ...stateRanges, ...recordRanges, ...pokeRanges]
     .sort((a, b) => a.start - b.start || b.end - a.end)
   const baseRanges = mergeRanges([...tools, ...htmlCuts])
   const toolClean = withoutToolRanges(raw, baseRanges)
@@ -466,7 +480,7 @@ export function cleanOutboundText(text, { warn, promptSources, fingerprint, user
     ranges = mergeRanges([...baseRanges, ...prompts.map((p) => ({ start: offsets[p.start], end: offsets[p.end - 1] + 1 }))])
   }
   let clean = withoutToolRanges(raw, ranges)
-  // 只有沉默标记/state 标签/中文时间注入/伪造聊天记录时按沉默处理，不要误报成工具调用或提示词复读。
+  // 只有沉默标记/state 标签/中文时间注入/伪造聊天记录/poke 闭合标签时按正常沉默或内部残留处理，不要误报成工具调用或提示词复读。
   if ((noiseCount > 0 || removePrompts) && isSilence(visibleContent(clean))) {
     warn?.(removePrompts ? '模型输出整段都是提示词复读，已拦下并按沉默处理' : '模型输出整段都是工具调用文字，已拦下并按沉默处理')
     clean = ''
@@ -555,8 +569,8 @@ export function parseReply(text, options) {
   for (const bubble of raw.split(/\|{3,}/)) {
     const part = bubble.trim()
     if (!part) continue
-    // 依次切出 reply / voice / sticker / markdown 图片，其余是文字
-    const re = /<poke\s*\/?>|<reply:\s*(\d+)\s*>|<voice>([\s\S]*?)<\/voice>|<sticker:([^>]+?)>(?:\s*<\/sticker>)?|!\[[^\]]*\]\(\s*([^)\s]+)\s*\)/g
+    // 依次切出 poke / reply / voice / sticker / markdown 图片，其余是文字
+    const re = /<poke\s*\/?>|<\/poke\s*>|<reply:\s*(\d+)\s*>|<voice>([\s\S]*?)<\/voice>|<sticker:([^>]+?)>(?:\s*<\/sticker>)?|!\[[^\]]*\]\(\s*([^)\s]+)\s*\)/g
     let last = 0
     let m
     while ((m = re.exec(part)) !== null) {
