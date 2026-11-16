@@ -8,8 +8,8 @@
 //
 // 从内置搬到社区库的模块（MOVED），老用户升级时自动装回来，只装一次，卸载后不会再装。
 
-import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash, randomUUID } from 'node:crypto'
+import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve, sep } from 'node:path'
 import { inflateRawSync, crc32 } from 'node:zlib'
 import { dataDir } from './store.js'
@@ -360,21 +360,34 @@ export function createCommunity({ mods, getConfig, setConfig, log, version, aliv
     return { ok: true, message: `「${e.name}」${e.version} 装好了` }
   })
 
-  /** 卸载。默认保留 modules-data/<id>/ 和设置；purge 才清掉。 */
+  /** 卸载时归档源码。默认也保留模块数据和设置，purge 才清掉这两项。 */
   const remove = (id, { purge = false } = {}) => exclusive(async () => {
-    if (!ID_RE.test(id)) return { ok: false, message: 'id 不对' }
+    if (typeof id !== 'string' || !ID_RE.test(id)) return { ok: false, message: 'id 不对' }
     if (!readSource(id)) return { ok: false, message: `「${id}」不是从社区库装的，不能在这里卸载` }
-    mods.stop(id)
-    rmSync(dirOf(id), { recursive: true, force: true })
-    if (purge) {
-      rmSync(dataDir('modules-data', id), { recursive: true, force: true })
-      const cfg = getConfig()
-      const { [id]: _ext, ...ext } = cfg.ext || {}
-      const { [id]: _mod, ...modules } = cfg.modules || {}
-      setConfig({ ...cfg, ext, modules })
+    const trash = join(userDir(), '.trash')
+    mkdirSync(trash, { recursive: true })
+    if (!lstatSync(trash).isDirectory() || !lstatSync(dirOf(id)).isDirectory()) {
+      throw new Error('模块目录或 modules/.trash 是链接，无法安全归档')
     }
-    await mods.sync()
-    return { ok: true, message: purge ? '卸载好了，数据和设置也清掉了' : '卸载好了，数据和设置还留着' }
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const folder = `${id}-${stamp}-${randomUUID().slice(0, 8)}`
+    const archive = `modules/.trash/${folder}`
+    mods.stop(id)
+    try {
+      renameSync(dirOf(id), join(trash, folder))
+      log.info(`面板卸载社区模块「${id}」，源码归档到 ${archive}`)
+      if (purge) {
+        rmSync(dataDir('modules-data', id), { recursive: true, force: true })
+        const cfg = getConfig()
+        const { [id]: _ext, ...ext } = cfg.ext || {}
+        const { [id]: _mod, ...modules } = cfg.modules || {}
+        setConfig({ ...cfg, ext, modules })
+      }
+    } finally {
+      await mods.sync()
+    }
+    const dataStatus = purge ? '数据和设置已清除' : '数据和设置已保留'
+    return { ok: true, archive, message: `卸载好了，源码和本地改动已移到 ${archive}。${dataStatus}。` }
   })
 
   /** 升级后把搬走的模块自动装回来：每个 id 只成功处理一次，失败下次启动重试。 */

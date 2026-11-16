@@ -7301,8 +7301,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         try { await done(await post('/modules/community/install', { id: m.id, confirmReplace: Boolean(m.replacesBuiltin) })) } finally { setBusy('') }
       }
       const remove = async (m) => {
-        if (!confirm('卸载「' + m.name + '」？')) return
-        const purge = confirm('把它的数据和设置也清掉吗？\n确定 = 一起清掉；取消 = 留着，以后重装还能用')
+        if (!confirm('卸载「' + m.name + '」？\n模块目录和本地改动会移到 modules/.trash。')) return
+        const purge = confirm('把模块数据和设置也清掉吗？\n确定 = 清除数据和设置\n取消 = 保留数据和设置，重装还能用')
         setBusy(m.id)
         try { await done(await post('/modules/community/remove', { id: m.id, purge })) } finally { setBusy('') }
       }
