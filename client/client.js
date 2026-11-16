@@ -4485,6 +4485,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const loadIns = () => get('/insights').then((r) => setStyles(r.styles || {}))
       useEffect(() => { if (modOn(st, 'memory')) loadIns() }, [modOn(st, 'memory')])
       const stylesCard = h(Card, { title: 'ta自己的说话方式', desc: '聊久了慢慢养成的说法。不会变成另一个人，只是越来越像「你们的」大肥鱼。对每个人和每个群的相处经验、说话习惯在「人物记忆」页。' },
+        h(Row, { label: '使用学来的语气与相处建议', hint: '对所有群和私聊生效。关闭后不带入回复；学习和存档继续，事实记忆不受影响。改完请保存设置。' }, f.sw('memory.adaptStyle', { title: '使用学来的语气与相处建议' })),
         h(StyleEditor, { k: 'self', label: 'ta自己养成的说法', list: styles.self || [], toast, onSaved: loadIns }))
       const moodCard = !modOn(st, 'mood') ? h(ModOff, { name: '心情' }) : h(Card, { title: '心情', right: f.sw('mood.enabled'), desc: '被夸、被哄、被凶都会影响ta的心情（对ta说的话、主人的话影响更大），过一阵子慢慢回到平常。心情好时ta话多、更爱发表情和语音、回得快、群里更爱插话；心情差时话少、回得慢、少发表情，还会带点小脾气。' },
           h('div', { className: 'ab-flex', style: { marginBottom: 8 } }, h('b', null, st.mood.label), h('span', { className: 'ab-muted' }, st.mood.value + ' / 100'), st.mood.reason ? h('span', { className: 'ab-muted ab-small' }, '· 因为' + st.mood.reason) : null),
