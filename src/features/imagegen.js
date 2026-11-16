@@ -157,15 +157,17 @@ function findImage (obj, depth = 0) {
 /** 工具只接受聊天里的短期引用或图库文件名；绝不把模型给的路径 / URL 当图片读。 */
 export async function resolveDrawImage(image, { hub, chat }) {
   if (image === undefined || image === null || image === '') return null
-  if (typeof image !== 'string') throw new Error('参考图只接受 last、quote 或画作文件名')
+  if (typeof image !== 'string') throw new Error('参考图只接受 msg 图片编号、last、quote 或画作文件名')
   const ref = image.trim()
   let buf
   if (/^(last|最近|最近一张|最近发的图|对方最近发的图)$/i.test(ref)) {
     buf = await hub.referenceImage(chat, 'last')
+  } else if (/^msg:-?[1-9]\d*:[1-9]\d*$/.test(ref)) {
+    buf = await hub.referenceImage(chat, ref)
   } else if (/^(quote|引用|引用消息里的图)$/i.test(ref)) {
     buf = await hub.referenceImage(chat, 'quote')
   } else {
-    if (!ref || /[\\/:\0]/.test(ref)) throw new Error('参考图只接受 last、quote 或画作文件名，不接受路径或网址')
+    if (!ref || /[\\/:\0]/.test(ref)) throw new Error('参考图只接受 msg 图片编号、last、quote 或画作文件名，不接受路径或网址')
     const path = paintingPath(ref)
     if (!path || !lstatSync(path).isFile()) throw new Error('找不到这张画作，请使用图库里的文件名')
     buf = readFileSync(path)

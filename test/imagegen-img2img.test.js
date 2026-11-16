@@ -380,3 +380,97 @@ test('能力提示追加在本条消息后，不改原消息、不改历史或�
   assert.doesNotMatch(text, new RegExp(OWNER))
   assert.deepEqual(owner.prompt(original, { kind: 'system' }), original)
 })
+
+const sendReference = (hub, mid, buffers, user = OWNER, group = '123') => hub.onMessage({
+  message_type: group ? 'group' : 'private', self_id: BOT, user_id: user, sender: { nickname: '测试' },
+  ...(group ? { group_id: group } : {}), message_id: mid,
+  message: buffers.map((buf, i) => ({ type: 'image', data: { file: 'base64://' + buf.toString('base64'), sub_type: i ? 1 : 0 } })),
+})
+
+test('msg 绑定具体消息图片；群友插图后仍取原图，last 保持旧语义', async t => {
+  const hub = mediaHub(t)
+  await sendReference(hub, '-101', [PNG])
+  await sendReference(hub, '102', [OTHER], '10000002')
+  assert.deepEqual(await resolveDrawImage('msg:-101:1', { hub, chat: groupChat }), PNG)
+  assert.deepEqual(await resolveDrawImage('last', { hub, chat: groupChat }), OTHER)
+  assert.deepEqual(await resolveDrawImage('msg:102:1', { hub, chat: groupChat }), OTHER)
+  await assert.rejects(resolveDrawImage('msg:-101:1', { hub, chat: privateChat }), /不在当前聊天/)
+  await assert.rejects(resolveDrawImage('msg:-101:2', { hub, chat: groupChat }), /指定图片/)
+  await assert.rejects(resolveDrawImage('msg:999999:1', { hub, chat: groupChat }), /指定图片/)
+})
+
+test('msg 按原消息顺序区分照片与表情，失效后不回退到其他图片', async t => {
+  const hub = mediaHub(t)
+  let now = 1_800_000_000_000
+  t.mock.method(Date, 'now', () => now)
+  await sendReference(hub, '201', [PNG, OTHER])
+  assert.deepEqual(await resolveDrawImage('msg:201:1', { hub, chat: groupChat }), PNG)
+  assert.deepEqual(await resolveDrawImage('msg:201:2', { hub, chat: groupChat }), OTHER)
+  now += 29 * 60_000
+  await sendReference(hub, '202', [OTHER])
+  now += 60_000
+  await assert.rejects(resolveDrawImage('msg:201:1', { hub, chat: groupChat }), /已过期/)
+  assert.deepEqual(await resolveDrawImage('last', { hub, chat: groupChat }), OTHER)
+  await sendReference(hub, '203', [PNG])
+  for (let i = 0; i < 6; i++) await sendReference(hub, String(300 + i), [OTHER])
+  await assert.rejects(resolveDrawImage('msg:203:1', { hub, chat: groupChat }), /缓存淘汰/)
+})
+
+test('msg 随原缓存恢复；旧格式缓存仍支持 last，不凭空补编号', async t => {
+  const hub = mediaHub(t)
+  await sendReference(hub, '401', [PNG, OTHER])
+  hub.dispose()
+  const cfg = normalize({ botQQ: BOT, ownerQQ: OWNER, enabled: false, allow: { groups: ['123'] } })
+  const restored = createHub({ dsh: {}, getConfig: () => cfg, log, onebot: {}, stickers: {} })
+  t.after(() => restored.dispose())
+  assert.deepEqual(await resolveDrawImage('msg:401:1', { hub: restored, chat: groupChat }), PNG)
+  assert.deepEqual(await resolveDrawImage('msg:401:2', { hub: restored, chat: groupChat }), OTHER)
+  restored.dispose()
+  const file = join(process.env.AURABOT_DATA_DIR, 'recent-media.json')
+  const legacy = JSON.parse(readFileSync(file, 'utf8'))
+  for (const item of legacy[groupChat.chatId]) { delete item.messageId; delete item.imageIndex }
+  writeFileSync(file, JSON.stringify(legacy))
+  const old = createHub({ dsh: {}, getConfig: () => cfg, log, onebot: {}, stickers: {} })
+  t.after(() => old.dispose())
+  assert.deepEqual(await resolveDrawImage('last', { hub: old, chat: groupChat }), OTHER)
+  await assert.rejects(resolveDrawImage('msg:401:1', { hub: old, chat: groupChat }), /指定图片/)
+})
+
+test('精确图片编号沿用权限、发送和存图流程，不获权不读图', async t => {
+  sandbox(t)
+  const allowed = drawTool(config())
+  const result = await allowed.tool.execute({ prompt: '改这张图', image: 'msg:-501:2' })
+  assert.equal(result.ok, true, result.message)
+  assert.deepEqual(allowed.references, [{ chat: privateChat, source: 'msg:-501:2' }])
+  const denied = drawTool(config(), { turnSendersAllOwner: () => false })
+  assert.equal((await denied.tool.execute({ prompt: '改图', image: 'msg:-501:2' })).ok, false)
+  assert.equal(denied.references.length + denied.generated.length, 0)
+})
+
+test('标签紧贴对应图片，发送者/编号只进入新消息，未知来源不误标', t => {
+  sandbox(t)
+  const recent = [
+    { messageId: '-601', imageIndex: 1, userId: OWNER },
+    { messageId: '602', imageIndex: 1, userId: '10000002' },
+  ]
+  const s = drawTool(config(), { recentMedia: () => recent })
+  const original = [
+    { type: 'text', text: '主人要求二次元化，群友随后发了无关图' },
+    { type: 'image', name: 'qqref-602-1', data: 'other' },
+    { type: 'image', name: 'qqref--601-1', data: 'target' },
+    { type: 'image', name: 'qq-602-1', data: 'forwarded-without-binding' },
+  ]
+  const out = s.prompt(original, groupChat)
+  assert.equal(out[0], original[0])
+  assert.equal(out[1].text, '【参考图 msg:602:1，发送者 QQ 10000002】')
+  assert.equal(out[2], original[1])
+  assert.equal(out[3].text, `【参考图 msg:-601:1，发送者 QQ ${OWNER}】`)
+  assert.equal(out[4], original[2])
+  assert.equal(out[5], original[3], '未绑定的合并转发图不借用同名附件编号')
+  assert.equal(original.length, 4)
+  const description = s.tool.description, parameters = JSON.stringify(s.tool.parameters)
+  recent.push({ messageId: '603', imageIndex: 1, userId: '10000003' })
+  s.prompt([{ type: 'image', name: 'qqref-603-1' }], groupChat)
+  assert.equal(s.tool.description, description)
+  assert.equal(JSON.stringify(s.tool.parameters), parameters)
+})
