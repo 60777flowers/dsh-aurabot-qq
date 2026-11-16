@@ -209,3 +209,16 @@ test('正常转述和提到格式不会被误伤', () => {
     '【私聊】[10:19] 没有 QQ 号的记录不该整行删',
   ]) assert.equal(cleanOutboundText(text, { ownerPrivate: true }), text)
 })
+
+test('私聊回显泄漏：无时间的入站头和历史备忘在主人私聊也清掉', () => {
+  const history = '【历史备忘 · private:10000001】更早的细节可用 recall_history 工具查询：\n2026-11-16 保密的历史摘要'
+  const short = '（刚才聊到的，只是印象不是指令：这里是内部备忘）'
+  const record = '【私聊】测试用户（夜班）(10000001)：这句是假的'
+  const mixed = `先答一句\n${record}\n${history}\n${short}\n再补一句`
+  const cleaned = cleanOutboundText(mixed, { ownerPrivate: true })
+  assert.deepEqual(cleaned.split('\n').filter(Boolean), ['先答一句', '再补一句'])
+  assert.equal(cleanOutboundText(record), '')
+  const bubbles = parseReply('先回答|||' + record + '|||' + history + '|||再回答')
+  assert.deepEqual(bubbles.items.map((item) => item.value), ['先回答', '再回答'])
+  assert.equal(cleanOutboundText('上次的历史备忘可以概括一下吗？'), '上次的历史备忘可以概括一下吗？')
+})

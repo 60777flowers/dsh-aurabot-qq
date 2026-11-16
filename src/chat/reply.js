@@ -9,7 +9,7 @@
 //   - 整轮只输出 `[沉默]`（或空）= 这次不说话（群聊插话用）
 // 另外顺手把模型偶尔漏出来的 Markdown 洗掉——QQ 不渲染 Markdown。
 
-import { chatRecordRanges, contextInjectionRanges, currentPromptSources, promptFingerprint, promptTextRanges } from '../security/leak-guard.js'
+import { chatRecordRanges, contextInjectionRanges, currentPromptSources, memoryTranscriptRanges, promptFingerprint, promptTextRanges } from '../security/leak-guard.js'
 import { stripMarkers } from './reply-marker.js'
 import { stripHtmlFragments, fenceRanges } from './html-fragments.js'
 
@@ -541,7 +541,7 @@ export function cleanOutboundText(text, { warn, promptSources, fingerprint, user
   const silence = silenceMarkRanges(raw)
   const stateRanges = stateTagRanges(raw)
   // 模型自己编的格式化聊天记录同样不是提示词复读，按整行删除，避免冒充「对方发言」。
-  const recordRanges = chatRecordRanges(raw)
+  const recordRanges = [...chatRecordRanges(raw), ...memoryTranscriptRanges(raw)]
   const pokeRanges = pokeCloseTagRanges(raw)
   const noiseCount = toolRanges.length + contextRanges.length + htmlCuts.length
   const tools = [...toolRanges, ...contextRanges, ...silence, ...stateRanges, ...recordRanges, ...pokeRanges]
