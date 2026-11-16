@@ -4,19 +4,26 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { Script } from 'node:vm'
 
-function loadMarketTest() {
+function loadMarketTest(marketData) {
   const source = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
   const marker = '    exports.apply = apply'
   assert.ok(source.includes(marker), 'client 导出锚点没了，测试注入失败')
   let loader
-  new Script(source.replace(marker, '    exports.marketTest = { sortMarketModules, marketTimeOf }\n' + marker)).runInNewContext({
+  new Script(source.replace(marker, '    exports.marketTest = { Market, sortMarketModules, marketTimeOf }\n' + marker)).runInNewContext({
     window: { innerWidth: 1200, __ModuleLoader__: { load: (value) => { loader = value } } },
   })
   const React = {
     Component: class {},
     Fragment: 'fragment',
     createElement: (type, props, ...children) => ({ type, props: props || {}, children }),
-    useState: (initial) => [typeof initial === 'function' ? initial() : initial, () => {}],
+    useState: (initial) => {
+      if (initial === null && marketData) {
+        const value = marketData
+        marketData = undefined
+        return [value, () => {}]
+      }
+      return [typeof initial === 'function' ? initial() : initial, () => {}]
+    },
     useRef: (initial) => ({ current: initial }),
     useEffect() {},
     useCallback: (fn) => fn,
@@ -57,6 +64,16 @@ test('时间解析：非法/缺失返回 0，发布日期和 GitHub Release 时�
   assert.equal(marketTimeOf({ publishedAt: 'not-a-date' }, 'latest'), 0)
   assert.ok(marketTimeOf({ publishedAt: '2026-11-01T00:00:00Z' }, 'latest') > 0)
   assert.ok(marketTimeOf({ releasedAt: '2026-10-01T00:00:00Z' }, 'latest') > 0)
+})
+
+test('模块市场首屏挂载完整的筛选结果，一次可以滚动浏览超过 12 个模块', () => {
+  const list = Array.from({ length: 16 }, (_, i) => ({ id: `demo-${i}`, name: `模块 ${i}`, version: '1.0.0' }))
+  const { Market } = loadMarketTest({ list })
+  const tree = Market({ st: { modules: [] } })
+  const grid = tree.children.find((child) => child?.props.className === 'ab-grid ab-market-grid')
+  assert.ok(grid)
+  assert.deepEqual(Array.from(grid.children[0], (item) => item.props.key), list.map((item) => item.id))
+  assert.doesNotMatch(JSON.stringify(tree), /上一页|下一页/)
 })
 
 test('市场面板源码契约：提供最新发布/最近更新两个排序入口和缺时间提示', () => {
