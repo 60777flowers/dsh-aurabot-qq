@@ -127,7 +127,7 @@ export const DEFAULTS = {
     cosyvoice: { url: 'http://127.0.0.1:50000', mode: 'sft', spkId: '中文女', instruct: '', sampleRate: 22050 },
     gptsovits: { url: 'http://127.0.0.1:9880', refAudio: '', promptText: '', promptLang: 'zh', textLang: 'zh' },
     // 通用 HTTP 引擎：GET 时地址里带 {text}；POST 时填接口地址，请求头一行一个，请求体里 {text} 自动替换（已做 JSON 转义）
-    http: { urlTemplate: '', method: 'GET', headers: '', body: '', sampleRate: 24000 },
+    http: { urlTemplate: '', method: 'GET', headers: '', body: '', sampleRate: 24000, fallback: 'windows' },
     // 豆包语音（火山引擎）预设：地址、请求头、请求体全内置，只留 API Key + 音色给人填
     // resourceId 留空 = 按音色自动配（1.0 音色配 seed-tts-1.0，2.0 音色配 seed-tts-2.0）
     volcano: { apiKey: '', resourceId: '', voiceType: 'zh_female_vv_uranus_bigtts', speedRatio: 1 },
@@ -340,6 +340,7 @@ export const DEFAULTS = {
   // 原话档案独立于摘要记忆；默认关闭，由使用者明确开启并管理保留期限。
   conversationContext: { enabled: false },
   memory: {
+    adaptStyle: true, // 允许从旧记忆注入说话方式/相处建议；关闭不删除记忆
     passiveGroups: [], // 非白名单群：仅记录文字供记忆整理，不开放聊天；留空不旁听
     enabled: true, recallCount: 6, recallMinRelevance: 0, recallMode: 'always', recallTriggers: ['上次', '上回', '之前', '以前', '那天', '那次', '还记得', '记不记得', '说过', '提过', '答应', '约好', '那时候'],
     dailyConsolidate: true, consolidateTimes: ['04:00', '16:00'], keepChatlogDays: 7, keepChatlogSet: false, mergeGroups: false, compress: true, compressAfterDays: 14, instantCommands: true, groupMemory: true, searchRrf: true,
@@ -593,6 +594,7 @@ export function normalize(raw) {
   // 群聊里的本机工具：默认关；只有明确写了 owner 才开（all 已移除，写 all 也按 off 处理）
   g.ownerTools = g.ownerTools === 'owner' ? 'owner' : 'off'
   g.ownerToolsGroups = qqList(g.ownerToolsGroups)
+  c.memory.adaptStyle = c.memory.adaptStyle !== false
   c.voice.autoChance = num(c.voice.autoChance, 0.15, 0, 1)
   c.voice.autoMaxChars = num(c.voice.autoMaxChars, 80, 1, BIG)
   c.voice.emojiSeparate = c.voice.emojiSeparate !== false
@@ -651,6 +653,7 @@ export function normalize(raw) {
   for (const k of ['baseUrl', 'model', 'apiKey', 'language']) asrApi[k] = String(asrApi[k] ?? '').trim()
   asrApi.baseUrl = asrApi.baseUrl.replace(/\/+$/, '')
   asrApi.prefer = ['qq', 'cloud'].includes(asrApi.prefer) ? asrApi.prefer : 'qq'
+  c.voice.http.fallback = ['edge', 'text'].includes(c.voice.http.fallback) ? c.voice.http.fallback : 'windows'
   c.stickers.autoChance = num(c.stickers.autoChance, 0.35, 0, 1)
   c.stickers.limitTagged = bool(c.stickers.limitTagged, false)
   c.stickers.keywordExemption = bool(c.stickers.keywordExemption, false)
