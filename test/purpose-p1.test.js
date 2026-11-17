@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { normalize } from '../src/core/config.js'
 import { purposeConfig } from '../src/purpose/module.js'
+import { quietWindowOf, inHourWindow } from '../src/core/time-window.js'
 import purposeDef from '../src/modules/purpose/index.js'
 import { createModules } from '../src/core/modules.js'
 
@@ -42,6 +43,36 @@ test('nudge：ext.purpose.nudge ?? speakUp.nudge ?? true 双层读', () => {
   assert.equal(purposeConfig({ speakUp: { nudge: true } }).nudge, true)
   assert.equal(purposeConfig({ speakUp: { nudge: true }, ext: { purpose: { nudge: false } } }).nudge, false, 'ext 覆写位优先（翻键后的写入口）')
   assert.equal(purposeConfig({ speakUp: { nudge: false }, ext: { purpose: { nudge: true } } }).nudge, true, '显式 ext 覆写可重新打开')
+})
+
+// ---------- 2.5 醒着窗口边界（用户报障回归：醒着 07~24 不得被当成全天） ----------
+
+test('醒着窗口边界：awakeTo=24 是「到当天结束」不是全天', () => {
+  // 用户报障场景：醒着 07~24，安静（睡着）必须是 00:00~07:00，而不是 00:00~00:00（全天/不启用）
+  assert.deepEqual(quietWindowOf(7, 24), { quietStart: '00:00', quietEnd: '07:00' })
+  // normalize 不钳掉 24：用户设的 7/24 原样落盘
+  const cfg = normalize({ speakUp: { awakeFrom: 7, awakeTo: 24 } })
+  assert.equal(cfg.speakUp.awakeFrom, 7)
+  assert.equal(cfg.speakUp.awakeTo, 24)
+  const config = purposeConfig(cfg)
+  assert.equal(config.quietStart, '00:00')
+  assert.equal(config.quietEnd, '07:00')
+  // 行为口径：0~6 点睡着、7~23 点醒着
+  const h = (hour) => inHourWindow(new Date(2026, 0, 1, hour).getTime(), 7, 24)
+  assert.equal(h(0), false, '0 点睡着')
+  assert.equal(h(6), false, '6 点睡着')
+  assert.equal(h(7), true, '7 点醒着')
+  assert.equal(h(23), true, '23 点醒着')
+})
+
+test('醒着窗口边界：0/24、24/24、0/0 才是全天（安静 00:00~00:00 = 不启用）', () => {
+  assert.deepEqual(quietWindowOf(0, 24), { quietStart: '00:00', quietEnd: '00:00' })
+  assert.deepEqual(quietWindowOf(24, 24), { quietStart: '00:00', quietEnd: '00:00' })
+  assert.deepEqual(quietWindowOf(0, 0), { quietStart: '00:00', quietEnd: '00:00' })
+  // 跨天窗口（9~3）：安静 = 03:00~09:00，别被 24 端点弄坏
+  assert.deepEqual(quietWindowOf(9, 3), { quietStart: '03:00', quietEnd: '09:00' })
+  // awakeTo=0（跨天另一端）：醒着 7~0 = 7 点到午夜，安静 00:00~07:00
+  assert.deepEqual(quietWindowOf(7, 0), { quietStart: '00:00', quietEnd: '07:00' })
 })
 
 // ---------- 3. 播种（§3.1：只发生一次，只写 ext.purpose，显式关过不覆盖） ----------
