@@ -38,7 +38,7 @@ function loadPanel(routes) {
   const { panelTest } = loader.factory(() => React)
   const toasts = []
   let done = 0
-  const st = { personas: [{ id: 'dafeiyu', name: '大肥鱼' }, { id: 'shoko', name: '翔子' }], persona: { current: 'shoko', dataOwner: 'dafeiyu', claimPending: false } }
+  const st = { personas: [{ id: 'dafeiyu', name: '大肥鱼' }, { id: 'xiaoxing', name: '小星' }], persona: { current: 'xiaoxing', dataOwner: 'dafeiyu', claimPending: false } }
   const render = (over = {}) => { hook = 0; return panelTest.MemoryInherit({ st: { ...st, ...over }, toast: (msg, kind) => toasts.push({ msg, kind }), onDone: () => { done++ } }) }
   return { render, calls, env, toasts, done: () => done }
 }
@@ -59,7 +59,7 @@ const all = (node, pred, out = []) => {
 const text = (node) => (node == null || node === false ? '' : typeof node !== 'object' ? String(node) : Array.isArray(node) ? node.map(text).join('') : text(node.children))
 const button = (tree, label) => find(tree, (n) => n.type?.name === 'Btn' && text(n).includes(label))
 
-const PLAN = { ok: true, from: 'dafeiyu', to: 'shoko', fromName: '大肥鱼', toName: '翔子', records: 3, calls: 2, tokens: 3200, batches: [{ kind: 'fact', label: '记忆', part: 1, parts: 1, count: 2 }, { kind: 'profile', label: '人物档案', part: 1, parts: 1, count: 1 }] }
+const PLAN = { ok: true, from: 'dafeiyu', to: 'xiaoxing', fromName: '大肥鱼', toName: '小星', records: 3, calls: 2, tokens: 3200, batches: [{ kind: 'fact', label: '记忆', part: 1, parts: 1, count: 2 }, { kind: 'profile', label: '人物档案', part: 1, parts: 1, count: 1 }] }
 const BATCH0 = { ok: true, results: [
   { id: 'm:a', text: '我是大肥鱼，答应主人六点播报比赛', op: 'rewrite', next: '我答应过主人六点播报比赛', reason: '改人称' },
   { id: 'm:b', text: '大肥鱼说话爱用 hhh', op: 'drop', next: '大肥鱼说话爱用 hhh', reason: '旧人格的口癖' },
@@ -68,15 +68,15 @@ const BATCH1 = { ok: true, results: [{ id: 'p:1:text', text: '小王，我的主
 
 test('只有一个人格或者根目录还没认领时不显示', () => {
   const p = loadPanel(() => ({ ok: true }))
-  assert.equal(p.render({ personas: [{ id: 'shoko', name: '翔子' }] }), null)
-  assert.equal(p.render({ persona: { current: 'shoko', claimPending: true } }), null)
+  assert.equal(p.render({ personas: [{ id: 'xiaoxing', name: '小星' }] }), null)
+  assert.equal(p.render({ persona: { current: 'xiaoxing', claimPending: true } }), null)
 })
 
 test('确认框写清会消耗 token；点了取消就不整理', async () => {
   const p = loadPanel((path) => (path === '/memory/inherit/plan' ? PLAN : { ok: true, results: [] }))
   p.env.answer = false
   await button(p.render(), '从这个人格导入').props.onClick()
-  assert.match(p.env.asked[0], /把「大肥鱼」的 3 条记忆导入给「翔子」/)
+  assert.match(p.env.asked[0], /把「大肥鱼」的 3 条记忆导入给「小星」/)
   assert.match(p.env.asked[0], /会消耗 token：要调用模型 2 次，粗估约 3k tokens/)
   assert.match(p.env.asked[0], /还没变成记忆，不会被继承/)
   assert.deepEqual(p.calls.map((c) => c.url.replace(/^.*\/aurabot\/api/, '')), ['/memory/inherit/plan'])
@@ -99,7 +99,7 @@ test('一批批整理：失败停在那一批，重试只重做那一批；预�
   assert.ok(button(tree, '重试这一批'))
   await button(tree, '重试这一批').props.onClick()
   const batches = p.calls.filter((c) => /inherit\/batch$/.test(c.url)).map((c) => [c.body.index, c.body.from, c.body.to])
-  assert.deepEqual(batches, [[0, 'dafeiyu', 'shoko'], [1, 'dafeiyu', 'shoko'], [1, 'dafeiyu', 'shoko']], '失败后只重试第二批')
+  assert.deepEqual(batches, [[0, 'dafeiyu', 'xiaoxing'], [1, 'dafeiyu', 'xiaoxing'], [1, 'dafeiyu', 'xiaoxing']], '失败后只重试第二批')
 
   tree = p.render()
   assert.deepEqual(all(tree, (n) => n.props?.style?.color === 'var(--ab-sub)').map(text), ['记忆', '人物档案'])
@@ -113,7 +113,7 @@ test('一批批整理：失败停在那一批，重试只重做那一批；预�
   assert.match(text(button(tree, '存进记忆库')), /2 条/)
   await button(tree, '存进记忆库').props.onClick()
   const commit = p.calls.find((c) => /inherit\/commit$/.test(c.url)).body
-  assert.deepEqual(commit, { from: 'dafeiyu', to: 'shoko', items: [{ id: 'm:a', text: '我答应过主人每天六点播报比赛' }, { id: 'p:1:text', text: '小王，我的主人' }] })
+  assert.deepEqual(commit, { from: 'dafeiyu', to: 'xiaoxing', items: [{ id: 'm:a', text: '我答应过主人每天六点播报比赛' }, { id: 'p:1:text', text: '小王，我的主人' }] })
   assert.deepEqual(p.toasts.at(-1), { msg: '继承了 2 条', kind: 'ok' })
   assert.equal(p.done(), 1, '存完刷新记忆列表')
   assert.equal(button(p.render(), '存进记忆库'), null, '存完预览收起')

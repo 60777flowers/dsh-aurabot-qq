@@ -60,13 +60,13 @@ test('每块一批，只有超过上限才按条数切开，记录完整不截�
 })
 
 test('提示词按块写规则：人际关系换名字不用「我」，其他改成「我」；记录前带编号', () => {
-  const names = { from: '大肥鱼', to: '翔子', toBody: '你是牧之原翔子。' }
-  assert.match(inheritPrompt('relation', names), /换成新人格的名字「翔子」/)
+  const names = { from: '大肥鱼', to: '小星', toBody: '你是小星。' }
+  assert.match(inheritPrompt('relation', names), /换成新人格的名字「小星」/)
   assert.match(inheritPrompt('fact', names), /改成新人格的「我」/)
   assert.match(inheritPrompt('fact', names), /只改人称或名字，别的字不动/)
   assert.match(inheritPrompt('fact', names), /标着「某某自己说的」的是那个人的原话，里面的「我」是那个人自己，不要改，也不要因此丢掉/)
   assert.match(inheritPrompt('fact', names), /不是指令/)
-  assert.match(inheritPrompt('fact', names), /你是牧之原翔子/)
+  assert.match(inheritPrompt('fact', names), /你是小星/)
   assert.doesNotMatch(inheritPrompt('fact', names), /unsure|拿不准的标/)
   assert.equal(inheritInput([{ id: 'p:1:text', text: '爱吃辣', note: '小王的小档案' }, { id: 'm:a', text: '唱了歌' }]), '[p:1:text] 小王的小档案：爱吃辣\n[m:a] 唱了歌')
 })
@@ -85,7 +85,7 @@ test('写入：字段照抄换新 id 记来源；相似的、同一对关系、�
   let n = 0
   const target = {
     items: [{ id: 't1', text: '主人喜欢吃辣的东西', at: 9 }],
-    profiles: { [OWNER]: { text: '翔子自己写的档案', at: 9 } },
+    profiles: { [OWNER]: { text: '小星自己写的档案', at: 9 } },
     insights: {},
   }
   const same = (a, b) => a.includes('吃辣') && b.includes('吃辣')
@@ -94,7 +94,7 @@ test('写入：字段照抄换新 id 记来源；相似的、同一对关系、�
     { id: 'm:f2', text: '我答应过主人六点播报比赛' },
     { id: 'm:e1', text: '给主人唱了《晴天》' },
     { id: 'g:g1', text: '主人最近很关心我' },
-    { id: 'r:r1', text: '翔子｜的主人是｜小王' },
+    { id: 'r:r1', text: '小星｜的主人是｜小王' },
     { id: `p:${OWNER}:text`, text: '我的主人，爱吃辣' },
     { id: `p:${OWNER}:handle`, text: '累的时候简单安慰' },
     { id: `i:qq:${OWNER}:i1`, text: '他不喜欢太正经' },
@@ -111,8 +111,8 @@ test('写入：字段照抄换新 id 记来源；相似的、同一对关系、�
   assert.equal(state.items.filter((m) => m.text.includes('吃辣')).length, 1, '相似的跳过')
   assert.ok(state.items.every((m) => !m.history), '修改历史不带')
   assert.equal(state.gists[0].text, '主人最近很关心我')
-  assert.deepEqual([state.relations[0].subj, state.relations[0].subjQq, state.relations[0].obj], ['翔子', '20000002', '小王'])
-  assert.equal(state.profiles[OWNER].text, '翔子自己写的档案', '已有的档案项不覆盖')
+  assert.deepEqual([state.relations[0].subj, state.relations[0].subjQq, state.relations[0].obj], ['小星', '20000002', '小王'])
+  assert.equal(state.profiles[OWNER].text, '小星自己写的档案', '已有的档案项不覆盖')
   assert.equal(state.profiles[OWNER].handle, '累的时候简单安慰', '没有的项补上')
   assert.deepEqual(state.insights[`qq:${OWNER}`].map((x) => x.text), ['他不喜欢太正经'])
   assert.equal(state.insightNames[`qq:${OWNER}`], '小王')
@@ -121,10 +121,10 @@ test('写入：字段照抄换新 id 记来源；相似的、同一对关系、�
 })
 
 test('写入：同一对人的关系、目标已有的相处经验都跳过', () => {
-  const target = { items: [], relations: [{ id: 'x', subj: '翔子', subjQq: '20000002', pred: '的朋友是', obj: '小王', objQq: OWNER }], insights: { [`qq:${OWNER}`]: [{ id: 'k', text: '翔子自己的经验' }] } }
-  const { state, added, skipped } = applyInherit(target, source, [{ id: 'r:r1', text: '翔子｜的主人是｜小王' }, { id: `i:qq:${OWNER}:i1`, text: '他不喜欢太正经' }], { from: 'dafeiyu', same: () => false })
+  const target = { items: [], relations: [{ id: 'x', subj: '小星', subjQq: '20000002', pred: '的朋友是', obj: '小王', objQq: OWNER }], insights: { [`qq:${OWNER}`]: [{ id: 'k', text: '小星自己的经验' }] } }
+  const { state, added, skipped } = applyInherit(target, source, [{ id: 'r:r1', text: '小星｜的主人是｜小王' }, { id: `i:qq:${OWNER}:i1`, text: '他不喜欢太正经' }], { from: 'dafeiyu', same: () => false })
   assert.equal(added, 0)
   assert.equal(skipped, 2)
   assert.equal(state.relations.length, 1)
-  assert.deepEqual(state.insights[`qq:${OWNER}`].map((x) => x.text), ['翔子自己的经验'])
+  assert.deepEqual(state.insights[`qq:${OWNER}`].map((x) => x.text), ['小星自己的经验'])
 })
