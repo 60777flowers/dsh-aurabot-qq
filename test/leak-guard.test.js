@@ -222,3 +222,8 @@ test('私聊回显泄漏：无时间的入站头和历史备忘在主人私聊�
   assert.deepEqual(bubbles.items.map((item) => item.value), ['先回答', '再回答'])
   assert.equal(cleanOutboundText('上次的历史备忘可以概括一下吗？'), '上次的历史备忘可以概括一下吗？')
 })
+
+test('系统提醒/房间注入块被模型续写时不发到 QQ', () => {
+  const text = '我先说一句\n【系统提醒，不是主人说的话】距离上一轮已经过了半小时，别连着发。\nTime sampled while preparing turn 42, step 1: 2026-11-14T18:16:36+08:00\n【你在自己家里，一个 3D 小房间】现在是傍晚，屋里灯还亮着。'
+  assert.equal(cleanOutboundText(text), '我先说一句')
+})

@@ -58,6 +58,8 @@ const RUNTIME_CONTEXT_LINE = /^(?:Current |Approval policy:|Browser time zone|[\
 // 注意：matchAll 会沿用共享 /g 正则的 lastIndex，这里用源头字符串每次新建。
 const TIME_CONTEXT_HEAD_SOURCE = '^[ \\t]*(?:Time sampled while preparing turn \\d+, step \\d+:|【当前本机时间】)'
 const TIME_CONTEXT_LINE = /^(?:Time sampled while preparing turn \d+, step \d+:|Browser time zone for this request:|Elapsed since the preceding (?:model-visible message|step context):|【当前本机时间】)/
+const OUTBOUND_SCAFFOLD_HEAD = /(?<!^)(?<!\n)【系统提醒[^】\n]*】/g
+const OUTBOUND_ROOM_HEAD = /【你在自己家里[^】\n]*】/g
 
 function runtimeContextEnd(text, start) {
   let end = start
@@ -130,6 +132,9 @@ export function chatRecordRanges(text) {
 export function contextInjectionRanges(text, { toEndOfText = false } = {}) {
   const raw = String(text ?? '')
   const ranges = []
+  // 主动搭话/房间模块的背景块会作为普通 user 文本进入模型；模型续写时从任意位置抄到结尾。
+  for (const m of raw.matchAll(OUTBOUND_SCAFFOLD_HEAD)) ranges.push({ start: m.index, end: raw.length })
+  for (const m of raw.matchAll(OUTBOUND_ROOM_HEAD)) ranges.push({ start: m.index, end: raw.length })
   for (const m of raw.matchAll(new RegExp(TIME_CONTEXT_HEAD_SOURCE, 'gm'))) {
     ranges.push({ start: m.index, end: toEndOfText ? raw.length : timeContextEnd(raw, m.index) })
   }
