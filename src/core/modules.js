@@ -15,6 +15,7 @@ import { dataDir } from './store.js'
 import { registerSecretField } from './config.js'
 import { defineTool } from '../tools/tools.js'
 import { selfName, personaScope, personaNow } from '../persona/personas.js'
+import { PERSONA_MEMORY_MODULE } from './persona-memory-bridge.js'
 
 /** 扩展接口版本：只加不改。哪天不得不改已有的东西才升到 2，并在更新说明里写清楚怎么迁移。 */
 export const API_VERSION = 1
@@ -440,7 +441,7 @@ function governScopedCall(core, id, name, args, log) {
  * - scopedCore：Proxy 转发 core 的其余属性（bridge / modules 后挂的也可见），
  *   但 getPrototypeOf 掐成 null —— Object.getPrototypeOf(api.core).hub 也绕不回去。
  */
-export function scopeCoreForModule(core, id, setCoreConfig) {
+export function scopeCoreForModule(core, id, setCoreConfig, compat = null) {
   if (!core || !core.hub || typeof core.hub.subagentFor !== 'function') {
     return setCoreConfig ? { ...core, setConfig: setCoreConfig } : core || {}
   }
@@ -475,6 +476,7 @@ export function scopeCoreForModule(core, id, setCoreConfig) {
     get(target, key, recv) {
       if (key === 'hub') return scopedHub
       if (key === 'setConfig' && setCoreConfig) return setCoreConfig
+      if (key === 'personaMemoryBridge') return id === PERSONA_MEMORY_MODULE ? compat?.personaMemoryBridge : undefined
       // 出站治理服务不下发给模块：模块能拿到原始 svc 就能自己填 moduleId 冒充别人，
       // 也会绕过 api.proactive 的身份绑定。模块只能走 api.proactive（见 makeApi）。
       if (key === 'outbound') return undefined
@@ -484,7 +486,7 @@ export function scopeCoreForModule(core, id, setCoreConfig) {
   })
 }
 
-export function createModules({ ctx, core, getConfig, setConfig, logger, version, builtins }) {
+export function createModules({ ctx, core, getConfig, setConfig, logger, version, builtins, personaMemoryRuntime }) {
   const log = logger.child('modules')
   const builtinDefs = new Map(builtins.map((d) => [d.id, d]))
   const live = new Map() // id → 运行中的模块（见 start）
@@ -551,7 +553,15 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
     // 模块拿到的 core：hub 换成「宿主按模块身份封装」的白名单副本（三审 #177：原型链斩断，
     // 模块摸不到原始 runSubagentTurn / subagentFor）；core 本体用 Proxy 转发，
     // getPrototypeOf 也掐断，防 getPrototypeOf(api.core).hub 绕回原始入口。
-    const scopedCore = scopeCoreForModule(core, id, setCoreConfig)
+    const bridgeActive = () => active() && isUserOn() && isEnabled(id)
+    const personaMemoryBridge = id === PERSONA_MEMORY_MODULE && bridgeActive()
+      ? personaMemoryRuntime?.forModule(bridgeActive, track)
+      : undefined
+    const scopedCore = scopeCoreForModule(core, id, setCoreConfig, {
+      get personaMemoryBridge() {
+        return bridgeActive() ? personaMemoryBridge : undefined
+      },
+    })
     // 出站治理的日志口（模块快捷发送层的判定/结算都往这里记；未注入服务时不会用到）
     const obLog = outboundLogOf(core)
     const api = {
@@ -743,7 +753,10 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
     generation++ // 内置模块（重）启动也换代际：会话里的工具要在下一轮重挂
     if (errors.get(id)?.source !== 'user') errors.delete(id) // 替换版的报错留着给面板看
     try {
-      const r = def.setup(makeApi(id, 'builtin', rec))
+      const api = makeApi(id, 'builtin', rec)
+      const r = id === 'memory' && personaMemoryRuntime
+        ? def.setup(api, { registerNativePreview: read => api.onDispose(personaMemoryRuntime.registerNativePreview(read)) })
+        : def.setup(api)
       if (r && typeof r.then === 'function') throw new Error('内置模块的 setup 要同步返回')
       rec.exports = r ?? {}
       bumpNavigation() // 内置模块（重）启动：导航摘要可能变
@@ -937,7 +950,7 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
 
   // ---------- 事件 ----------
   function emit(event, ...args) {
-    if (disposed) return
+    if (disposed || event === 'chat/delivery') return
     for (const { fn } of listeners.get(event) || []) {
       try { const r = fn(...args); if (r && typeof r.catch === 'function') r.catch(() => {}) } catch (error) {}
     }

@@ -46,6 +46,7 @@ import { personaScope, personaNow, personaDataDir, personaDataRoots, safeId, sel
 import { currentTimeLine } from './time-context.js'
 import { SESSION_BACKOFF, isSessionBackoff } from './session-backoff.js'
 import { recordSessionUsage } from '../core/usage.js'
+import { chatMessageOrigin } from './receipts.js'
 
 // QQ 会话的工作区目录，第一次收到消息时自动创建。面板「连接」页能改（config.workspaceDir，#32）；
 // 没填就用环境变量 AURABOT_WORKSPACE，再没有：老安装沿用 C:\Aurabot\qq-chats，新安装放在用户目录下（不用往 C 盘根目录写）
@@ -1230,6 +1231,15 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     for (const segment of message) types?.add(segment.type)
   }
 
+  function reportDelivery(chatId, result, scope, isCurrent) {
+    if (!scope || !hooks?.delivery || disposed || result?.queued) return
+    try {
+      if (!isCurrent || isCurrent()) hooks.delivery(chatId, result?.message_id, scope)
+    } catch (error) {
+      log.debug?.('发送回执通知失败')
+    }
+  }
+
   // quiet：这一条是额外的（比如语音后面补发的表情），失败了不算到这一轮头上（deliver 按 failStore 里的条数判断整条有没有发出去）。
   // queueKind / queueTtlMs：网关短暂不可达时，确定没发出去的消息进入本地补发队列。
   async function sendSegments(chatId, message, note, opts = {}) {
@@ -1301,6 +1311,9 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     const action = tgt.kind === 'group' ? 'send_group_msg' : 'send_private_msg'
     const sourceGroupId = tgt.kind === 'private' ? privateSources.get(tgt.id) : ''
     const params = tgt.kind === 'group' ? { group_id: Number(tgt.id), message } : { user_id: Number(tgt.id), ...(sourceGroupId ? { group_id: Number(sourceGroupId) } : {}), message }
+    const deliveryScope = !sensitive && !cfg.debug && !cfg.dryRun
+      ? hooks?.deliveryScope?.(chatId, pnow(), cfg.botQQ)
+      : null
     try {
       const r = await onebot.call(action, params, timeoutMs ? { timeoutMs } : undefined)
       if (r && r.message_id !== undefined) {
@@ -1314,12 +1327,13 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       // 主动发出的话（模块/后台会话直接调 sendText）要在目标聊天留痕，不然下次接话会断片。
       // 聊天回合自己的回复不带 proactive（deliver 已经记过），这里一字不动。
       if (opts.proactive) noteProactive(chatId, message, opts)
+      reportDelivery(chatId, r, deliveryScope, isCurrent)
       return r
     } catch (error) {
       // 网关预热/短暂不可达：确定没发出去的消息放进补发队列，连上后按 TTL 补发。
       // 超时（uncertain）不入队，避免同一条消息发两次。
       if (!sensitive && outbox && isDefiniteFailure(error)) {
-        const q = outbox.add({ action, params, chatId, note, kind: queueKind, ttlMs: queueTtlMs, incomingReply: outputScope.getStore()?.chatId === chatId && Boolean(outputScope.getStore()?.incomingReply) })
+        const q = outbox.add({ action, params, chatId, note, kind: queueKind, ttlMs: queueTtlMs, deliveryScope, incomingReply: outputScope.getStore()?.chatId === chatId && Boolean(outputScope.getStore()?.incomingReply) })
         if (q.ok) {
           log.warn(`发到 ${chatId} 时网关还没就绪，已排队补发：${note || error.message}`)
           recordDeliveryTypes(chatId, message, true)
@@ -2456,7 +2470,8 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     const quotedBot = msg.kind === 'group' && msg.replyId ? await repliedToBot(msg.replyId, msg) : false
     if (disposed || wasCleared()) return
     const interaction = msg.kind === 'private' || msg.mentioned || quotedBot ? [msg.userId] : []
-    const logIncoming = (text = msg.text) => logChat(msg.chatId, msg.nickname, text, msg.userId, { interaction, at: now })
+    const originId = chatMessageOrigin(msg.chatId, msg.messageId, 'in', cfg.botQQ)?.originId
+    const logIncoming = (text = msg.text) => logChat(msg.chatId, msg.nickname, text, msg.userId, { interaction, at: now, originId })
     // 合并转发：一进来就展开并写回缓冲，哪怕这条不交给她——否则群里回头问她「上面那条转发说了啥」，她只看得见占位符。
     // 默认关：开着就是每来一条转发多调一次 get_forward_msg，接口慢的时候会拖慢这一轮。
     if (cfg.forward?.expandEarly && msg.forwards?.length) {
