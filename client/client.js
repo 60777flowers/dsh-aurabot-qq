@@ -2660,6 +2660,23 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     }
 
     /** 群聊摘要的群多选（原 OwnerBrief 内联逻辑抽出，供「更多设置」复用） */
+    function OwnerBriefGroups({ draft, setDraft }) {
+      const ob = draft.group.ownerBrief || { enabled: false, lines: 12, groups: [] }
+      const groups = (draft.allow.groups || []).map(String)
+      const [info, setInfo] = useState(null)
+      useEffect(() => { get('/groups/titles').then((r) => { if (r.ok) setInfo(r) }).catch(() => {}) }, [])
+      const nameOf = (gid) => {
+        const g = ((info && info.groups) || []).find((x) => x.groupId === gid)
+        return g && g.name && g.name !== gid ? g.name : ''
+      }
+      const on = (gid) => (ob.groups || []).includes(gid)
+      const toggle = (gid) => setDraft(setPath(draft, 'group.ownerBrief.groups', on(gid) ? (ob.groups || []).filter((x) => x !== gid) : [...(ob.groups || []), gid]))
+      return h('div', { className: 'ab-flex', style: { flexWrap: 'wrap' } }, groups.length
+        ? groups.map((gid) => h('button', { key: gid, type: 'button', className: cx('ab-chip', on(gid) && 'on'), onClick: () => toggle(gid) },
+          (on(gid) ? '✓ ' : '') + (nameOf(gid) || '群'), h('span', { className: 'n' }, gid)))
+        : h('span', { className: 'ab-muted ab-small' }, '先到「聊天 → 单个群」添加群，选择「仅模块」或「允许 AI 聊天」。'))
+    }
+
     function ChatModels({ draft, setDraft, list }) {
       const cm = draft.chatModels || { privateDefault: {}, groupDefault: {}, privates: {}, groups: {} }
       const [open, setOpen] = useState(false)
