@@ -55,6 +55,7 @@ export function purposeConfig(cfg = {}) {
   const awakeFrom = clampInt(ext.awakeFrom ?? su.awakeFrom, 8, 0, 24)
   const awakeTo = clampInt(ext.awakeTo ?? su.awakeTo, 23, 0, 24)
   // 醒着窗口的补集 = 安静时段；from > to 是跨天窗口（如 9 点到次日 3 点），安静时段为 3 点–9 点。
+  // awakeTo=24 是「醒到午夜」不是全天：7~24 ⇒ 安静 00:00~07:00；只有 0~24（真全天醒）才关闭安静时段。
   const quiet = quietWindowOf(awakeFrom, awakeTo)
   // normalizePurposeConfig 只认引擎字段，打分模型在归一化后补挂（面板下拉同款结构校验）
   return {
@@ -1151,6 +1152,16 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
       .slice(0, 2)
     if (!top.length) return ''
     return `（你最近心里比较想要：${top.map((t) => t.label).join('、')}。它会自然影响你想聊什么，不用说出来。）`
+  }
+
+  // ---------- 安静时段派生观察哨（模块装配时打一次） ----------
+  // purposeConfig 派生出安静时段后在这里 log 出来，防「配置语义≠代码语义」再犯：
+  // 2026-11-16 用户设醒着 7~24 被旧派生当成全天、整夜唤醒的报障回归观察哨。
+  // 刻意只在 createPurpose（模块 setup）时打一次、不在每分钟 tick 里打——
+  // 冷却路径有「不记自己的日志」契约（system-session-backoff.test.js 锁的行为）。
+  {
+    const bootConfig = purposeConfig(getConfig())
+    log.info?.(`目的：醒着窗口派生安静时段 ${bootConfig.quietStart} ~ ${bootConfig.quietEnd}（起止相同 = 不启用安静时段）`)
   }
 
   return { tick, fire, state, status, preview, run: fire, drivesRule, brokerReview, setEnginePolicySource, addReminder, closeReminder, reminders: reminderList }
