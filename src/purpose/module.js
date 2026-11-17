@@ -5,11 +5,12 @@
 // 本文件负责副作用：状态文件、素材采集（记忆 + 聊天流水适配）、生成（hub.runSystemTurn）、
 // 投递（hub.deliver）、心情 nudge、追问、路由。
 //
-// 使用方式：独立的 purpose 内置模块（src/modules/purpose/index.js），默认关闭；
-// 现有的「主动搭话」模块（speakup，src/features/companion.js）保持默认实现不变，
-// 想换引擎的主人自己开关，迁移说明见 docs/PURPOSE_MODULE_API.md。
+// 使用方式：独立的 purpose 内置模块（src/modules/purpose/index.js）。P1/Q1 拍板起默认开启
+// （ext.purpose.enabled 缺省=开、显式 false 尊重）；旧的「主动搭话」模块（speakup）在迁移期
+// （P1~P3）仍在，companion 会见目的引擎开着而自动让位，迁移说明见 docs/PURPOSE_MODULE_API.md。
 
 import { dataDir, readJson, writeJson } from '../core/store.js'
+import { randomUUID } from 'node:crypto'
 import { quietWindowOf } from '../core/time-window.js'
 import { cleanOutboundText } from '../chat/reply.js'
 import { isSessionBackoff } from '../chat/session-backoff.js'
@@ -46,7 +47,7 @@ const clampInt = (v, d, lo, hi) => {
 /**
  * 把 Aurabot 配置映射成引擎配置。
  * 醒着窗口（speakUp.awakeFrom/awakeTo）是唯一真相，引擎的安静时段由它派生；
- * 调参走本模块自己的设置面 cfg.ext.purpose.*（模块默认关：ext.purpose.enabled）。
+ * 调参走本模块自己的设置面 cfg.ext.purpose.*（P1/Q1 拍板：默认开，见下）。
  */
 export function purposeConfig(cfg = {}) {
   const su = cfg.speakUp || {}
@@ -58,9 +59,10 @@ export function purposeConfig(cfg = {}) {
   // normalizePurposeConfig 只认引擎字段，打分模型在归一化后补挂（面板下拉同款结构校验）
   return {
     ...normalizePurposeConfig({
-      // 总开关只看本模块自己的设置（ext.purpose.enabled，默认 false）；
-      // 与旧的「主动搭话」互不影响——两套同时开会重复打扰，迁移说明里提醒主人别同时开。
-      enabled: cfg.enabled !== false && ext.enabled === true,
+      // 总开关只看本模块自己的设置（ext.purpose.enabled）。P1/Q1 拍板默认开：
+      // 键缺省（undefined）= 开；显式 false = 主人关过，尊重不洗回（模块 defaults 填充也只补缺失键）。
+      // 与旧的「主动搭话」互不影响——companion 见 ext.purpose.enabled 会自动让位。
+      enabled: cfg.enabled !== false && ext.enabled !== false,
       ownerUin: cfg.ownerQQ,
       gapMinMs: clampInt(ext.minIntervalMinutes ?? su.minIntervalMinutes, 90, 5, 2880) * MINUTE,
       gapMaxMs: clampInt(ext.maxIntervalMinutes ?? su.maxIntervalMinutes, 240, 5, 2880) * MINUTE,
@@ -75,6 +77,11 @@ export function purposeConfig(cfg = {}) {
     }),
     // 素材打分模型（面板「目的引擎」卡下拉选；不配 = 用关键词法，零额外成本）。
     scoringModel: normalizeSelection(ext.scoringModel),
+    // 追问开关（P1 翻键，方案 §2.1）：读保持双层兼容——ext.purpose.nudge 覆写位优先，
+    // 老用户的 speakUp.nudge 仍生效；两边都没设时默认开（与 speakUp.nudge 默认一致）。
+    // 注意不能把 nudge 放进模块 defaults：defaults 填充会把 ext.purpose.nudge 落成 true，
+    // 老用户「speakUp.nudge=false」的关断就会被覆写位洗掉。
+    nudge: ext.nudge ?? su.nudge ?? true,
   }
 }
 
@@ -105,6 +112,172 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
   const purposeDir = (...parts) => personaDataDir(getConfig(), personaNow(getConfig()), 'purpose', ...parts)
   const stateFile = (friend) => purposeDir(...(friend ? ['friends', `${friend}.json`] : ['purpose-state.json']))
   const nudgeFile = () => purposeDir('nudge.json')
+
+  // ---------- 她的小闹钟（P2b 自 speakup 迁入，Q2 拍板 §2.2-A） ----------
+  // 每条提醒都是她自己在对话里设的一次性闹钟；到点只负责把她叫醒（pushToSession 进主人私聊
+  // 的真实会话），不直接替她发消息。数据：新写 purpose/reminders.json；新文件还没建过时
+  // 兼容读旧 speakup-reminders.json（只读不写回，首次保存后旧文件冻结、不删，便于审计）。
+  // 配置键冻结在 speakUp.reminder*（Q3/Q4 同口径：键留在 speakUp 命名空间，由 purpose 维护）。
+  const REMINDER_GRACE_MS = 15 * 60_000
+  const REMINDER_RETRY_MS = 5 * 60_000
+  const REMINDER_WAIT_MS = 4 * 60_000
+  let reminderBusy = false
+  const remindersFile = () => purposeDir('reminders.json')
+  const two = (n) => String(n).padStart(2, '0')
+  const reminderText = (at) => {
+    const d = new Date(at)
+    return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`
+  }
+  function parseReminderTime(value) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})$/.exec(String(value || '').trim())
+    if (!m) return 0
+    const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), 0, 0)
+    if (d.getFullYear() !== Number(m[1]) || d.getMonth() !== Number(m[2]) - 1 || d.getDate() !== Number(m[3])
+      || d.getHours() !== Number(m[4]) || d.getMinutes() !== Number(m[5])) return 0
+    return d.getTime()
+  }
+  function normalizeReminder(raw) {
+    if (!raw || typeof raw !== 'object') return null
+    const id = String(raw.id || '').trim()
+    const at = Number(raw.at)
+    const note = String(raw.note || '').trim().slice(0, 500)
+    if (!id || !Number.isFinite(at) || !note) return null
+    return {
+      id,
+      at,
+      atText: String(raw.atText || '').trim() || reminderText(at),
+      note,
+      createdAt: Number(raw.createdAt) || at,
+      attempts: Math.max(0, Math.round(Number(raw.attempts) || 0)),
+      nextAt: Number(raw.nextAt) || at,
+      expiresAt: Number(raw.expiresAt) || at + REMINDER_GRACE_MS,
+      lastError: String(raw.lastError || '').slice(0, 180),
+    }
+  }
+  function loadReminders() {
+    // 新文件存在（哪怕存的是空数组）就只认新文件：首写后旧文件冻结
+    const fresh = readJson(remindersFile(), null)
+    const raw = Array.isArray(fresh) ? fresh : (() => {
+      const legacy = readJson(dataDir('speakup-reminders.json'), null)
+      return Array.isArray(legacy) ? legacy : []
+    })()
+    return raw.map(normalizeReminder).filter(Boolean)
+  }
+  function saveReminders(list) { writeJson(remindersFile(), list) }
+  function pruneReminders(now = Date.now()) {
+    const raw = loadReminders()
+    const live = raw.filter((r) => r.expiresAt > now)
+    if (live.length !== raw.length) saveReminders(live)
+    return live
+  }
+  const reminderList = (now = Date.now()) => pruneReminders(now).sort((a, b) => a.at - b.at)
+  /** 小闹钟的总闸：插件总开关 + 目的引擎未显式关 + 主人在面板开了「小闹钟」开关。 */
+  function remindersOn(cfg = getConfig()) {
+    return Boolean(cfg.enabled) && ((cfg.ext && cfg.ext.purpose) || {}).enabled !== false && cfg.speakUp?.reminderEnabled === true
+  }
+  function addReminder(value, noteText) {
+    const cfg = getConfig()
+    if (!cfg.enabled) return { ok: false, message: '插件总开关没开启' }
+    if (((cfg.ext && cfg.ext.purpose) || {}).enabled === false) return { ok: false, message: '目的引擎没开启' }
+    if (!cfg.speakUp?.reminderEnabled) return { ok: false, message: '小闹钟没开启' }
+    const at = parseReminderTime(value)
+    if (!at) return { ok: false, message: '时间格式不对，要用 yyyy-mm-dd HH:MM，例如 2026-11-12 17:30' }
+    const now = Date.now()
+    if (at <= now) return { ok: false, message: '这个时间已经过去了，请设一个将来的时间' }
+    const note = String(noteText || '').trim().slice(0, 500)
+    if (!note) return { ok: false, message: '要提醒自己什么？把想说的话写进 note' }
+    const live = pruneReminders(now)
+    if (live.length >= (cfg.speakUp.reminderLimit ?? 5)) return { ok: false, message: '你设定的提醒太多了' }
+    const reminder = {
+      id: randomUUID(),
+      at,
+      atText: reminderText(at),
+      note,
+      createdAt: now,
+      attempts: 0,
+      nextAt: at,
+      expiresAt: at + REMINDER_GRACE_MS,
+      lastError: '',
+    }
+    saveReminders([...live, reminder])
+    log.info(`小闹钟：${reminder.atText} ${note}`)
+    return { ok: true, id: reminder.id, at: reminder.atText, message: `已记下，${reminder.atText} 叫醒你` }
+  }
+  function closeReminder(id) {
+    const key = String(id || '').trim()
+    const live = pruneReminders()
+    if (!key || !live.some((r) => r.id === key)) return { ok: false, message: '没找到这个提醒，可能已经过期或关闭了' }
+    saveReminders(live.filter((r) => r.id !== key))
+    return { ok: true, message: '这个小闹钟已关闭' }
+  }
+  function reminderPrompt(reminder, owner) {
+    return `【系统提醒，不是${owner}说的话】你之前给自己定的小闹钟到时间了：${reminder.atText}「${reminder.note}」。现在可以主动找${owner}说这件事；如果你觉得现在不适合打扰，就只回 [沉默]。`
+  }
+  async function attemptReminder(reminder, now = Date.now()) {
+    const cfg = getConfig()
+    const owner = String(cfg.ownerQQ || '')
+    if (!owner || !remindersOn(cfg)) return
+    const chatId = `private:${owner}`
+    const outcome = await new Promise((resolve) => {
+      let settled = false
+      const timer = setTimeout(() => finish({ ok: false, error: '等回复超时' }), REMINDER_WAIT_MS)
+      timer.unref?.()
+      const finish = (result) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        resolve(result || { ok: false, error: '没有结果' })
+      }
+      try {
+        const waiting = hub.pushToSession(
+          { chatId, kind: 'private', userId: owner, nickname: cfg.ownerName || '主人' },
+          [{ type: 'text', text: reminderPrompt(reminder, cfg.ownerName || '主人') }],
+          '',
+          { onTurnEnd: finish },
+        )
+        Promise.resolve(waiting).catch((error) => finish({ ok: false, error: error?.message || String(error) }))
+      } catch (error) {
+        finish({ ok: false, error: error?.message || String(error) })
+      }
+    })
+    const live = loadReminders()
+    const current = live.find((r) => r.id === reminder.id)
+    if (!current) return
+    if (outcome.ok) {
+      saveReminders(live.filter((r) => r.id !== reminder.id))
+      log.info(`小闹钟触发：${reminder.atText} ${reminder.note}`)
+      return
+    }
+    const retry = cfg.speakUp?.reminderRetry !== false
+    const at = Date.now()
+    if (!retry) {
+      saveReminders(live.filter((r) => r.id !== reminder.id))
+      log.warn(`小闹钟放弃：${reminder.atText} ${outcome.error || '触发失败'}`)
+      return
+    }
+    // 第一次失败后从现在起保留 15 分钟；之后每 5 分钟再试。
+    if (current.attempts === 0) current.expiresAt = at + REMINDER_GRACE_MS
+    if (at + REMINDER_RETRY_MS >= current.expiresAt) {
+      saveReminders(live.filter((r) => r.id !== reminder.id))
+      log.warn(`小闹钟放弃：${reminder.atText} ${outcome.error || '触发失败'}`)
+      return
+    }
+    current.attempts += 1
+    current.nextAt = at + REMINDER_RETRY_MS
+    current.lastError = String(outcome.error || '触发失败').slice(0, 180)
+    saveReminders(live)
+    log.warn(`小闹钟触发失败，5 分钟后重试：${reminder.atText}（${current.lastError}）`)
+  }
+  async function tickReminders(now = Date.now()) {
+    if (reminderBusy) return false
+    const cfg = getConfig()
+    if (!remindersOn(cfg)) return false
+    const due = reminderList(now).find((r) => r.nextAt <= now)
+    if (!due) return false
+    reminderBusy = true
+    try { await attemptReminder(due, now) } finally { reminderBusy = false }
+    return true
+  }
 
   // ---------- 状态 ----------
   function loadState(config, now = Date.now(), friend = '') {
@@ -769,7 +942,9 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
   async function maybeNudge(cfg, config, state, now = Date.now()) {
     const su = cfg.speakUp || {}
     // 总开关关掉就一步都不做：主人关掉「主动搭话」后追问还会发，是用户实际踩到的那个 bug。
-    if (!cfg.enabled || !su.enabled || !su.nudge) return false
+    // 追问键（P1 翻键）：config.nudge 由 purposeConfig 按 ext.purpose.nudge ?? speakUp.nudge ?? true 算好；
+    // speakUp.enabled 总闸 P1 保留（方案 §4.3 兼容期口径，speakup 模块退场批次再收）。
+    if (!cfg.enabled || !su.enabled || !config.nudge) return false
     const lb = hub.lastBotToOwner || { at: 0, text: '' }
     const quietMs = now - (lb.at || 0)
     if (!lb.at || lb.at <= (hub.lastOwnerChatAt || 0)) return false
@@ -888,6 +1063,8 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
   /** 主人和白名单的朋友各算各的，一次最多找一个人，不一口气群发。
    *  人格卡的性格覆写（胆量/话多/黏人地板）只作用于主人这条线；朋友的排程沿用基础配置。 */
   async function tick() {
+    // 小闹钟优先（P2b 迁入）：到点的闹钟先于目的回合同；闸门（总开关/目的引擎/小闹钟开关）在 tickReminders 内判
+    if (await tickReminders()) return true
     const cfg = getConfig()
     const config = purposeConfig(cfg)
     if (!config.enabled || !cfg.ownerQQ) return
@@ -922,6 +1099,8 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
       nextFireAt: normalized.nextFireAt,
       lastOutcome: normalized.lastOutcome,
       lastPurpose: normalized.lastPurpose,
+      // 小闹钟（P2b 迁入）：面板/调试要看「她现在挂着哪些闹钟」
+      reminders: reminderList(),
     }
   }
 
@@ -960,7 +1139,8 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
   function drivesRule() {
     const cfg = getConfig()
     if (cfg.enabled === false) return ''
-    if (!((cfg.ext && cfg.ext.purpose) || {}).enabled) return '' // 引擎没开就不往提示词里掺驱动
+    // P1/Q1 默认开：键缺省（undefined）也掺驱动；只有主人显式关过（false）才静默。
+    if (((cfg.ext && cfg.ext.purpose) || {}).enabled === false) return ''
     const s = readJson(stateFile(), null)
     if (!s) return ''
     const drives = s.drives || {}
@@ -973,5 +1153,5 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     return `（你最近心里比较想要：${top.map((t) => t.label).join('、')}。它会自然影响你想聊什么，不用说出来。）`
   }
 
-  return { tick, fire, state, status, preview, run: fire, drivesRule, brokerReview, setEnginePolicySource }
+  return { tick, fire, state, status, preview, run: fire, drivesRule, brokerReview, setEnginePolicySource, addReminder, closeReminder, reminders: reminderList }
 }
