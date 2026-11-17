@@ -721,6 +721,12 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
 .ab-manage-reason{margin:0;font-size:12.5px}
 /* 操作区固定在卡片底部，保证同排卡片按钮对齐 */
 .ab-manage-acts{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:auto;padding-top:2px}
+/* 卡片内「更多设置（N 项）」子折叠卡：视觉上弱化一层，避免与父卡重复的实底边框 */
+.ab-fold-sub{background:transparent;border-style:dashed;box-shadow:none}
+/* 组行：一行放一组设置，行内项自由流式排版（按类型与宽度自然排，窄窗自动降列） */
+.ab-grp-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px 14px;align-items:start}
+.ab-grp-row>.ab-row{flex-direction:column;align-items:flex-start;gap:4px}
+.ab-grp-row>.ab-row>.ab-ctl{width:100%}
 .ab-code{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;background:var(--ab-card-2);border:1px solid var(--ab-line);border-radius:8px;padding:8px 10px;white-space:pre-wrap;word-break:break-all;margin:6px 0 0}
 `
     function useStyle() {
@@ -2541,94 +2547,119 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
 
     function Group({ draft, setDraft, st, go }) {
       const f = useField(draft, setDraft)
-      const [section, setSection] = useState('groups')
+      // 两段：single = 单个群（沿用 GroupOverrides），all = 所有群默认
+      const [section, setSection] = useState('single')
+      // 「更多设置（N 项）」子折叠卡：只直显少量高频项，其余收进来（复用 Card 的折叠不渲染 children）
+      const more = (title, items) => (items.length ? h(Card, { title: (title || '更多设置') + '（' + items.length + ' 项）', collapsible: true, defaultOpen: false, className: 'ab-fold-sub' }, items) : null)
       return h('div', { className: 'ab-grid' },
-        h('div', { className: 'ab-flex ab-chat-nav', role: 'group', 'aria-label': '聊天设置分类', style: { flexWrap: 'wrap' } },
-          ...[{ id: 'groups', label: '群聊' }, { id: 'messages', label: '回复方式' }, { id: 'manage', label: '权限与限制' }].map(x =>
-            h('button', { key: x.id, type: 'button', className: cx('ab-btn', (section === x.id || (x.id === 'groups' && section === 'defaults')) && 'primary'), 'aria-pressed': section === x.id || (x.id === 'groups' && section === 'defaults'), onClick: () => setSection(x.id) }, x.label))),
-        h('div', { hidden: section !== 'groups', className: 'ab-group-home' },
-          h(GroupOverrides, { draft, setDraft, setSection }),
+        h('div', { className: 'ab-flex', style: { marginBottom: 2 } },
+          h(Seg, { value: section, onChange: setSection, options: [{ value: 'single', label: '单个群' }, { value: 'all', label: '所有群默认' }] })),
+        section === 'single' ? h(Fragment, null,
+          h(GroupOverrides, { draft, setDraft, setSection: () => setSection('all') }),
           h(Card, { title: '相关设置' },
             h('p', { className: 'ab-desc' }, '群模式控制收到消息后是否回应。定时推送、表情制作等模块仍按各自开关和时段运行。'),
             h('div', { className: 'ab-flex', style: { flexWrap: 'wrap' } },
               h(Btn, { small: true, onClick: () => go('memory') }, '记忆总开关与清理'),
               h(Btn, { small: true, onClick: () => go('modules') }, '管理模块'),
               (st.modules || []).some(m => m.id === 'meme' && m.running && m.panel) ? h(Btn, { small: true, onClick: () => go('ext:meme') }, '表情制作与休息时段') : null)),
-        ),
-        section === 'defaults' ? h(Fragment, null,
-        h(Card, { title: '群聊通用设置', right: h(Btn, { small: true, kind: 'ghost', onClick: () => setSection('groups') }, '返回选择群'), desc: '适用于允许 AI 聊天的群；某个群单独设置过的项目不受影响。' },
-          h(Row, { label: '没人叫时主动插话', hint: '没人叫它、也没在聊天时，偶尔加入话题。频率在下方调整。' }, f.sw('group.proactiveEnabled', { on: draft.group.proactiveEnabled !== false, title: '没人叫时主动插话' })),
-          h(Row, { label: '聊起来后继续回应', hint: '最近 3 分钟聊过，可以继续接相关话题，不必每次 @；仍受下方时段和连续回复次数限制。' }, f.sw('group.engagedEnabled', { on: typeof draft.group.engagedEnabled === 'boolean' ? draft.group.engagedEnabled : draft.group.interjectChance > 0, title: '聊起来后继续回应' })),
-          h(Row, { label: '不主动说话的时段', hint: '暂停主动插话和继续接话；被 @ 等仍按规则回复，模块不受影响。起止相同表示不限制。' },
+        ) : null,
+        section === 'all' ? h(Fragment, null,
+
+        // ===== 可见区：3 个组行（每组一行，行内自由流式排版）=====
+
+        // 组行 ① 被叫到时怎么回：6 项流式排一行
+        h(Card, { title: '被叫到时怎么回', desc: '群模式为「允许 AI 聊天」时，被 @、引用回复或叫名字会触发回复，仍受总开关、暂停和次数限制。' },
+          h('div', { className: 'ab-grp-row' },
+            h(Row, { label: '用哪些称呼叫它', hint: '一行一个；群里提到这些称呼时，按被叫到的规则回应。' }, f.list('group.wakeWords', { placeholder: '大肥鱼\n肥鱼' })),
+            h(Row, { label: '@ 了别人不算叫ta', hint: '有人 @ 别人时顺口提到ta的名字，不算在叫ta；ta还是可以按平时的频率插话。默认关' }, f.sw('group.ignoreAtOthers')),
+            h(Row, { label: '每小时必回上限', hint: '一个群里一小时内因被 @、引用、叫名字而必回的次数最多这么多，超过就不回（主人说话不受限，也不计入）；小时一过自动恢复。0 = 不限' }, f.range('group.mustMaxPerHour', 0, 100, 5, (v) => (v === 0 ? '不限' : v + ' 次'))),
+          )),
+
+        // 组行 ② 没人叫时怎么接话：核心 4 参数排一行（时段/话题/防刷屏进折叠）
+        h(Card, { title: '没人叫时怎么接话', desc: '控制没人叫它时的主动插话与继续接话；被叫到时仍按上一张卡的规则回复。' },
+          h('div', { className: 'ab-grp-row' },
+            h(Row, { label: '没人叫时主动插话', hint: '没人叫它、也没在聊天时，偶尔加入话题。' }, f.sw('group.proactiveEnabled', { on: draft.group.proactiveEnabled !== false, title: '没人叫时主动插话' })),
+            h(Row, { label: '聊起来后继续回应', hint: '最近 3 分钟聊过，可以继续接相关话题，不必每次 @。' }, f.sw('group.engagedEnabled', { on: typeof draft.group.engagedEnabled === 'boolean' ? draft.group.engagedEnabled : draft.group.interjectChance > 0, title: '聊起来后继续回应' })),
+            h(Row, { label: '主动插话概率', hint: '话题越相关，实际概率可能越高；0 表示不主动插话。' }, f.percent('group.interjectChance')),
+            h(Row, { label: '最多连续接话几次', hint: '聊起来后，没有人再次叫它时，最多继续回应几次。0 表示不继续接话。' }, f.range('group.engagedMax', 0, 10, 1, (v) => v + ' 次')),
+          ),
+          draft.group.interjectChance === 0 ? h('div', { className: 'ab-note warn' }, '概率为 0，不会主动插话；想继续接话，可以单独打开「聊起来后继续回应」。') : null),
+
+        // 组行 ③ 一条消息怎么变成回复：3 个总开关排一行
+        h(Card, { title: '一条消息怎么变成回复', desc: '连发合并、合并转发、发送节奏与超时。' },
+          h('div', { className: 'ab-grp-row' },
+            h(Row, { label: '连发合并', hint: '人常常一口气发好几句。打开后ta会等对方说完再一起回，而不是一句一回。' }, f.sw('merge.enabled')),
+            h(Row, { label: '合并转发', hint: '群里有人发合并转发时，她手上只有一个占位符，内容看不见。打开后消息一进来就展开存进上下文，代价是每条转发多调一次接口。' }, f.sw('forward.expandEarly')),
+            h(Row, { label: '每段都发', hint: '一轮里她分几段说，就发几条。关着只发最后一段。默认关' }, f.sw('chat.everyStep')),
+          )),
+
+        // ===== 折叠区：其余所有组/设置项 =====
+
+        // 折叠 A：接话节奏与时段（7 项）
+        more('接话节奏与时段', [
+          h(Row, { key: 'cd', label: '两次主动插话的间隔' }, f.range('group.cooldownSec', 0, 600, 10, (v) => v + ' 秒')),
+          h(Row, { key: 'mph', label: '每小时最多主动插话' }, f.range('group.maxPerHour', 0, 30, 1, (v) => v + ' 次')),
+          h(Row, { key: 'qh', label: '不主动说话的时段', hint: '暂停主动插话和继续接话；被 @ 等仍按规则回复，模块不受影响。起止相同表示不限制。' },
             h('input', { className: 'ab-input sm', 'aria-label': '不主动说话的开始小时', type: 'number', min: 0, max: 23, value: draft.group.quietHours[0], onChange: (e) => setDraft(setPath(draft, 'group.quietHours', [Number(e.target.value), draft.group.quietHours[1]])) }),
             h('span', { className: 'ab-muted' }, '点 到'),
             h('input', { className: 'ab-input sm', 'aria-label': '恢复主动说话的小时', type: 'number', min: 0, max: 23, value: draft.group.quietHours[1], onChange: (e) => setDraft(setPath(draft, 'group.quietHours', [draft.group.quietHours[0], Number(e.target.value)])) }),
             h('span', { className: 'ab-muted' }, '点')),
+          h(Row, { key: 'bm', label: '短时间内最多回复' }, f.range('group.burstMax', 1, 20, 1, (v) => v + ' 次'), h('span', { className: 'ab-muted' }, '/'), f.range('group.burstWindowSec', 30, 600, 30, (v) => Math.round(v / 6) / 10 + ' 分钟')),
+        ]),
+
+        // 折叠 B：话题与群活跃度（3 项）
+        more('话题与群活跃度', [
+          h(Row, { key: 'i', label: 'ta感兴趣的话题', hint: '群里在聊这些（或ta记得相关的事）时更容易插话；一行一个' }, f.list('group.interests', { placeholder: '白米饭\n游戏\n追剧' })),
+          h(Row, { key: 'r', label: '话题相关度门槛', hint: '和ta关系不大的话题就不插话；拉到 0 = 不看话题、纯随机' }, f.range('group.minRelevance', 0, 1, 0.05, (v) => (v === 0 ? '不看话题' : Math.round(v * 100) + '%'))),
+          h(Row, { key: 'a', label: '群冷清时不插话', hint: '最近几分钟内消息少于这个数就不插' }, f.num('group.minRecentMessages', { min: 0 }), h('span', { className: 'ab-muted' }, '条 / '), f.num('group.activeWindowSec', { min: 30 }), h('span', { className: 'ab-muted' }, '秒')),
+        ]),
+
+        // 折叠 C：合并与发送明细（7 项）
+        more('合并与发送明细', [
+          h(Row, { key: 'w', label: '对方停顿多久算说完' }, f.range('merge.waitSec', 0.5, 10, 0.5, (v) => v + ' 秒')),
+          h(Row, { key: 'mx', label: '最多等多久', hint: '对方一直在发也最多等这么久' }, f.range('merge.maxSec', 2, 30, 1, (v) => v + ' 秒')),
+          h(Row, { key: 'gw', label: '群里停顿多久算一段', hint: '群里大家你一句我一句，多等一会儿把一段话攒齐再回；ta回上一段的时候，新消息也会先攒着' }, f.range('merge.groupWaitSec', 1, 20, 1, (v) => v + ' 秒')),
+          h(Row, { key: 'gm', label: '群里最多等多久' }, f.range('merge.groupMaxSec', 3, 60, 1, (v) => v + ' 秒')),
+          h(Row, { key: 'fh', label: '早先的也补展开', hint: '开着「合并转发」后，这条再打开：轮到她要回话时，把这一段里还没展开过的转发（最多 3 条）补上。每条只拉一次' }, f.sw('forward.expandHistory')),
+          h(Row, { key: 'sh', label: '新会话先补看聊天记录', hint: '会话第一次开口时先读最近几条，接得上话。默认关' }, f.sw('chat.seedHistory')),
+          h(Row, { key: 'rt', label: '话写在思考里也捞出来', hint: '她偶尔把要说的话全写在思考里，正文是空的，这一轮就什么都发不出去。打开后从思考里找她自己定稿的那段，找不到就不发。默认关' }, f.sw('chat.rescueFromThinking')),
+          h(Row, { key: 'tt', label: '一轮最多等多久（分钟）', hint: '模型或工具卡住时，超过这么多分钟就强制放开，后面的消息正常开新一轮；不然会一直哑着。填 0 不兜底。默认 30' }, f.num('chat.turnTimeoutMinutes', { min: 0, max: 180 })),
+        ]),
+
+        // 折叠 D：主人跨群与特权（6 项，含条件显隐）
+        more('主人跨群与特权', [
+          h(Row, { key: 'pc', label: '私聊里的 /群设置 指令', hint: '私聊发 /群设置 查看用法。直接执行，不经过模型；批量修改先预览，再确认。只控制 /群设置，不影响自然语言管理、/权限 或群内的 /quiet。' }, f.sw('group.privateCommandsEnabled', { title: '群设置指令总开关' })),
+          h(Row, { key: 'ob', label: '群聊摘要（主人私聊）', hint: '主人在私聊里问起群里的事时，把最近 24 小时的群聊流水当成「ta自己的见闻」补进这一轮上下文。只在主人私聊且提到群相关时触发，不常驻、不写进记忆；默认关。' }, f.sw('group.ownerBrief.enabled')),
+          h(Row, { key: 'ot', label: '群里的本机工具', hint: '默认关：群里ta只能聊天，没有任何电脑操作能力。「只有主人」＝主人在群里说话的那一轮ta才拿得到命令和文件工具。' },
+            f.choices('group.ownerTools', [{ value: 'off', label: '谁都不行' }, { value: 'owner', label: '只有主人' }])),
+          // 条件显隐：ownerTools 非 off 才出现群列表（保持原有依赖语义）
+          draft.group.ownerTools && draft.group.ownerTools !== 'off'
+            ? h(Row, { key: 'og2', label: '工具只在这些群生效', hint: '一行一个群号；留空 = 白名单里所有群都生效' }, f.list('group.ownerToolsGroups', { placeholder: '100200300' }))
+            : null,
+          h(Row, { key: 'cr', label: '能不能看别的群', hint: '只读白名单里的群，一次最多 50 条，主人随时能看。开到「群里也行」后，ta在 A 群的回答全群都看得到；读到的内容也会留在这个会话里。' }, f.choices('group.crossRead', [{ value: 'off', label: '关', desc: '只看当前聊天' }, { value: 'private', label: '私聊可以', desc: '主人，以及私聊里问的人本身在那个群（默认）' }, { value: 'group', label: '群里也行', desc: '再加上群里问的人都在那个群' }])),
+          h(Row, { key: 'ol', label: '每个群给几条摘要', hint: '越少越省上下文；最多 30 条' }, f.range('group.ownerBrief.lines', 1, 30, 1, (v) => v + ' 条')),
+          h(Row, { key: 'og', label: '摘要只取哪些群', hint: '没勾 = 所有白名单群；只列白名单里的群' }, h(OwnerBriefGroups, { draft, setDraft })),
+        ]),
+
+        // 折叠 E：发文件明细（3 项）
+        more('发文件', [
+          h(Row, { key: 'fe', label: '允许发文件', hint: '关了之后ta不能发任何本机文件。' }, f.sw('files.enabled')),
+          h(Row, { key: 'd', label: '单个文件最大' }, f.num('files.maxMB', { min: 1, max: 2048 }), h('span', { className: 'ab-muted' }, ' MB')),
+          h(Row, { key: 'dir', label: '额外允许的目录', hint: '一行一个完整路径。QQ 工作区里的文件一直允许，不用写；留空 = 只能发工作区里的' }, f.list('files.dirs', { placeholder: 'D:\\Aurabot\\要发的文件' })),
+          h(Row, { key: 'p', label: '图片按路径直发', hint: '网关和 NapCat 在同一台机器或共享挂载时，直接把路径交给网关，省掉读盘和 base64 膨胀；网关读不到会自动改用 base64。默认开。' }, f.sw('files.imageByPath')),
+        ]),
+
+        // 折叠 F：不想理的人与头衔（整卡默认折叠，内容自成一卡）
+        h(Card, { title: '不想理的人与头衔', desc: '按 QQ 号或群头衔屏蔽：说了也不回（包括 @、引用、戳一戳和模块指令）。私聊和主人不受影响。', collapsible: true, defaultOpen: false },
+          h(MemberFilter, { draft, setDraft }),
+          h(TitleFilter, { draft, setDraft }),
         ),
-        h(Card, { title: '被叫到时回复', desc: '群模式为「允许 AI 聊天」时，被 @、引用回复或叫名字会触发回复，仍受总开关、暂停和次数限制。' },
-          h(Row, { label: '@ 了别人不算叫ta', hint: '有人 @ 别人时顺口提到ta的名字，不算在叫ta；ta还是可以按平时的频率插话。默认关' }, f.sw('group.ignoreAtOthers')),
-          h(Row, { label: '用哪些称呼叫它', hint: '一行一个；群里提到这些称呼时，按被叫到的规则回应。' },f.list('group.wakeWords', { placeholder: '大肥鱼\n肥鱼' })),
-          h(Row, { label: '每小时必回上限', hint: '一个群里一小时内因被 @、引用、叫名字而必回的次数最多这么多，超过就不回（主人说话不受限，也不计入）；小时一过自动恢复。0 = 不限' }, f.range('group.mustMaxPerHour', 0, 100, 5, (v) => (v === 0 ? '不限' : v + ' 次'))),
-        ),
-        h(Card, { title: '主动插话频率', desc: '只控制没人叫它时的主动插话，不影响聊起来后的继续回应。' },
-          h(Row, { label: '主动插话概率', hint: '话题越相关，实际概率可能越高；0 表示不主动插话。' }, f.percent('group.interjectChance')),
-          draft.group.interjectChance === 0 ? h('div', { className: 'ab-note warn' }, '概率为 0，不会主动插话；想继续接话，可以单独打开「聊起来后继续回应」。') : null,
-          h(Row, { label: '两次主动插话的间隔' }, f.range('group.cooldownSec', 0, 600, 10, (v) => v + ' 秒')),
-          h(Row, { label: '每小时最多主动插话' }, f.range('group.maxPerHour', 0, 30, 1, (v) => v + ' 次')),
-          h('details', null, h('summary', { style: { cursor: 'pointer', margin: '12px 0' } }, '话题与群活跃度'),
-          h(Row, { label: 'ta感兴趣的话题', hint: '群里在聊这些（或ta记得相关的事）时更容易插话；一行一个' }, f.list('group.interests', { placeholder: '白米饭\n游戏\n追剧' })),
-          h(Row, { label: '话题相关度门槛', hint: '和ta关系不大的话题就不插话；拉到 0 = 不看话题、纯随机' }, f.range('group.minRelevance', 0, 1, 0.05, (v) => (v === 0 ? '不看话题' : Math.round(v * 100) + '%'))),
-          h(Row, { label: '群冷清时不插话', hint: '最近几分钟内消息少于这个数就不插' }, f.num('group.minRecentMessages', { min: 0 }), h('span', { className: 'ab-muted' }, '条 / '), f.num('group.activeWindowSec', { min: 30 }), h('span', { className: 'ab-muted' }, '秒')),
-          ),
-        ),
-        h(Card, { title: '避免连续刷屏', desc: '限制没人叫它时的连续回复；被 @、引用、叫名字或追问仍按原规则回复。' },
-          h(Row, { label: '最多连续接话几次', hint: '聊起来后，没有人再次叫它时，最多继续回应几次。0 表示不继续接话。' }, f.range('group.engagedMax', 0, 10, 1, (v) => v + ' 次')),
-          h(Row, { label: '短时间内最多回复' }, f.range('group.burstMax', 1, 20, 1, (v) => v + ' 次'), h('span', { className: 'ab-muted' }, '/'), f.range('group.burstWindowSec', 30, 600, 30, (v) => Math.round(v / 6) / 10 + ' 分钟')),
-        ),
-        ) : null,
-        section === 'messages' ? h(Fragment, null,
-        h(Card, { title: '连发合并', right: f.sw('merge.enabled'), desc: '人常常一口气发好几句。打开后ta会等对方说完再一起回，而不是一句一回。' },
-          h(Row, { label: '对方停顿多久算说完' }, f.range('merge.waitSec', 0.5, 10, 0.5, (v) => v + ' 秒')),
-          h(Row, { label: '最多等多久', hint: '对方一直在发也最多等这么久' }, f.range('merge.maxSec', 2, 30, 1, (v) => v + ' 秒')),
-          h(Row, { label: '群里停顿多久算一段', hint: '群里大家你一句我一句，多等一会儿把一段话攒齐再回；ta回上一段的时候，新消息也会先攒着' }, f.range('merge.groupWaitSec', 1, 20, 1, (v) => v + ' 秒')),
-          h(Row, { label: '群里最多等多久' }, f.range('merge.groupMaxSec', 3, 60, 1, (v) => v + ' 秒')),
-        ),
-        h(Card, { title: '合并转发', right: f.sw('forward.expandEarly'), desc: '群里有人发合并转发时，她手上只有一个「[合并转发]」占位符，里面的聊天记录看不见。打开后消息一进来就把内容展开存进上下文（哪怕是没叫她、她这会儿不回的那些），代价是每条转发都多调一次接口；接口慢的时候会拖慢这一轮。别人引用一条合并转发、她要看被引用的那条时，也一并展开。' },
-          h(Row, { label: '早先的也补展开', hint: '开着「合并转发」后，这条再打开：轮到她要回话时，把这一段里还没展开过的转发（最多 3 条）补上。每条只拉一次' }, f.sw('forward.expandHistory')),
-        ),
-        h(Card, { title: '回复发送与等待' },
-          h(Row, { label: '新会话先补看聊天记录', hint: '会话第一次开口时先读最近几条，接得上话。默认关' }, f.sw('chat.seedHistory')),
-          h(Row, { label: '每段都发', hint: '一轮里她分几段说，就发几条。私聊多半是闲聊，连着说的几句常常各说各的，关着只发最后一段，看起来就像只回了一个话题；干活时前面多是「我先去查」这类过程话，开着会啰嗦。默认关' }, f.sw('chat.everyStep')),
-          h(Row, { label: '话写在思考里也捞出来', hint: '她偶尔把要说的话全写在思考里，正文是空的，这一轮就什么都发不出去。打开后从思考里找她自己定稿的那段，找不到就不发。默认关' }, f.sw('chat.rescueFromThinking')),
-          h(Row, { label: '一轮最多等多久（分钟）', hint: '模型或工具卡住时，超过这么多分钟就强制放开，后面的消息正常开新一轮；不然会一直哑着。填 0 不兜底。默认 30' }, f.num('chat.turnTimeoutMinutes', { min: 0, max: 180 })),
-        ),
-        ) : null,
-        section === 'manage' ? h(Fragment, null,
-        h(MemberFilter, { draft, setDraft }),
-        h(Card, { title: '主人私聊：群设置指令', right: f.sw('group.privateCommandsEnabled', { title: '群设置指令总开关' }),
-          desc: '私聊发 /群设置 查看用法。直接执行，不经过模型；批量修改先预览，再确认。' },
-          h('div', { className: 'ab-muted ab-small' }, '只控制 /群设置，不影响自然语言管理、/权限 或群内的 /quiet。关闭自然语言管理，可在「权限」页关闭「改白名单」。')),
-        h(Card, { title: '跨群查看' },
-          h(Row, { label: '能不能看别的群', hint: '只读白名单里的群，一次最多 50 条，主人随时能看。开到「群里也行」后，ta在 A 群的回答全群都看得到，里面可能有不在 B 群的人；读到的内容也会留在这个会话里。' }, f.choices('group.crossRead', [{ value: 'off', label: '关', desc: '只看当前聊天' }, { value: 'private', label: '私聊可以', desc: '主人，以及私聊里问的人本身在那个群（默认）' }, { value: 'group', label: '群里也行', desc: '再加上群里问的人都在那个群' }])),
-        ),
-        h(TitleFilter, { draft, setDraft }),
-        h(OwnerBrief, { draft, setDraft }),
-        h(Card, { title: '发文件', right: f.sw('files.enabled'), desc: '打开后，你可以让ta把本机文件发到 QQ：图片会直接显示成图，其它当文件发。私聊里随时能发，群里只在你自己开口那一轮能发；也能按你说的发给白名单里的人或群。ta只能发 QQ 工作区和下面目录里的文件；单个文件有大小上限；发过什么会记在日志里。' },
-          h(Row, { label: '单个文件最大' }, f.num('files.maxMB', { min: 1, max: 2048 }), h('span', { className: 'ab-muted' }, ' MB')),
-          h(Row, { label: '额外允许的目录', hint: '一行一个完整路径。QQ 工作区里的文件一直允许，不用写；留空 = 只能发工作区里的' }, f.list('files.dirs', { placeholder: 'D:\\Aurabot\\要发的文件' })),
-          h(Row, { label: '图片按路径直发', hint: '网关和 NapCat 在同一台机器或共享挂载时，直接把路径交给网关，省掉读盘和 base64 膨胀；网关读不到会自动改用 base64。默认开。' }, f.sw('files.imageByPath')),
-        ),
-        h(Card, { title: '群里的本机工具', right: f.choices('group.ownerTools', [{ value: 'off', label: '谁都不行' }, { value: 'owner', label: '只有主人' }]),
-          desc: '默认关：群里ta只能聊天，没有任何电脑操作能力。「只有主人」＝主人在群里说话的那一轮ta才拿得到命令和文件工具，别人说话时照旧收走。没有「谁问都行」这一档：群里任何人都能远程驱动这台机器，权限面太大。',
-          ...(draft.group.ownerTools && draft.group.ownerTools !== 'off' ? [
-            h(Row, { label: '只在这些群生效', hint: '一行一个群号；留空 = 白名单里所有群都生效' }, f.list('group.ownerToolsGroups', { placeholder: '100200300' })),
-          ] : []),
-        }),
+
         ) : null,
       )
     }
 
-    /** 按聊天选模型：私聊默认 / 群聊默认两个下拉，单个 QQ / 群的例外放在默认收起的小列表里。 */
+    /** 群聊摘要的群多选（原 OwnerBrief 内联逻辑抽出，供「更多设置」复用） */
     function ChatModels({ draft, setDraft, list }) {
       const cm = draft.chatModels || { privateDefault: {}, groupDefault: {}, privates: {}, groups: {} }
       const [open, setOpen] = useState(false)
