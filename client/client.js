@@ -703,6 +703,30 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
 .ab-mod .what{color:var(--ab-dim);font-size:11.5px;margin-top:4px;word-break:break-word}
 .ab-mod .acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
 .ab-mod .side{display:flex;flex-direction:column;align-items:flex-end;gap:6px}
+/* 管理功能页：模块项卡片网格（替代原行式布局，提高横向空间利用率）。
+   列宽取 180px：DSH 面板内容区偏窄（约 380~450px，还要扣掉所在 Card 的内边距），
+   180px 能稳定排出 2 列；容器更窄时由 auto-fill 自动降为单列，无需媒体查询。 */
+.ab-manage-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;align-items:stretch}
+.ab-manage-card{display:flex;flex-direction:column;gap:8px;padding:14px 16px;border:1px solid var(--ab-line);border-radius:12px;background:var(--ab-card);min-width:0}
+/* 受限/失败：告警色边框 + 卡底，提示需要处理（色值沿用 .ab-badge.warn 的告警色，不引入新颜色） */
+.ab-manage-card.is-blocked{border-color:rgba(191,135,0,.35);background:var(--ab-card-2)}
+.ab-manage-card.is-off,.ab-manage-card.is-absent{background:var(--ab-card-2)}
+/* 卡片头部：名称+徽标左对齐，启用开关右对齐（两端对齐）。
+   width:100% / align-self:stretch 显式撑满卡宽——space-between 只有在头部占满可用宽时
+   才会把开关顶到右缘；名称是 auto 宽度的 flex item，靠它撑不满整行。 */
+.ab-manage-head{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;align-self:stretch;box-sizing:border-box}
+/* 模块名字号：比面板正文(12.5px)/卡片标题(15px)之间取 15.5px，作为卡片内的主标题更醒目 */
+.ab-manage-name{font-weight:620;font-size:15.5px;min-width:0;overflow-wrap:anywhere}
+.ab-manage-desc{color:var(--ab-sub);font-size:12.5px;line-height:1.55;flex:1 1 auto;min-width:0;overflow-wrap:anywhere}
+.ab-manage-reason{margin:0;font-size:12.5px}
+/* 操作区固定在卡片底部，保证同排卡片按钮对齐 */
+.ab-manage-acts{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:auto;padding-top:2px}
+/* 卡片内「更多设置（N 项）」子折叠卡：视觉上弱化一层，避免与父卡重复的实底边框 */
+.ab-fold-sub{background:transparent;border-style:dashed;box-shadow:none}
+/* 组行：一行放一组设置，行内项自由流式排版（按类型与宽度自然排，窄窗自动降列） */
+.ab-grp-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px 14px;align-items:start}
+.ab-grp-row>.ab-row{flex-direction:column;align-items:flex-start;gap:4px}
+.ab-grp-row>.ab-row>.ab-ctl{width:100%}
 .ab-code{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;background:var(--ab-card-2);border:1px solid var(--ab-line);border-radius:8px;padding:8px 10px;white-space:pre-wrap;word-break:break-all;margin:6px 0 0}
 `
     function useStyle() {
@@ -1325,21 +1349,26 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         const badge = { ok: ['ok', '可用'], blocked: ['warn', '受限'], off: ['', '已停用'], absent: ['', '未安装'] }[kind]
         return { f, kind, reason, badge, ms, userOff }
       })
-      const section = (title, desc, list) => (list.length ? h(Card, { title, desc }, h('div', { className: 'ab-grid' }, list.map(({ f, kind, reason, badge, ms }) => h('div', { key: f.key, className: 'ab-mod' },
-        h('div', { className: 'main' },
-          h('div', { className: 'nm' }, f.label, h('span', { className: cx('ab-badge', badge[0]) }, badge[1])),
-          h('div', { className: 'ds' }, f.desc),
-          reason ? h('div', { className: 'ab-note warn', style: { marginTop: 6 } }, reason) : null,
-          h('div', { className: 'acts' },
-            h(Btn, { small: true, kind: kind === 'ok' ? 'primary' : undefined, onClick: () => go(f.tab) }, kind === 'ok' ? '去设置' : '打开设置'),
-            kind === 'blocked' ? h(Btn, { small: true, onClick: () => go('logs') }, '看日志排障') : null,
-            kind === 'absent' ? h(Btn, { small: true, onClick: () => go('market') }, '去安装') : null)),
-        h('div', { className: 'side' },
-          ms.length ? h(Switch, {
-            on: ms.some((m) => m.enabled !== false),
-            onChange: (v) => setEnabled(ms[0].id, v),
-            title: '启用 / 停用这个功能',
-          }) : null))))) : null)
+      // 卡片网格：每项一张卡（头部=名称+状态徽标 / 正文=说明与原因 / 底部=操作区）。
+      // 行为与行式布局时完全一致：kind 判定、按钮文案、/save 流程都没动，只换 DOM 结构与样式。
+      const section = (title, desc, list) => (list.length ? h(Card, { title, desc }, h('div', { className: 'ab-manage-grid' }, list.map(({ f, kind, reason, badge, ms }) => h('div', {
+        key: f.key,
+        className: cx('ab-manage-card', kind === 'blocked' && 'is-blocked', kind === 'off' && 'is-off', kind === 'absent' && 'is-absent'),
+      },
+      // 头部两端对齐：左=名称+徽标，右=启用开关（开关逻辑与之前完全一致，只是位置从操作区挪上来）
+      h('div', { className: 'ab-manage-head' },
+        h('span', { className: 'ab-manage-name' }, f.label, h('span', { className: cx('ab-badge', badge[0]) }, badge[1])),
+        ms.length ? h('span', { style: { flexShrink: 0 } }, h(Switch, {
+          on: ms.some((m) => m.enabled !== false),
+          onChange: (v) => setEnabled(ms[0].id, v),
+          title: '启用 / 停用这个功能',
+        })) : null),
+      h('div', { className: 'ab-manage-desc' }, f.desc),
+      reason ? h('div', { className: 'ab-note warn ab-manage-reason' }, reason) : null,
+      h('div', { className: 'ab-manage-acts' },
+        h(Btn, { small: true, kind: kind === 'ok' ? 'primary' : undefined, onClick: () => go(f.tab) }, kind === 'ok' ? '去设置' : '打开设置'),
+        kind === 'blocked' ? h(Btn, { small: true, onClick: () => go('logs') }, '看日志排障') : null,
+        kind === 'absent' ? h(Btn, { small: true, onClick: () => go('market') }, '去安装') : null))))) : null)
       return h('div', { className: 'ab-grid' },
         h('div', { className: 'ab-note' }, '这里汇总所有可选功能，按状态分组。想更细地调参数，点「去设置」进各自页面。'),
         section('正常可用', '已启用并在运行的功能。', rows.filter((r) => r.kind === 'ok')),
@@ -2518,94 +2547,136 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
 
     function Group({ draft, setDraft, st, go }) {
       const f = useField(draft, setDraft)
-      const [section, setSection] = useState('groups')
+      // 两段：single = 单个群（沿用 GroupOverrides），all = 所有群默认
+      const [section, setSection] = useState('single')
+      // 「更多设置（N 项）」子折叠卡：只直显少量高频项，其余收进来（复用 Card 的折叠不渲染 children）
+      const more = (title, items) => (items.length ? h(Card, { title: (title || '更多设置') + '（' + items.length + ' 项）', collapsible: true, defaultOpen: false, className: 'ab-fold-sub' }, items) : null)
       return h('div', { className: 'ab-grid' },
-        h('div', { className: 'ab-flex ab-chat-nav', role: 'group', 'aria-label': '聊天设置分类', style: { flexWrap: 'wrap' } },
-          ...[{ id: 'groups', label: '群聊' }, { id: 'messages', label: '回复方式' }, { id: 'manage', label: '权限与限制' }].map(x =>
-            h('button', { key: x.id, type: 'button', className: cx('ab-btn', (section === x.id || (x.id === 'groups' && section === 'defaults')) && 'primary'), 'aria-pressed': section === x.id || (x.id === 'groups' && section === 'defaults'), onClick: () => setSection(x.id) }, x.label))),
-        h('div', { hidden: section !== 'groups', className: 'ab-group-home' },
-          h(GroupOverrides, { draft, setDraft, setSection }),
+        h('div', { className: 'ab-flex', style: { marginBottom: 2 } },
+          h(Seg, { value: section, onChange: setSection, options: [{ value: 'single', label: '单个群' }, { value: 'all', label: '所有群默认' }] })),
+        section === 'single' ? h(Fragment, null,
+          h(GroupOverrides, { draft, setDraft, setSection: () => setSection('all') }),
           h(Card, { title: '相关设置' },
             h('p', { className: 'ab-desc' }, '群模式控制收到消息后是否回应。定时推送、表情制作等模块仍按各自开关和时段运行。'),
             h('div', { className: 'ab-flex', style: { flexWrap: 'wrap' } },
               h(Btn, { small: true, onClick: () => go('memory') }, '记忆总开关与清理'),
               h(Btn, { small: true, onClick: () => go('modules') }, '管理模块'),
               (st.modules || []).some(m => m.id === 'meme' && m.running && m.panel) ? h(Btn, { small: true, onClick: () => go('ext:meme') }, '表情制作与休息时段') : null)),
-        ),
-        section === 'defaults' ? h(Fragment, null,
-        h(Card, { title: '群聊通用设置', right: h(Btn, { small: true, kind: 'ghost', onClick: () => setSection('groups') }, '返回选择群'), desc: '适用于允许 AI 聊天的群；某个群单独设置过的项目不受影响。' },
-          h(Row, { label: '没人叫时主动插话', hint: '没人叫它、也没在聊天时，偶尔加入话题。频率在下方调整。' }, f.sw('group.proactiveEnabled', { on: draft.group.proactiveEnabled !== false, title: '没人叫时主动插话' })),
-          h(Row, { label: '聊起来后继续回应', hint: '最近 3 分钟聊过，可以继续接相关话题，不必每次 @；仍受下方时段和连续回复次数限制。' }, f.sw('group.engagedEnabled', { on: typeof draft.group.engagedEnabled === 'boolean' ? draft.group.engagedEnabled : draft.group.interjectChance > 0, title: '聊起来后继续回应' })),
-          h(Row, { label: '不主动说话的时段', hint: '暂停主动插话和继续接话；被 @ 等仍按规则回复，模块不受影响。起止相同表示不限制。' },
+        ) : null,
+        section === 'all' ? h(Fragment, null,
+
+        // ===== 可见区：3 个组行（每组一行，行内自由流式排版）=====
+
+        // 组行 ① 被叫到时怎么回：6 项流式排一行
+        h(Card, { title: '被叫到时怎么回', desc: '群模式为「允许 AI 聊天」时，被 @、引用回复或叫名字会触发回复，仍受总开关、暂停和次数限制。' },
+          h('div', { className: 'ab-grp-row' },
+            h(Row, { label: '用哪些称呼叫它', hint: '一行一个；群里提到这些称呼时，按被叫到的规则回应。' }, f.list('group.wakeWords', { placeholder: '大肥鱼\n肥鱼' })),
+            h(Row, { label: '@ 了别人不算叫ta', hint: '有人 @ 别人时顺口提到ta的名字，不算在叫ta；ta还是可以按平时的频率插话。默认关' }, f.sw('group.ignoreAtOthers')),
+            h(Row, { label: '每小时必回上限', hint: '一个群里一小时内因被 @、引用、叫名字而必回的次数最多这么多，超过就不回（主人说话不受限，也不计入）；小时一过自动恢复。0 = 不限' }, f.range('group.mustMaxPerHour', 0, 100, 5, (v) => (v === 0 ? '不限' : v + ' 次'))),
+          )),
+
+        // 组行 ② 没人叫时怎么接话：核心 4 参数排一行（时段/话题/防刷屏进折叠）
+        h(Card, { title: '没人叫时怎么接话', desc: '控制没人叫它时的主动插话与继续接话；被叫到时仍按上一张卡的规则回复。' },
+          h('div', { className: 'ab-grp-row' },
+            h(Row, { label: '没人叫时主动插话', hint: '没人叫它、也没在聊天时，偶尔加入话题。' }, f.sw('group.proactiveEnabled', { on: draft.group.proactiveEnabled !== false, title: '没人叫时主动插话' })),
+            h(Row, { label: '聊起来后继续回应', hint: '最近 3 分钟聊过，可以继续接相关话题，不必每次 @。' }, f.sw('group.engagedEnabled', { on: typeof draft.group.engagedEnabled === 'boolean' ? draft.group.engagedEnabled : draft.group.interjectChance > 0, title: '聊起来后继续回应' })),
+            h(Row, { label: '主动插话概率', hint: '话题越相关，实际概率可能越高；0 表示不主动插话。' }, f.percent('group.interjectChance')),
+            h(Row, { label: '最多连续接话几次', hint: '聊起来后，没有人再次叫它时，最多继续回应几次。0 表示不继续接话。' }, f.range('group.engagedMax', 0, 10, 1, (v) => v + ' 次')),
+          ),
+          draft.group.interjectChance === 0 ? h('div', { className: 'ab-note warn' }, '概率为 0，不会主动插话；想继续接话，可以单独打开「聊起来后继续回应」。') : null),
+
+        // 组行 ③ 一条消息怎么变成回复：3 个总开关排一行
+        h(Card, { title: '一条消息怎么变成回复', desc: '连发合并、合并转发、发送节奏与超时。' },
+          h('div', { className: 'ab-grp-row' },
+            h(Row, { label: '连发合并', hint: '人常常一口气发好几句。打开后ta会等对方说完再一起回，而不是一句一回。' }, f.sw('merge.enabled')),
+            h(Row, { label: '合并转发', hint: '群里有人发合并转发时，她手上只有一个占位符，内容看不见。打开后消息一进来就展开存进上下文，代价是每条转发多调一次接口。' }, f.sw('forward.expandEarly')),
+            h(Row, { label: '每段都发', hint: '一轮里她分几段说，就发几条。关着只发最后一段。默认关' }, f.sw('chat.everyStep')),
+          )),
+
+        // ===== 折叠区：其余所有组/设置项 =====
+
+        // 折叠 A：接话节奏与时段（7 项）
+        more('接话节奏与时段', [
+          h(Row, { key: 'cd', label: '两次主动插话的间隔' }, f.range('group.cooldownSec', 0, 600, 10, (v) => v + ' 秒')),
+          h(Row, { key: 'mph', label: '每小时最多主动插话' }, f.range('group.maxPerHour', 0, 30, 1, (v) => v + ' 次')),
+          h(Row, { key: 'qh', label: '不主动说话的时段', hint: '暂停主动插话和继续接话；被 @ 等仍按规则回复，模块不受影响。起止相同表示不限制。' },
             h('input', { className: 'ab-input sm', 'aria-label': '不主动说话的开始小时', type: 'number', min: 0, max: 23, value: draft.group.quietHours[0], onChange: (e) => setDraft(setPath(draft, 'group.quietHours', [Number(e.target.value), draft.group.quietHours[1]])) }),
             h('span', { className: 'ab-muted' }, '点 到'),
             h('input', { className: 'ab-input sm', 'aria-label': '恢复主动说话的小时', type: 'number', min: 0, max: 23, value: draft.group.quietHours[1], onChange: (e) => setDraft(setPath(draft, 'group.quietHours', [draft.group.quietHours[0], Number(e.target.value)])) }),
             h('span', { className: 'ab-muted' }, '点')),
+          h(Row, { key: 'bm', label: '短时间内最多回复' }, f.range('group.burstMax', 1, 20, 1, (v) => v + ' 次'), h('span', { className: 'ab-muted' }, '/'), f.range('group.burstWindowSec', 30, 600, 30, (v) => Math.round(v / 6) / 10 + ' 分钟')),
+        ]),
+
+        // 折叠 B：话题与群活跃度（3 项）
+        more('话题与群活跃度', [
+          h(Row, { key: 'i', label: 'ta感兴趣的话题', hint: '群里在聊这些（或ta记得相关的事）时更容易插话；一行一个' }, f.list('group.interests', { placeholder: '白米饭\n游戏\n追剧' })),
+          h(Row, { key: 'r', label: '话题相关度门槛', hint: '和ta关系不大的话题就不插话；拉到 0 = 不看话题、纯随机' }, f.range('group.minRelevance', 0, 1, 0.05, (v) => (v === 0 ? '不看话题' : Math.round(v * 100) + '%'))),
+          h(Row, { key: 'a', label: '群冷清时不插话', hint: '最近几分钟内消息少于这个数就不插' }, f.num('group.minRecentMessages', { min: 0 }), h('span', { className: 'ab-muted' }, '条 / '), f.num('group.activeWindowSec', { min: 30 }), h('span', { className: 'ab-muted' }, '秒')),
+        ]),
+
+        // 折叠 C：合并与发送明细（7 项）
+        more('合并与发送明细', [
+          h(Row, { key: 'w', label: '对方停顿多久算说完' }, f.range('merge.waitSec', 0.5, 10, 0.5, (v) => v + ' 秒')),
+          h(Row, { key: 'mx', label: '最多等多久', hint: '对方一直在发也最多等这么久' }, f.range('merge.maxSec', 2, 30, 1, (v) => v + ' 秒')),
+          h(Row, { key: 'gw', label: '群里停顿多久算一段', hint: '群里大家你一句我一句，多等一会儿把一段话攒齐再回；ta回上一段的时候，新消息也会先攒着' }, f.range('merge.groupWaitSec', 1, 20, 1, (v) => v + ' 秒')),
+          h(Row, { key: 'gm', label: '群里最多等多久' }, f.range('merge.groupMaxSec', 3, 60, 1, (v) => v + ' 秒')),
+          h(Row, { key: 'fh', label: '早先的也补展开', hint: '开着「合并转发」后，这条再打开：轮到她要回话时，把这一段里还没展开过的转发（最多 3 条）补上。每条只拉一次' }, f.sw('forward.expandHistory')),
+          h(Row, { key: 'sh', label: '新会话先补看聊天记录', hint: '会话第一次开口时先读最近几条，接得上话。默认关' }, f.sw('chat.seedHistory')),
+          h(Row, { key: 'rt', label: '话写在思考里也捞出来', hint: '她偶尔把要说的话全写在思考里，正文是空的，这一轮就什么都发不出去。打开后从思考里找她自己定稿的那段，找不到就不发。默认关' }, f.sw('chat.rescueFromThinking')),
+          h(Row, { key: 'tt', label: '一轮最多等多久（分钟）', hint: '模型或工具卡住时，超过这么多分钟就强制放开，后面的消息正常开新一轮；不然会一直哑着。填 0 不兜底。默认 30' }, f.num('chat.turnTimeoutMinutes', { min: 0, max: 180 })),
+        ]),
+
+        // 折叠 D：主人跨群与特权（6 项，含条件显隐）
+        more('主人跨群与特权', [
+          h(Row, { key: 'pc', label: '私聊里的 /群设置 指令', hint: '私聊发 /群设置 查看用法。直接执行，不经过模型；批量修改先预览，再确认。只控制 /群设置，不影响自然语言管理、/权限 或群内的 /quiet。' }, f.sw('group.privateCommandsEnabled', { title: '群设置指令总开关' })),
+          h(Row, { key: 'ob', label: '群聊摘要（主人私聊）', hint: '主人在私聊里问起群里的事时，把最近 24 小时的群聊流水当成「ta自己的见闻」补进这一轮上下文。只在主人私聊且提到群相关时触发，不常驻、不写进记忆；默认关。' }, f.sw('group.ownerBrief.enabled')),
+          h(Row, { key: 'ot', label: '群里的本机工具', hint: '默认关：群里ta只能聊天，没有任何电脑操作能力。「只有主人」＝主人在群里说话的那一轮ta才拿得到命令和文件工具。' },
+            f.choices('group.ownerTools', [{ value: 'off', label: '谁都不行' }, { value: 'owner', label: '只有主人' }])),
+          // 条件显隐：ownerTools 非 off 才出现群列表（保持原有依赖语义）
+          draft.group.ownerTools && draft.group.ownerTools !== 'off'
+            ? h(Row, { key: 'og2', label: '工具只在这些群生效', hint: '一行一个群号；留空 = 白名单里所有群都生效' }, f.list('group.ownerToolsGroups', { placeholder: '100200300' }))
+            : null,
+          h(Row, { key: 'cr', label: '能不能看别的群', hint: '只读白名单里的群，一次最多 50 条，主人随时能看。开到「群里也行」后，ta在 A 群的回答全群都看得到；读到的内容也会留在这个会话里。' }, f.choices('group.crossRead', [{ value: 'off', label: '关', desc: '只看当前聊天' }, { value: 'private', label: '私聊可以', desc: '主人，以及私聊里问的人本身在那个群（默认）' }, { value: 'group', label: '群里也行', desc: '再加上群里问的人都在那个群' }])),
+          h(Row, { key: 'ol', label: '每个群给几条摘要', hint: '越少越省上下文；最多 30 条' }, f.range('group.ownerBrief.lines', 1, 30, 1, (v) => v + ' 条')),
+          h(Row, { key: 'og', label: '摘要只取哪些群', hint: '没勾 = 所有白名单群；只列白名单里的群' }, h(OwnerBriefGroups, { draft, setDraft })),
+        ]),
+
+        // 折叠 E：发文件明细（3 项）
+        more('发文件', [
+          h(Row, { key: 'fe', label: '允许发文件', hint: '关了之后ta不能发任何本机文件。' }, f.sw('files.enabled')),
+          h(Row, { key: 'd', label: '单个文件最大' }, f.num('files.maxMB', { min: 1, max: 2048 }), h('span', { className: 'ab-muted' }, ' MB')),
+          h(Row, { key: 'dir', label: '额外允许的目录', hint: '一行一个完整路径。QQ 工作区里的文件一直允许，不用写；留空 = 只能发工作区里的' }, f.list('files.dirs', { placeholder: 'D:\\Aurabot\\要发的文件' })),
+          h(Row, { key: 'p', label: '图片按路径直发', hint: '网关和 NapCat 在同一台机器或共享挂载时，直接把路径交给网关，省掉读盘和 base64 膨胀；网关读不到会自动改用 base64。默认开。' }, f.sw('files.imageByPath')),
+        ]),
+
+        // 折叠 F：不想理的人与头衔（整卡默认折叠，内容自成一卡）
+        h(Card, { title: '不想理的人与头衔', desc: '按 QQ 号或群头衔屏蔽：说了也不回（包括 @、引用、戳一戳和模块指令）。私聊和主人不受影响。', collapsible: true, defaultOpen: false },
+          h(MemberFilter, { draft, setDraft }),
+          h(TitleFilter, { draft, setDraft }),
         ),
-        h(Card, { title: '被叫到时回复', desc: '群模式为「允许 AI 聊天」时，被 @、引用回复或叫名字会触发回复，仍受总开关、暂停和次数限制。' },
-          h(Row, { label: '@ 了别人不算叫ta', hint: '有人 @ 别人时顺口提到ta的名字，不算在叫ta；ta还是可以按平时的频率插话。默认关' }, f.sw('group.ignoreAtOthers')),
-          h(Row, { label: '用哪些称呼叫它', hint: '一行一个；群里提到这些称呼时，按被叫到的规则回应。' },f.list('group.wakeWords', { placeholder: '大肥鱼\n肥鱼' })),
-          h(Row, { label: '每小时必回上限', hint: '一个群里一小时内因被 @、引用、叫名字而必回的次数最多这么多，超过就不回（主人说话不受限，也不计入）；小时一过自动恢复。0 = 不限' }, f.range('group.mustMaxPerHour', 0, 100, 5, (v) => (v === 0 ? '不限' : v + ' 次'))),
-        ),
-        h(Card, { title: '主动插话频率', desc: '只控制没人叫它时的主动插话，不影响聊起来后的继续回应。' },
-          h(Row, { label: '主动插话概率', hint: '话题越相关，实际概率可能越高；0 表示不主动插话。' }, f.percent('group.interjectChance')),
-          draft.group.interjectChance === 0 ? h('div', { className: 'ab-note warn' }, '概率为 0，不会主动插话；想继续接话，可以单独打开「聊起来后继续回应」。') : null,
-          h(Row, { label: '两次主动插话的间隔' }, f.range('group.cooldownSec', 0, 600, 10, (v) => v + ' 秒')),
-          h(Row, { label: '每小时最多主动插话' }, f.range('group.maxPerHour', 0, 30, 1, (v) => v + ' 次')),
-          h('details', null, h('summary', { style: { cursor: 'pointer', margin: '12px 0' } }, '话题与群活跃度'),
-          h(Row, { label: 'ta感兴趣的话题', hint: '群里在聊这些（或ta记得相关的事）时更容易插话；一行一个' }, f.list('group.interests', { placeholder: '白米饭\n游戏\n追剧' })),
-          h(Row, { label: '话题相关度门槛', hint: '和ta关系不大的话题就不插话；拉到 0 = 不看话题、纯随机' }, f.range('group.minRelevance', 0, 1, 0.05, (v) => (v === 0 ? '不看话题' : Math.round(v * 100) + '%'))),
-          h(Row, { label: '群冷清时不插话', hint: '最近几分钟内消息少于这个数就不插' }, f.num('group.minRecentMessages', { min: 0 }), h('span', { className: 'ab-muted' }, '条 / '), f.num('group.activeWindowSec', { min: 30 }), h('span', { className: 'ab-muted' }, '秒')),
-          ),
-        ),
-        h(Card, { title: '避免连续刷屏', desc: '限制没人叫它时的连续回复；被 @、引用、叫名字或追问仍按原规则回复。' },
-          h(Row, { label: '最多连续接话几次', hint: '聊起来后，没有人再次叫它时，最多继续回应几次。0 表示不继续接话。' }, f.range('group.engagedMax', 0, 10, 1, (v) => v + ' 次')),
-          h(Row, { label: '短时间内最多回复' }, f.range('group.burstMax', 1, 20, 1, (v) => v + ' 次'), h('span', { className: 'ab-muted' }, '/'), f.range('group.burstWindowSec', 30, 600, 30, (v) => Math.round(v / 6) / 10 + ' 分钟')),
-        ),
-        ) : null,
-        section === 'messages' ? h(Fragment, null,
-        h(Card, { title: '连发合并', right: f.sw('merge.enabled'), desc: '人常常一口气发好几句。打开后ta会等对方说完再一起回，而不是一句一回。' },
-          h(Row, { label: '对方停顿多久算说完' }, f.range('merge.waitSec', 0.5, 10, 0.5, (v) => v + ' 秒')),
-          h(Row, { label: '最多等多久', hint: '对方一直在发也最多等这么久' }, f.range('merge.maxSec', 2, 30, 1, (v) => v + ' 秒')),
-          h(Row, { label: '群里停顿多久算一段', hint: '群里大家你一句我一句，多等一会儿把一段话攒齐再回；ta回上一段的时候，新消息也会先攒着' }, f.range('merge.groupWaitSec', 1, 20, 1, (v) => v + ' 秒')),
-          h(Row, { label: '群里最多等多久' }, f.range('merge.groupMaxSec', 3, 60, 1, (v) => v + ' 秒')),
-        ),
-        h(Card, { title: '合并转发', right: f.sw('forward.expandEarly'), desc: '群里有人发合并转发时，她手上只有一个「[合并转发]」占位符，里面的聊天记录看不见。打开后消息一进来就把内容展开存进上下文（哪怕是没叫她、她这会儿不回的那些），代价是每条转发都多调一次接口；接口慢的时候会拖慢这一轮。别人引用一条合并转发、她要看被引用的那条时，也一并展开。' },
-          h(Row, { label: '早先的也补展开', hint: '开着「合并转发」后，这条再打开：轮到她要回话时，把这一段里还没展开过的转发（最多 3 条）补上。每条只拉一次' }, f.sw('forward.expandHistory')),
-        ),
-        h(Card, { title: '回复发送与等待' },
-          h(Row, { label: '新会话先补看聊天记录', hint: '会话第一次开口时先读最近几条，接得上话。默认关' }, f.sw('chat.seedHistory')),
-          h(Row, { label: '每段都发', hint: '一轮里她分几段说，就发几条。私聊多半是闲聊，连着说的几句常常各说各的，关着只发最后一段，看起来就像只回了一个话题；干活时前面多是「我先去查」这类过程话，开着会啰嗦。默认关' }, f.sw('chat.everyStep')),
-          h(Row, { label: '话写在思考里也捞出来', hint: '她偶尔把要说的话全写在思考里，正文是空的，这一轮就什么都发不出去。打开后从思考里找她自己定稿的那段，找不到就不发。默认关' }, f.sw('chat.rescueFromThinking')),
-          h(Row, { label: '一轮最多等多久（分钟）', hint: '模型或工具卡住时，超过这么多分钟就强制放开，后面的消息正常开新一轮；不然会一直哑着。填 0 不兜底。默认 30' }, f.num('chat.turnTimeoutMinutes', { min: 0, max: 180 })),
-        ),
-        ) : null,
-        section === 'manage' ? h(Fragment, null,
-        h(MemberFilter, { draft, setDraft }),
-        h(Card, { title: '主人私聊：群设置指令', right: f.sw('group.privateCommandsEnabled', { title: '群设置指令总开关' }),
-          desc: '私聊发 /群设置 查看用法。直接执行，不经过模型；批量修改先预览，再确认。' },
-          h('div', { className: 'ab-muted ab-small' }, '只控制 /群设置，不影响自然语言管理、/权限 或群内的 /quiet。关闭自然语言管理，可在「权限」页关闭「改白名单」。')),
-        h(Card, { title: '跨群查看' },
-          h(Row, { label: '能不能看别的群', hint: '只读白名单里的群，一次最多 50 条，主人随时能看。开到「群里也行」后，ta在 A 群的回答全群都看得到，里面可能有不在 B 群的人；读到的内容也会留在这个会话里。' }, f.choices('group.crossRead', [{ value: 'off', label: '关', desc: '只看当前聊天' }, { value: 'private', label: '私聊可以', desc: '主人，以及私聊里问的人本身在那个群（默认）' }, { value: 'group', label: '群里也行', desc: '再加上群里问的人都在那个群' }])),
-        ),
-        h(TitleFilter, { draft, setDraft }),
-        h(OwnerBrief, { draft, setDraft }),
-        h(Card, { title: '发文件', right: f.sw('files.enabled'), desc: '打开后，你可以让ta把本机文件发到 QQ：图片会直接显示成图，其它当文件发。私聊里随时能发，群里只在你自己开口那一轮能发；也能按你说的发给白名单里的人或群。ta只能发 QQ 工作区和下面目录里的文件；单个文件有大小上限；发过什么会记在日志里。' },
-          h(Row, { label: '单个文件最大' }, f.num('files.maxMB', { min: 1, max: 2048 }), h('span', { className: 'ab-muted' }, ' MB')),
-          h(Row, { label: '额外允许的目录', hint: '一行一个完整路径。QQ 工作区里的文件一直允许，不用写；留空 = 只能发工作区里的' }, f.list('files.dirs', { placeholder: 'D:\\Aurabot\\要发的文件' })),
-          h(Row, { label: '图片按路径直发', hint: '网关和 NapCat 在同一台机器或共享挂载时，直接把路径交给网关，省掉读盘和 base64 膨胀；网关读不到会自动改用 base64。默认开。' }, f.sw('files.imageByPath')),
-        ),
-        h(Card, { title: '群里的本机工具', right: f.choices('group.ownerTools', [{ value: 'off', label: '谁都不行' }, { value: 'owner', label: '只有主人' }]),
-          desc: '默认关：群里ta只能聊天，没有任何电脑操作能力。「只有主人」＝主人在群里说话的那一轮ta才拿得到命令和文件工具，别人说话时照旧收走。没有「谁问都行」这一档：群里任何人都能远程驱动这台机器，权限面太大。',
-          ...(draft.group.ownerTools && draft.group.ownerTools !== 'off' ? [
-            h(Row, { label: '只在这些群生效', hint: '一行一个群号；留空 = 白名单里所有群都生效' }, f.list('group.ownerToolsGroups', { placeholder: '100200300' })),
-          ] : []),
-        }),
+
         ) : null,
       )
     }
 
-    /** 按聊天选模型：私聊默认 / 群聊默认两个下拉，单个 QQ / 群的例外放在默认收起的小列表里。 */
+    /** 群聊摘要的群多选（原 OwnerBrief 内联逻辑抽出，供「更多设置」复用） */
+    function OwnerBriefGroups({ draft, setDraft }) {
+      const ob = draft.group.ownerBrief || { enabled: false, lines: 12, groups: [] }
+      const groups = (draft.allow.groups || []).map(String)
+      const [info, setInfo] = useState(null)
+      useEffect(() => { get('/groups/titles').then((r) => { if (r.ok) setInfo(r) }).catch(() => {}) }, [])
+      const nameOf = (gid) => {
+        const g = ((info && info.groups) || []).find((x) => x.groupId === gid)
+        return g && g.name && g.name !== gid ? g.name : ''
+      }
+      const on = (gid) => (ob.groups || []).includes(gid)
+      const toggle = (gid) => setDraft(setPath(draft, 'group.ownerBrief.groups', on(gid) ? (ob.groups || []).filter((x) => x !== gid) : [...(ob.groups || []), gid]))
+      return h('div', { className: 'ab-flex', style: { flexWrap: 'wrap' } }, groups.length
+        ? groups.map((gid) => h('button', { key: gid, type: 'button', className: cx('ab-chip', on(gid) && 'on'), onClick: () => toggle(gid) },
+          (on(gid) ? '✓ ' : '') + (nameOf(gid) || '群'), h('span', { className: 'n' }, gid)))
+        : h('span', { className: 'ab-muted ab-small' }, '先到「聊天 → 单个群」添加群，选择「仅模块」或「允许 AI 聊天」。'))
+    }
+
     function ChatModels({ draft, setDraft, list }) {
       const cm = draft.chatModels || { privateDefault: {}, groupDefault: {}, privates: {}, groups: {} }
       const [open, setOpen] = useState(false)
@@ -4696,16 +4767,23 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
      * 关键约束：人物视图（PersonaMemory）只在 view==='person' 时挂载——不挂载即不拉人物列表。
      */
     function MemoryTab({ memoryView, setMemoryView, st, draft, setDraft, toast, go }) {
-      // 未传/异常值时归一化到默认「记忆条目」，避免两个页签都没有选中态
-      const view = memoryView === 'person' ? 'person' : 'entries'
+      // 归一化：老用户存的 entries/person 继续有效；没存过 / 异常值一律落默认「星图」
+      const view = memoryView === 'entries' || memoryView === 'person' ? memoryView : 'starmap'
+      const tab = (id, label) => h('button', {
+        key: id, type: 'button', role: 'tab',
+        'aria-selected': view === id,
+        className: cx(view === id && 'on'),
+        onClick: () => setMemoryView(id),
+      }, label)
       const seg = h('div', { className: 'ab-seg', role: 'tablist', 'aria-label': '记忆子视图' },
-        h('button', { type: 'button', role: 'tab', 'aria-selected': view === 'entries', className: cx(view === 'entries' && 'on'), onClick: () => setMemoryView('entries') }, '记忆条目'),
-        h('button', { type: 'button', role: 'tab', 'aria-selected': view === 'person', className: cx(view === 'person' && 'on'), onClick: () => setMemoryView('person') }, '人物'))
+        tab('starmap', '星图'), tab('entries', '记忆条目'), tab('person', '人物'))
       return h('div', null,
         h('div', { className: 'ab-flex', style: { margin: '0 0 12px' } }, seg),
         view === 'person'
           ? h(PersonaMemory, { toast })
-          : h(MemoryPage, { st, draft, setDraft, toast, go }))
+          : view === 'entries'
+            ? h(MemoryPage, { st, draft, setDraft, toast, go })
+            : h(StarMap, { toast }))
     }
 
     function MemoryPage({ st, draft, setDraft, toast }) {
@@ -4748,68 +4826,71 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       if (!memOn) return h(ModOff, { name: '记忆' })
       const chatlogRow = h(Row, { label: '聊天流水留多久', hint: '默认留 7 天，刚说过的话靠它想起来；0 = 整理完就删；-1 = 永久保留；其他数字 = 留这么多天。留得越久，本机存的聊天原文越多' }, f.num('memory.keepChatlogDays', { min: -1, max: 3650 }))
       const mergeRow = h(Row, { label: '整理时合并重复记忆', hint: '同一个人名下说的是一件事的条目并成一条。每个人多一次模型调用，默认关' }, f.sw('memory.mergeGroups'))
+      // 「更多设置（N 项）」折叠子卡：与聊天页同口径——可见区只放少数高频组行，其余全收进来
+      const more = (title, items) => (items.length ? h(Card, { title: (title || '更多设置') + '（' + items.length + ' 项）', collapsible: true, defaultOpen: false, className: 'ab-fold-sub' }, items) : null)
       return h('div', { className: 'ab-grid' },
-        h(Fold, { title: '记忆库', icon: '🗂',
-          summary: (stats ? stats.count : '–') + ' 条 · ' + (last ? '上次整理 ' + new Date(last.at).toLocaleDateString() : '还没整理过'),
-          right: f.sw('memory.enabled') },
-          h('p', { className: 'ab-desc', style: { marginTop: 0 } }, '长期记忆：ta聊天时自己记的、每天从聊天里整理出来的、写过的空间日记、你手动加的。每一轮回复前，ta会按对方正在说的话翻出最相关的几条。'),
+        // ===== 可见组行 ① 记忆开关与整理（4 项，行内自由排版）=====
+        h(Card, { title: '记忆开关与整理', right: f.sw('memory.enabled'),
+          desc: '长期记忆：ta聊天时自己记的、每天从聊天里整理出来的、写过的空间日记、你手动加的。每一轮回复前，ta会按对方正在说的话翻出最相关的几条。' },
           st.persona && !st.persona.claimPending ? h('p', { className: 'ab-muted ab-small', style: { marginTop: 0 } }, '这里是「' + (((st.personas || []).find((p) => p.id === st.persona.current) || {}).name || st.persona.current) + '」的记忆。每个人格的记忆分开存，切换人格后这里显示新人格的。') : null,
           h('div', { className: 'ab-grid ab-g4', style: { marginBottom: 12 } },
             h('div', { className: 'ab-card ab-stat' }, h('div', { className: 'n' }, stats ? stats.count : '–'), h('div', { className: 'l' }, '条长期记忆')),
             h('div', { className: 'ab-card ab-stat' }, h('div', { className: 'n' }, stats ? stats.auto : '–'), h('div', { className: 'l' }, '条来自每日整理' + (stats && stats.outdated ? '（另有 ' + stats.outdated + ' 条已过时）' : ''))),
             h('div', { className: 'ab-card ab-stat' }, h('div', { className: 'n', style: { fontSize: 16, paddingTop: 6 } }, last ? new Date(last.at).toLocaleString() : '还没整理过'), h('div', { className: 'l' }, '上次整理'))),
-          h(Row, { label: '每天自动整理两次', hint: '把临时记忆（聊天流水）提炼成长期记忆、相处经验和说话方式；第二次只处理新聊天，过了一天的流水整理完清空；各会话自己的上下文不受影响' },
-            f.sw('memory.dailyConsolidate'), h('span', { className: 'ab-muted' }, '每天'),
-            h('input', { className: 'ab-input sm', type: 'time', value: times[0] || '04:00', onChange: (e) => setTime(0, e.target.value) }),
-            h('span', { className: 'ab-muted' }, '和'),
-            h('input', { className: 'ab-input sm', type: 'time', value: times[1] || '16:00', onChange: (e) => setTime(1, e.target.value) }),
-            h(Btn, { small: true, onClick: async () => { toast('正在整理，可能要一两分钟…'); const r = await post('/memory/extract', {}); toast(r.message); load(); loadIns() } }, '现在整理一次')),
-          h(Row, { label: '自动记忆容量', hint: '默认 3000 条，可调高到 100000；聊天提炼、经历和日记按现有比例分配。手动记忆和分档事实不受此限制，过期与压缩规则照常生效。调低容量后，新记忆可能按原有规则替换旧的普通记忆。' },
-            h('input', {
-              className: 'ab-input sm', type: 'number', min: 3000, max: 100000, step: 1, 'aria-label': '自动记忆容量',
-              value: capacityInput === null ? capacityTotal : capacityInput,
-              onFocus: () => { capacityBeforeEdit.current = capacity },
-              onChange: (e) => {
-                const raw = e.target.value
-                setCapacityInput(raw)
-                const n = Number(raw)
-                if (raw !== '' && Number.isInteger(n) && n >= 3000 && n <= 100000) {
-                  setDraft(setPath(draft, 'memory.capacity', resizeMemoryCapacity(capacityBeforeEdit.current || capacity, n)))
-                }
-              },
-              onBlur: (e) => {
-                const n = Number(e.target.value)
-                if ((e.target.value === '' || !Number.isInteger(n) || n < 3000 || n > 100000) && capacityBeforeEdit.current) {
-                  setDraft(setPath(draft, 'memory.capacity', capacityBeforeEdit.current))
-                }
-                capacityBeforeEdit.current = null
-                setCapacityInput(null)
-              },
-            }), h('span', { className: 'ab-muted' }, '条')),
-          chatlogRow,
-          mergeRow,
-        ),
+          h('div', { className: 'ab-grp-row' },
+            h(Row, { label: '每天自动整理两次', hint: '把临时记忆（聊天流水）提炼成长期记忆、相处经验和说话方式；第二次只处理新聊天，过了一天的流水整理完清空；各会话自己的上下文不受影响' },
+              f.sw('memory.dailyConsolidate'), h('span', { className: 'ab-muted' }, '每天'),
+              h('input', { className: 'ab-input sm', type: 'time', value: times[0] || '04:00', onChange: (e) => setTime(0, e.target.value) }),
+              h('span', { className: 'ab-muted' }, '和'),
+              h('input', { className: 'ab-input sm', type: 'time', value: times[1] || '16:00', onChange: (e) => setTime(1, e.target.value) }),
+              h(Btn, { small: true, onClick: async () => { toast('正在整理，可能要一两分钟…'); const r = await post('/memory/extract', {}); toast(r.message); load(); loadIns() } }, '现在整理一次')),
+            h(Row, { label: '自动记忆容量', hint: '默认 3000 条，可调高到 100000；聊天提炼、经历和日记按现有比例分配。手动记忆和分档事实不受此限制，过期与压缩规则照常生效。' },
+              h('input', {
+                className: 'ab-input sm', type: 'number', min: 3000, max: 100000, step: 1, 'aria-label': '自动记忆容量',
+                value: capacityInput === null ? capacityTotal : capacityInput,
+                onFocus: () => { capacityBeforeEdit.current = capacity },
+                onChange: (e) => {
+                  const raw = e.target.value
+                  setCapacityInput(raw)
+                  const n = Number(raw)
+                  if (raw !== '' && Number.isInteger(n) && n >= 3000 && n <= 100000) {
+                    setDraft(setPath(draft, 'memory.capacity', resizeMemoryCapacity(capacityBeforeEdit.current || capacity, n)))
+                  }
+                },
+                onBlur: (e) => {
+                  const n = Number(e.target.value)
+                  if ((e.target.value === '' || !Number.isInteger(n) || n < 3000 || n > 100000) && capacityBeforeEdit.current) {
+                    setDraft(setPath(draft, 'memory.capacity', capacityBeforeEdit.current))
+                  }
+                  capacityBeforeEdit.current = null
+                  setCapacityInput(null)
+                },
+              }), h('span', { className: 'ab-muted' }, '条')),
+            chatlogRow,
+            mergeRow,
+          )),
 
-        h(StarMap, { toast, onChanged: () => load('') }),
-
-        h(Fold, { title: '每轮想起多少', icon: '💭',
-          summary: '直接 ' + (draft.memory.recallCount ?? 6) + ' 条 + 联想 ' + (draft.memory.assoc?.recall ?? 3) + ' 条' },
-          h(Row, { label: '每轮最多直接想起几条', hint: '「直接命中」的条数上限：按你说的关键词/意思直接对上的那几条。联想不占这个名额。' }, f.range('memory.recallCount', 0, 12, 1, (v) => v + ' 条')),
-          h(Row, { label: '每轮最多带几条联想', hint: '「间接想起」的条数上限：从上面那几条往外联想出来的。和直接想起各自独立，最后合在一起交给她。' }, f.range('memory.assoc.recall', 0, 8, 1, (v) => v + ' 条')),
-          h(Row, { label: '想起总数上限', hint: '直接 + 联想合起来的总条数；0 = 不额外限制（就等于「直接 N 条 + 联想 M 条」）。调小可以在上下文紧张时封顶。' },
-            f.num('memory.recallTotal', { min: 0, max: 24 }), h('span', { className: 'ab-muted' }, '条')),
+        // ===== 可见组行 ② 每轮想起多少（4 项核心参数，行内自由排版）=====
+        h(Card, { title: '每轮想起多少',
+          desc: '每轮回复前，ta 会按对方正在说的话翻出最相关的几条。这里是「想起多少」的调节。' },
+          h('div', { className: 'ab-grp-row' },
+            h(Row, { label: '每轮最多直接想起几条', hint: '「直接命中」的条数上限：按你说的关键词/意思直接对上的那几条。联想不占这个名额。' }, f.range('memory.recallCount', 0, 12, 1, (v) => v + ' 条')),
+            h(Row, { label: '每轮最多带几条联想', hint: '「间接想起」的条数上限：从上面那几条往外联想出来的。和直接想起各自独立，最后合在一起交给她。' }, f.range('memory.assoc.recall', 0, 8, 1, (v) => v + ' 条')),
+            h(Row, { label: '想起总数上限', hint: '直接 + 联想合起来的总条数；0 = 不额外限制（就等于「直接 N 条 + 联想 M 条」）。调小可以在上下文紧张时封顶。' },
+              f.num('memory.recallTotal', { min: 0, max: 24 }), h('span', { className: 'ab-muted' }, '条')),
+            h(Row, { label: '常驻记忆上限', hint: '每一轮都会带上的长期记忆最多多少字，超了从末尾截断。太小会显得忘事，太大会占上下文；默认 1200，范围 200~4000' }, f.num('memory.residentMaxChars', { min: 200, max: 4000 }), h('span', { className: 'ab-muted' }, '字')),
+          ),
           h('div', { className: 'ab-note' }, '当前效果：每轮最多直接想起 ' + (draft.memory.recallCount ?? 6) + ' 条 + 联想 ' + (draft.memory.assoc?.recall ?? 3) + ' 条' + ((Number(draft.memory.recallTotal) || 0) > 0 ? '，总数封顶 ' + draft.memory.recallTotal + ' 条' : '（不额外限制总数') + '。'),
-          // beta 侧新增：每轮常驻的字数上限 + 私人记忆优先
-          h(Row, { label: '常驻记忆上限', hint: '每一轮都会带上的长期记忆最多多少字，超了从末尾截断。太小会显得忘事，太大会占上下文；默认 1200，范围 200~4000' }, f.num('memory.residentMaxChars', { min: 200, max: 4000 }), h('span', { className: 'ab-muted' }, '字')),
-          h(Row, { label: '私人记忆优先', hint: '想起相关记忆时，如果没在问 B站、视频、最近看了什么，优先带关于某个人 / 她自己记的；问具体视频时仍先想起视频' }, f.sw('memory.preferPersonal')),
-          // 面板「记忆库」四组折叠状态的持久化由 /memory/ui 接口负责（beta 侧功能）
-          h(Row, { label: '召回最低相关度', hint: '默认 0，沿用原有检索门槛；调高会更挑剔，可能减少想起的线索。人物加分不会把无关内容抬过线，上一句和关联补充也要过线。' }, f.range('memory.recallMinRelevance', 0, 1, 0.05, (v) => Number(v).toFixed(2))),
-          h(Row, { label: '什么时候自动翻旧账' }, f.select('memory.recallMode', [{ value: 'always', label: '每轮都查' }, { value: 'trigger', label: '提到过去时才查' }])),
-          h(Row, { label: '翻旧账的触发词', hint: '一行一个，也可用逗号分隔；主动查记忆的工具不受影响' }, f.list('memory.recallTriggers')),
-          h(Row, { label: '记得刚才聊到哪', hint: '同一个人在不同平台接着聊时，也能记得刚才聊到哪。每段聊天多一次很短的模型调用。' }, f.sw('memory.shortTerm')),
-          h(Row, { label: '记住最近多久的聊天' }, f.num('memory.shortTermHours', { min: 0.1, step: 0.1 }), h('span', { className: 'ab-muted' }, '小时')),
-          h(Row, { label: '聊天停多久后整理' }, f.num('memory.shortTermIdleMinutes', { min: 0 }), h('span', { className: 'ab-muted' }, '分钟')),
-          h(Row, { label: '刚才的印象最多多少字' }, f.num('memory.shortTermChars', { min: 1 }), h('span', { className: 'ab-muted' }, '字')),
+          more('更多设置', [
+            h(Row, { key: 'pp', label: '私人记忆优先', hint: '想起相关记忆时，如果没在问 B站、视频、最近看了什么，优先带关于某个人 / 她自己记的；问具体视频时仍先想起视频' }, f.sw('memory.preferPersonal')),
+            h(Row, { key: 'rm', label: '召回最低相关度', hint: '默认 0，沿用原有检索门槛；调高会更挑剔，可能减少想起的线索。人物加分不会把无关内容抬过线，上一句和关联补充也要过线。' }, f.range('memory.recallMinRelevance', 0, 1, 0.05, (v) => Number(v).toFixed(2))),
+            h(Row, { key: 'md', label: '什么时候自动翻旧账' }, f.select('memory.recallMode', [{ value: 'always', label: '每轮都查' }, { value: 'trigger', label: '提到过去时才查' }])),
+            h(Row, { key: 'tg', label: '翻旧账的触发词', hint: '一行一个，也可用逗号分隔；主动查记忆的工具不受影响' }, f.list('memory.recallTriggers')),
+            h(Row, { key: 'st', label: '记得刚才聊到哪', hint: '同一个人在不同平台接着聊时，也能记得刚才聊到哪。每段聊天多一次很短的模型调用。' }, f.sw('memory.shortTerm')),
+            h(Row, { key: 'sh', label: '记住最近多久的聊天' }, f.num('memory.shortTermHours', { min: 0.1, step: 0.1 }), h('span', { className: 'ab-muted' }, '小时')),
+            h(Row, { key: 'si', label: '聊天停多久后整理' }, f.num('memory.shortTermIdleMinutes', { min: 0 }), h('span', { className: 'ab-muted' }, '分钟')),
+            h(Row, { key: 'sc', label: '刚才的印象最多多少字' }, f.num('memory.shortTermChars', { min: 1 }), h('span', { className: 'ab-muted' }, '字')),
+          ]),
         ),
 
         h(Fold, { title: '记忆联想与加深', icon: '🔗',
@@ -4823,31 +4904,37 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           ...(stats && stats.vectorLocal?.wanted && stats.vectorLocal.ready && stats.assoc === 0 && stats.count > 0 && draft.memory.assoc?.enabled !== false
             ? [h('div', { className: 'ab-note' }, '⏳ 还没有可用的关联：已经有 ' + stats.count + ' 条记忆，系统会在下一分钟自动建边。')]
             : []),
-          h(Row, { label: '记忆联想', hint: '已建 ' + (stats && stats.assoc ? stats.assoc : '–') + ' 条关联' + (stats && stats.assocAt ? '（' + new Date(stats.assocAt).toLocaleString() + ' 更新）' : '') }, f.sw('memory.assoc.enabled')),
-          h(Row, { label: '多条相似才算关联', hint: '余弦相似度门槛，越高连得越少越准；默认 45%' }, f.range('memory.assoc.minSim', 0.3, 0.9, 0.05, (v) => Math.round(v * 100) + '%')),
-          h(Row, { label: '每条最多连几个', hint: '度上限，防止一条记忆连到半个库' }, f.num('memory.assoc.limit', { min: 1, max: 8 }), h('span', { className: 'ab-muted' }, '条')),
-          h(Row, { label: '联想跳数', hint: '0 关、1 = A→B、2 = A→B→C（默认）、3 最多。再高就是套娃，已封顶。条数上限在上面「每轮最多带几条联想」里调' },
-            h('div', { className: 'ab-flex', style: { gap: 8 } }, ['0', '1', '2', '3'].map((v) => h('label', { key: v, className: 'ab-flex', style: { gap: 4, cursor: 'pointer', alignItems: 'center' } },
-              h('input', { type: 'radio', name: 'memory.assoc.hops', checked: String(draft.memory.assoc?.hops ?? 2) === v, onChange: () => setDraft(setPath(draft, 'memory.assoc.hops', Number(v))) }),
-              h('span', null, v === '0' ? '关' : v === '1' ? '1 跳' : v === '2' ? '2 跳' : '3 跳'))))),
-          h(Row, { label: '每多跳一次打几折', hint: '跳得越远越不可信，分数乘以这个系数；默认 55%' }, f.range('memory.assoc.hopDecay', 0.1, 1, 0.05, (v) => Math.round(v * 100) + '%')),
-          h(Row, { label: '记忆加深（行为驱动升档）', hint: '被想起来的次数和天数够了，重要程度慢慢涨、档位往上走' }, f.sw('memory.tierGrow.enabled')),
-          h(Row, { label: '联想带出的记忆也算想起', hint: '几次联想折算成「想起来一天」。2 = 联想两次算一次想起（比直接命中轻）；1 = 一样重' }, f.num('memory.tierGrow.assocPerHitDay', { min: 1, max: 20 }), h('span', { className: 'ab-muted' }, '次/天')),
-          h(Row, { label: '被反复想起后每天涨多少', hint: '默认 0.02/天；要到下面「最少想起几天」才会计入' }, f.num('memory.tierGrow.perDay', { min: 0, max: 0.2, step: 0.01 })),
-          h(Row, { label: '最少想起几天才开始算', hint: '默认 3 天；偶然想起一两次不该把她记的事推到重要档' }, f.num('memory.tierGrow.minHitDays', { min: 0, max: 60 }), h('span', { className: 'ab-muted' }, '天')),
-          h(Row, { label: '重要程度上限', hint: '自动加深的天花板，留一点空间给模型标过的重要记忆；默认 0.85' }, f.range('memory.tierGrow.cap', 0, 1, 0.05, (v) => Math.round(v * 100) + '%')),
-          h(Row, { label: '升到「一般」要想起几天、多重要', hint: '默认 5 天且 ≥ 60%' },
-            f.num('memory.tierGrow.tier2.hitDays', { min: 0, max: 365 }), h('span', { className: 'ab-muted' }, '天 /'),
-            f.range('memory.tierGrow.tier2.imp', 0, 1, 0.05, (v) => Math.round(v * 100) + '%')),
-          h(Row, { label: '升到「重要」要想起几天、多重要', hint: '默认 10 天且 ≥ 75%' },
-            f.num('memory.tierGrow.tier3.hitDays', { min: 0, max: 365 }), h('span', { className: 'ab-muted' }, '天 /'),
-            f.range('memory.tierGrow.tier3.imp', 0, 1, 0.05, (v) => Math.round(v * 100) + '%')),
-          h(AssocPreview, { toast }),
+          // 可见组行 ③ 只放 3 个最常用的：联想开关、相似门槛、联想跳数；其余进折叠
+          h('div', { className: 'ab-grp-row' },
+            h(Row, { label: '记忆联想', hint: '已建 ' + (stats && stats.assoc ? stats.assoc : '–') + ' 条关联' + (stats && stats.assocAt ? '（' + new Date(stats.assocAt).toLocaleString() + ' 更新）' : '') }, f.sw('memory.assoc.enabled')),
+            h(Row, { label: '多条相似才算关联', hint: '余弦相似度门槛，越高连得越少越准；默认 45%' }, f.range('memory.assoc.minSim', 0.3, 0.9, 0.05, (v) => Math.round(v * 100) + '%')),
+            h(Row, { label: '联想跳数', hint: '0 关、1 = A→B、2 = A→B→C（默认）、3 最多。再高就是套娃，已封顶。条数上限在上面「每轮最多带几条联想」里调' },
+              h('div', { className: 'ab-flex', style: { gap: 8 } }, ['0', '1', '2', '3'].map((v) => h('label', { key: v, className: 'ab-flex', style: { gap: 4, cursor: 'pointer', alignItems: 'center' } },
+                h('input', { type: 'radio', name: 'memory.assoc.hops', checked: String(draft.memory.assoc?.hops ?? 2) === v, onChange: () => setDraft(setPath(draft, 'memory.assoc.hops', Number(v))) }),
+                h('span', null, v === '0' ? '关' : v === '1' ? '1 跳' : v === '2' ? '2 跳' : '3 跳'))))),
+          ),
+          more('更多设置', [
+            h(Row, { key: 'al', label: '每条最多连几个', hint: '度上限，防止一条记忆连到半个库' }, f.num('memory.assoc.limit', { min: 1, max: 8 }), h('span', { className: 'ab-muted' }, '条')),
+            h(Row, { key: 'hd', label: '每多跳一次打几折', hint: '跳得越远越不可信，分数乘以这个系数；默认 55%' }, f.range('memory.assoc.hopDecay', 0.1, 1, 0.05, (v) => Math.round(v * 100) + '%')),
+            h(Row, { key: 'tg', label: '记忆加深（行为驱动升档）', hint: '被想起来的次数和天数够了，重要程度慢慢涨、档位往上走' }, f.sw('memory.tierGrow.enabled')),
+            h(Row, { key: 'ah', label: '联想带出的记忆也算想起', hint: '几次联想折算成「想起来一天」。2 = 联想两次算一次想起（比直接命中轻）；1 = 一样重' }, f.num('memory.tierGrow.assocPerHitDay', { min: 1, max: 20 }), h('span', { className: 'ab-muted' }, '次/天')),
+            h(Row, { key: 'pd', label: '被反复想起后每天涨多少', hint: '默认 0.02/天；要到下面「最少想起几天」才会计入' }, f.num('memory.tierGrow.perDay', { min: 0, max: 0.2, step: 0.01 })),
+            h(Row, { key: 'mh', label: '最少想起几天才开始算', hint: '默认 3 天；偶然想起一两次不该把她记的事推到重要档' }, f.num('memory.tierGrow.minHitDays', { min: 0, max: 60 }), h('span', { className: 'ab-muted' }, '天')),
+            h(Row, { key: 'cp', label: '重要程度上限', hint: '自动加深的天花板，留一点空间给模型标过的重要记忆；默认 0.85' }, f.range('memory.tierGrow.cap', 0, 1, 0.05, (v) => Math.round(v * 100) + '%')),
+            h(Row, { key: 't2', label: '升到「一般」要想起几天、多重要', hint: '默认 5 天且 ≥ 60%' },
+              f.num('memory.tierGrow.tier2.hitDays', { min: 0, max: 365 }), h('span', { className: 'ab-muted' }, '天 /'),
+              f.range('memory.tierGrow.tier2.imp', 0, 1, 0.05, (v) => Math.round(v * 100) + '%')),
+            h(Row, { key: 't3', label: '升到「重要」要想起几天、多重要', hint: '默认 10 天且 ≥ 75%' },
+              f.num('memory.tierGrow.tier3.hitDays', { min: 0, max: 365 }), h('span', { className: 'ab-muted' }, '天 /'),
+              f.range('memory.tierGrow.tier3.imp', 0, 1, 0.05, (v) => Math.round(v * 100) + '%')),
+            h(AssocPreview, { key: 'ap', toast }),
+          ]),
         ),
 
-        // 低频参数统一收进「更多设置」折叠卡（defaultOpen=false：默认不展开，展开区才挂载控件）
-        h(Card, { title: '更多设置（3 项）', desc: '向量检索、重排候选、分层记忆与遗忘：都是调优用的低频参数，不改也能正常用。', collapsible: true, defaultOpen: false },
-        h(Fold, { title: '向量检索（实验性）', icon: '🧭',
+        // 低频调优参数统一收进「更多设置」折叠卡（defaultOpen=false：默认不展开，展开区才挂载控件）
+        // 内部仍按 Fold 分组（向量检索 / 重排 / 分层遗忘），保留各组的运行成本与依赖提示文案
+        more('高级调优', [
+        h(Fold, { key: 'vec', title: '向量检索（实验性）', icon: '🧭',
           summary: stats ? '已同步 ' + (stats.vector || 0) + ' / ' + (stats.count || 0) + ' 条' : '' },
           h('div', { className: 'ab-note' }, '默认关闭。打开后可以按意思找记忆：推荐用自带的本地小模型（纯离线、不联网、不花钱）；也可以改成自己的在线服务，那时会把记忆文字和查询文字发给你填的地址。'),
           h(Row, { label: '向量检索（实验性）', hint: '补充按意思找记忆；已同步 ' + (stats ? stats.vector || 0 : '–') + ' 条（可刷新页面查看）' }, f.sw('memory.vector.enabled')),
@@ -4945,16 +5032,16 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h('div', { className: 'ab-muted ab-small' }, '重排只处理已经通过群聊/人物权限过滤的候选，不会看到不该带出的记忆。'),
         ),
 
-        h(Fold, { title: '人物与群印象', icon: '👤' },
-          // beta 侧新增：只给有交集的人建人物记忆，路过群友不占位置
-          h(Row, { label: '只记住有交集的人', hint: '只给私聊过、在群里 @ 她、回复她或被她回复过的人，以及 QQ 好友和白名单朋友建立人物记忆。路过群友不占位置，群里的公共事情照常记；已有画像保留。' }, f.sw('memory.profileOnlyAcquainted')),
-          h(Row, { label: '讨厌的人说话时不接的几率', hint: '消息仍会看到和记住；0% 表示照常回复，主人和一起说话的其他人不受影响' }, f.range('memory.dislikeSilence', 0, 1, 0.05, (v) => Math.round(v * 100) + '%')),
-          h(Row, { label: '每项人物印象最多多少字' }, f.num('memory.profileFieldChars', { min: 0 })),
-          h(Row, { label: '群里最多带几个人的画像' }, f.num('memory.profilePeople', { min: 0 })),
-          h(Row, { label: '人物画像总字数上限' }, f.num('memory.profileChars', { min: 0 })),
-          h(Row, { label: '记住群印象', hint: '只在对应的群里带上' }, f.sw('memory.chatImpression')),
-          h(Row, { label: '群印象字数上限' }, f.num('memory.chatImpressionChars', { min: 0 })),
-        ),
+        // 人物与群印象：低频画像开关与字数上限，收进折叠（保留 7 项）
+        more('人物与群印象', [
+          h(Row, { key: 'oa', label: '只记住有交集的人', hint: '只给私聊过、在群里 @ 她、回复她或被她回复过的人，以及 QQ 好友和白名单朋友建立人物记忆。路过群友不占位置，群里的公共事情照常记；已有画像保留。' }, f.sw('memory.profileOnlyAcquainted')),
+          h(Row, { key: 'ds', label: '讨厌的人说话时不接的几率', hint: '消息仍会看到和记住；0% 表示照常回复，主人和一起说话的其他人不受影响' }, f.range('memory.dislikeSilence', 0, 1, 0.05, (v) => Math.round(v * 100) + '%')),
+          h(Row, { key: 'fc', label: '每项人物印象最多多少字' }, f.num('memory.profileFieldChars', { min: 0 })),
+          h(Row, { key: 'pp', label: '群里最多带几个人的画像' }, f.num('memory.profilePeople', { min: 0 })),
+          h(Row, { key: 'pc', label: '人物画像总字数上限' }, f.num('memory.profileChars', { min: 0 })),
+          h(Row, { key: 'ci', label: '记住群印象', hint: '只在对应的群里带上' }, f.sw('memory.chatImpression')),
+          h(Row, { key: 'cc', label: '群印象字数上限' }, f.num('memory.chatImpressionChars', { min: 0 })),
+        ]),
 
         h(Fold, { title: '分层记忆与遗忘', icon: '📚' },
           h(Row, { label: '压缩旧聊天和记忆', hint: '原话到期前先压成梗概；失败或预算不足时保留原文' }, f.sw('memory.gistEnabled')),
@@ -4975,7 +5062,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h(Row, { label: '多久以前的事开始浓缩', hint: '这些天以前的琐碎记忆才会被概括；最近的事先留着具体细节。默认 14 天' }, f.num('memory.compressAfterDays', { min: 1, max: 365 }), h('span', { className: 'ab-muted' }, '天')),
           h(Row, { label: '私聊时想起别处的话', hint: '和你私聊时，带上她最近 24 小时在别的聊天里说过的话，每轮多占约 300 字。只进你的私聊，别处一律不带。默认关。' }, f.sw('memory.crossContext')),
         ),
-        ),
+        ]),
 
         h(Fold, { title: '手动加一条', icon: '✍️', summary: '你想让她一定记住的事' },
           h('div', { className: 'ab-flex', style: { gap: 8, flexWrap: 'wrap' } },
@@ -9460,8 +9547,14 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const [voiceView, setVoiceView] = useState(() => { try { return localStorage.getItem('aurabot.voice-view') === 'listen' ? 'listen' : 'send' } catch (e) { return 'send' } })
       // 切换子视图时记住选择：下次进来还停在同一视图
       const pickVoiceView = (v) => { setVoiceView(v); try { localStorage.setItem('aurabot.voice-view', v) } catch (e) {} }
-      // 记忆页子视图：'entries' 记忆条目 / 'person' 人物（旧「人物记忆」页迁入 person）
-      const [memoryView, setMemoryView] = useState(() => { try { return localStorage.getItem('aurabot.memory-view') === 'person' ? 'person' : 'entries' } catch (e) { return 'entries' } })
+      // 记忆页子视图：'starmap' 星图（默认）/ 'entries' 记忆条目 / 'person' 人物。
+      // 老用户已存的 entries/person 继续有效；没存过或值异常 → 默认星图。
+      const [memoryView, setMemoryView] = useState(() => {
+        try {
+          const v = localStorage.getItem('aurabot.memory-view')
+          return v === 'entries' || v === 'person' ? v : 'starmap'
+        } catch (e) { return 'starmap' }
+      })
       const pickMemoryView = (v) => { setMemoryView(v); try { localStorage.setItem('aurabot.memory-view', v) } catch (e) {} }
       // 内容平台子视图：bili / douyin / heybox（旧三个独立页签迁入这里）
       const [contentView, setContentView] = useState(() => { try { return localStorage.getItem('aurabot.content-view') || '' } catch (e) { return '' } })
@@ -9839,7 +9932,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         stickers: Stickers, imagegen: ImageGen, video: Video, diary: Diary, speakup: SpeakUp, autotelic: Autotelic, pet: PetPanel, mood: Mood, memory: MemoryTab, song: Song, content: ContentTab, local: LocalApi, browser: Browser, security: Security, market: Market, modules: Modules, logs: Logs, about: About, backup: Backup,
       }[curTab.id] || Overview
       // 哪些标签有没保存的改动
-      const TAB_KEYS = { character: ['personaLook'], connect: ['snowluma', 'botQQ'], access: ['ownerQQ', 'ownerName', 'ownerLevel', 'approvalNotify', 'approvalViaQQ', 'qqApi', 'longTasks', 'profilePerms', 'subagentBackground'], group: ['group', 'merge', 'titleFilter', 'memberFilter', 'chat'], model: ['model', 'chatModels'], voice: ['voice'], stickers: ['stickers'], imagegen: ['imageGen'], video: ['video', 'local'], diary: ['diary', 'qzoneSocial'], speakup: ['speakUp', 'ext'], autotelic: [], pet: [], mood: ['mood', 'memory'], song: ['song'], content: ['bili', 'douyin', 'heybox'], local: ['local'], browser: ['browser'], security: ['security', 'update'] }
+      // group 键补上 files/forward：整理合并转发/发文件是聊天页的独立配置域，不补则改动不显示未保存标记
+      const TAB_KEYS = { character: ['personaLook'], connect: ['snowluma', 'botQQ'], access: ['ownerQQ', 'ownerName', 'ownerLevel', 'approvalNotify', 'approvalViaQQ', 'qqApi', 'longTasks', 'profilePerms', 'subagentBackground'], group: ['group', 'merge', 'titleFilter', 'memberFilter', 'chat', 'files', 'forward'], model: ['model', 'chatModels'], voice: ['voice'], stickers: ['stickers'], imagegen: ['imageGen'], video: ['video', 'local'], diary: ['diary', 'qzoneSocial'], speakup: ['speakUp', 'ext'], autotelic: [], pet: [], mood: ['mood', 'memory'], song: ['song'], content: ['bili', 'douyin', 'heybox'], local: ['local'], browser: ['browser'], security: ['security', 'update'] }
       const tabDirty = (id) => {
         if (!dirty) return false
         // 对基线（/panel/config 快照）比对，不对比 st.config——pulse 只更新展示，不代表草稿基线
