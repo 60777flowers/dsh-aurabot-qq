@@ -3369,7 +3369,9 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         let ok = 0
         const errs = []
         for (const file of list) {
-          if (file.size > 5 * 1024 * 1024) { errs.push(file.name + ' 超过 5MB'); continue }
+          // 跟宿主侧 src/features/stickers.js 的 PANEL_UPLOAD_MAX_BYTES 对齐：
+          // 那条路是 JSON + base64（体积 ×1.33），所以比 QQ 侧收表情的那一档小。
+          if (file.size > 20 * 1024 * 1024) { errs.push(file.name + ' 超过 20MB'); continue }
           try {
             const data = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = () => rej(new Error('读不了这个文件')); fr.readAsDataURL(file) })
             const r = await post('/sticker/upload', { data, name: list.length === 1 ? newName.trim().slice(0, 12) : '' })
