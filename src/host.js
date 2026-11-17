@@ -1179,9 +1179,10 @@ export function apply(ctx) {
     try {
       const d = event?.data || {}
       const sid = String(session?.id || '')
-      const callId = String(d.callId || '')
-      if (!sid || !callId) return
+      if (!sid) return
       if (event.type === 'tool/call' && d.name === 'ask_user_question') {
+        const callId = String(d.callId || '')
+        if (!callId) return
         let qs = []
         try { qs = JSON.parse(String(d.arguments || '{}')).questions || [] } catch (error) {}
         if (!Array.isArray(qs) || !qs.length) return
@@ -1192,9 +1193,13 @@ export function apply(ctx) {
         const id = `q:${sid}:${callId}`
         const queued = noticeRelay?.announce('question', { id, sessionId: sid, title, questions: qs })
         log.info(`提问上报：${qs.length} 个问题（${title}）→ ${queued ? '已入队' : (noticeRelay?.enabled('question', sid) ? '重复/已在队列' : '被开关挡掉')}`)
-      } else if (event.type === 'tool/result' && d.toolCallId) {
-        // 问题答完 / 超时跳过：把还没推出去的那条撤掉
-        noticeRelay?.cancel(`q:${sid}:${d.toolCallId}`)
+      } else if (event.type === 'tool/result') {
+        // 问题答完 / 超时跳过：把还没推出去的那条撤掉。
+        // 两处旧写法都取不到 id，导致这条取消路径从来没跑过（30 秒内答完照样推过期提醒）：
+        //   1. 函数开头要求 d.callId，但 tool/result 的 data 只有 turn/step/message/meta；
+        //   2. 这里读 d.toolCallId，实际字段在 d.message.toolCallId（本机 1369 条实测）。
+        const tcid = String(d.message?.toolCallId || d.toolCallId || '')
+        if (tcid) noticeRelay?.cancel(`q:${sid}:${tcid}`)
       }
     } catch (error) {
       log.debug?.('提问上报失败：', error.message)
