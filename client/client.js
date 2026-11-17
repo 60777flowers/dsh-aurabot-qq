@@ -7776,7 +7776,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const [shotsTotal, setShotsTotal] = useState(0)
       const [shotsHasMore, setShotsHasMore] = useState(false)
       const [shotsBusy, setShotsBusy] = useState(false)
-      const load = () => get('/bili/state').then(setS).catch((e) => toast(e.message, 'err'))
+      const load = () => get('/bili/state').then((r) => { if (r && Array.isArray(r.history)) setS(r); else if (r && r.ok === false) toast(r.message || '读取 B 站状态失败', 'err') }).catch((e) => toast(e.message, 'err'))
       const loadShots = (append = false, force = false) => {
         const offset = append && shots ? shots.length : 0
         return getCached('/bili/shots?limit=25&offset=' + offset, force).then((r) => {
