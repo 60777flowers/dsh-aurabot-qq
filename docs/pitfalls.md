@@ -45,3 +45,15 @@ ode --test "test/replay/**/*.test.js"。
 - 现象：qa-tests 预写 test/panel-stage3.test.js 时 L37 中文引号被截断（`'…要跟着改?)`），整文件 Invalid or unexpected token，实现成员差点把它当实现 bug 排查。
 - 原因：编辑器/工具对含中文标点的行做流式写入时截断（与 MEMORY.md §3.12 pwsh Get-Content/Set-Content 转写毁 UTF-8 同族）。
 - 解决：编辑工具统一用 read/edit/write 而非 pwsh 转写；文件损坏先 `node --check` 分清「语法坏」还是「逻辑坏」，语法坏的先修语法再谈对齐。qa 已在该测试文件头加禁用 pwsh 转写提醒注释。
+
+## 2026-11-17 「三方合并 0 冲突」不等于能跑——`git merge-file` 把本机独有的 import 也带了过来
+
+- **现象**：把 `local/runtime` 上的心情合并改动移植到基于 `origin/beta` 的分支时，用 `git merge-file` 三方合并 6 个文件，实测**全部 0 冲突块**，看着很干净。结果一跑测试全炸：`Cannot find module 'src/gateway/address.js'`。
+- **原因**：`git merge-file` 做的是**文本**层面的三方合并，"0 冲突"只说明两边没改到同一行。而 `local/runtime` 比 `origin/beta` 多了 184 个提交（多平台网关/身份库等），`config.js` 里那行 `import { normalizeChatId } from '../gateway/address.js'` 在 beta 是**整行都不存在**的——三方合并把它当"本机一侧新增"原样保留，于是移植结果引用了 beta 根本没有的目录。合并没冲突，但产物跑不起来。
+- **解决**：**以目标分支的文件为基底，再把本次改动逐条 edit 上去**，不要用三方合并整个文件。判断依据：先 `git rev-parse HEAD:<f>` 与 `origin/beta:<f>` 比对，若 HEAD 版本与 beta 相同（说明本地那些提交没碰过这文件），才可以整文件移植；不同就必须逐条套。
+- **教训**：
+  1. **"能自动合并"和"能运行"是两件事**。移植到另一条线时，冲突块数量不是可行性指标，`import` 的目标文件在目标分支是否存在才是。
+  2. 移植后**必须真跑测试**，而不是看 `git diff --stat` 干净就放心。
+  3. 判断某文件能否整拷，用 `git rev-parse <ref>:<file>` 比哈希，比 `git diff` 看内容更快也更准。
+- **涉及文件/命令**：`git merge-file -p <local> <base> <other>`、`git rev-parse origin/beta:<file>`；受害文件 `src/core/config.js`（多平台 import）、`src/purpose/module.js`（identity/parseChatId）。
+
