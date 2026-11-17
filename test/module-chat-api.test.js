@@ -118,7 +118,8 @@ test('已确认的 OneBot 送达使用稳定来源 ID，模拟或失败不会产
   assert.equal(s.deliveries[1].originId, first.originId)
   assert.ok(Object.isFrozen(first))
   assert.equal('text' in first, false)
-  await s.hub.capture(() => s.hub.sendSegments(CHAT, message, '模拟'), { simulate: true })
+  const captured = await s.hub.capture(() => s.hub.sendSegments(CHAT, message, '模拟'), { simulate: true })
+  assert.equal(captured.sent.closed, true, '模拟结束后捕获上下文必须作废')
   s.cfg.dryRun = true
   await s.hub.sendSegments(CHAT, message, '不发送')
   s.cfg.dryRun = false

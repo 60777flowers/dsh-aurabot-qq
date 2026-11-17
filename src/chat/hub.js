@@ -81,6 +81,11 @@ const sessionKey = (id) => {
  */
 // 模拟测试：这里面发出去的消息只记下来，不真发
 const captureStore = new AsyncLocalStorage()
+// 只承认仍在进行的模拟调用：AsyncLocalStorage 会被宿主长生命周期异步链继承。
+const activeCapture = () => {
+  const cap = captureStore.getStore()
+  return cap && !cap.closed ? cap : null
+}
 // 模拟测试专用：capture 只拦发送还不够，模块自己写流水时也要拦住。
 const simulationStore = new AsyncLocalStorage()
 const failStore = new AsyncLocalStorage() // deliver 这一次里发失败的原因，好让调用方如实告诉她
@@ -1291,7 +1296,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       message = capped.message
     }
     if (!message.length || disposed || !replyCurrent() || (isCurrent && !isCurrent())) return settleOutboundFailed(verdict)
-    const cap = captureStore.getStore()
+    const cap = activeCapture()
     if (cap) {
       cap.push({ chatId, note, message })
       recordDeliveryTypes(chatId, message)
@@ -1526,7 +1531,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     // 文件显示名也会出现在 QQ 文件卡片上：和正文一样过一遍出站清洗，避免工具文字/提示词借文件名露出。
     const label = cleanOutboundText(fileLabel(name, src), cleaningFor(chatId)).trim() || '文件'
     // 模拟测试：只记下来，不真发
-    const cap = captureStore.getStore()
+    const cap = activeCapture()
     if (cap) {
       cap.push({ chatId, note: `[文件] ${label}`, message: [{ type: 'file', data: { file: src, name: label } }] })
       return { message_id: 'sim-' + cap.length }
@@ -3865,8 +3870,13 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
   async function capture(fn, { simulate = false } = {}) {
     const sent = []
     const run = () => captureStore.run(sent, fn)
-    const result = simulate ? await simulationStore.run(true, run) : await run()
-    return { result, sent }
+    try {
+      const result = simulate ? await simulationStore.run(true, run) : await run()
+      return { result, sent }
+    } finally {
+      // 模拟结束立刻作废；继承到定时任务/后台链上的旧上下文不能吞真实发送。
+      Object.defineProperty(sent, 'closed', { value: true, enumerable: false })
+    }
   }
   /** 模拟测试：假装这个会话这一轮是谁在说话（工具里的「主人才能用」靠它判断）。 */
   function simulateTurn(sessionId, senders) {
