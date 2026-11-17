@@ -5000,6 +5000,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
                 h(Btn, { small: true, onClick: loadMore }, '加载更多（已显示 ' + mem.length + ' / ' + memTotal + '）')) : null)),
         h(RecallLog, null),
         h(MemoryImport, { toast, onDone: () => load() }),
+        h(MemoryInherit, { st, toast, onDone: () => load() }),
       )
     }
 
@@ -6979,6 +6980,72 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             h('div', { className: 'ab-flex', style: { marginTop: 8 } },
               h(Btn, { small: true, kind: 'primary', onClick: commit, disabled: !Object.values(pick).some(Boolean) }, '存进记忆库（' + Object.values(pick).filter(Boolean).length + ' 条）'),
               h(Btn, { small: true, kind: 'ghost', onClick: () => setCands(null) }, '取消')))) : null)
+    }
+
+    // 从另一个人格继承记忆：先看要整理多少、确认会花 token，再一批批交给模型改人称（进度按批走，失败只重试那一批）；
+    // 预览勾选后存进当前人格。样式照「导入旧档案」，进度条照表情包「AI 起名中」。
+    const INHERIT_OPS = { keep: '原样', rewrite: '改写', drop: '丢掉', missing: '模型没处理' }
+    function MemoryInherit({ st, toast, onDone }) {
+      const current = st.persona?.current || st.config?.persona?.current
+      const others = (st.personas || []).filter((p) => p.id !== current)
+      const [from, setFrom] = useState(others[0]?.id || '')
+      const [busy, setBusy] = useState(false)
+      const [job, setJob] = useState(null) // 整理中：{ plan, index, acc, token, label, error }
+      const [preview, setPreview] = useState(null) // 预览：{ plan, list: [{ id, label, note, text, op, next, reason, pick }] }
+      if (!others.length || st.persona?.claimPending) return null
+      const run = async (plan, start, acc, token) => {
+        for (let i = start; i < plan.batches.length; i++) {
+          const b = plan.batches[i]
+          const label = b.label + (b.parts > 1 ? ' ' + b.part + '/' + b.parts : '')
+          setJob({ plan, index: i, acc, token, label })
+          const r = await post('/memory/inherit/batch', { from: plan.from, to: plan.to, index: i })
+          if (token.stop) return
+          if (!r.ok) return setJob({ plan, index: i, acc, token, label, error: r.message })
+          acc = [...acc, ...r.results.map((x) => ({ ...x, label: b.label, pick: x.op === 'keep' || x.op === 'rewrite' }))]
+        }
+        setJob(null)
+        setPreview({ plan, list: acc })
+      }
+      const start = async () => {
+        setBusy(true)
+        const plan = await post('/memory/inherit/plan', { from })
+        setBusy(false)
+        if (!plan.ok) return toast(plan.message, 'err')
+        const cost = plan.calls ? '要调用模型 ' + plan.calls + ' 次，粗估约 ' + Math.max(1, Math.round(plan.tokens / 1000)) + 'k tokens。' : '这次不用调用模型。'
+        if (!confirm('把「' + plan.fromName + '」的 ' + plan.records + ' 条记忆导入给「' + plan.toName + '」？\n人称要改成「' + plan.toName + '」自己，会调用模型逐条整理，会消耗 token：' + cost + '\n「' + plan.fromName + '」最近一次整理之后的聊天还没变成记忆，不会被继承。')) return
+        setPreview(null)
+        return run(plan, 0, [], { stop: false })
+      }
+      const set = (i, patch) => setPreview({ ...preview, list: preview.list.map((x, j) => (j === i ? { ...x, ...patch } : x)) })
+      const picked = preview ? preview.list.filter((x) => x.pick && String(x.next || '').trim()).length : 0
+      const commit = async () => {
+        const items = preview.list.filter((x) => x.pick && String(x.next || '').trim()).map((x) => ({ id: x.id, text: x.next }))
+        const r = await post('/memory/inherit/commit', { from: preview.plan.from, to: preview.plan.to, items })
+        toast(r.message, r.ok ? 'ok' : 'err')
+        if (r.ok) { setPreview(null); onDone() }
+      }
+      return h(Card, { title: '从其他人格导入', desc: '把另一个人格的记忆继承过来，当成现在这个人格自己的经历、关系和约定。模型会逐条把指代旧人格的说法改成现在这个人格自己，丢掉旧人格自己的设定（名字、口癖这些）；你勾选以后再存进记忆库。旧人格的记忆不会被改动。' },
+        h('div', { className: 'ab-flex' },
+          h('select', { className: 'ab-select', 'aria-label': '从哪个人格导入', value: from, disabled: !!job, onChange: (e) => setFrom(e.target.value) },
+            others.map((p) => h('option', { key: p.id, value: p.id }, p.name))),
+          h(Btn, { small: true, kind: 'primary', disabled: busy || !!job || !from, onClick: start }, busy ? h(Fragment, null, h('i', { className: 'ab-spin' }), ' 正在计算…') : '从这个人格导入')),
+        job ? h('div', { style: { marginTop: 10 } },
+          h('div', { className: 'ab-small' }, job.error ? job.label + '：' + job.error : '整理中 ' + job.label + '（' + (job.index + 1) + ' / ' + job.plan.batches.length + '）'),
+          job.error ? null : h('div', { className: 'ab-progress' }, h('i', { style: { width: Math.round((job.index / job.plan.batches.length) * 100) + '%' } })),
+          h('div', { className: 'ab-flex', style: { marginTop: 8 } },
+            job.error ? h(Btn, { small: true, kind: 'primary', onClick: () => run(job.plan, job.index, job.acc, job.token) }, '重试这一批') : null,
+            h(Btn, { small: true, kind: 'ghost', onClick: () => { job.token.stop = true; setJob(null) } }, '取消'))) : null,
+        preview ? h('div', { style: { marginTop: 10 } },
+          [...new Set(preview.list.map((x) => x.label))].map((label) => h('div', { key: label, style: { marginTop: 8 } },
+            h('div', { className: 'ab-small', style: { color: 'var(--ab-sub)', marginBottom: 4 } }, label),
+            h('div', { className: 'ab-list' }, preview.list.map((x, i) => (x.label !== label ? null : h('div', { key: x.id, className: 'ab-li' },
+              h('input', { type: 'checkbox', checked: !!x.pick, 'aria-label': '存这一条', onChange: (e) => set(i, { pick: e.target.checked }), style: { accentColor: 'var(--ab-sea)', marginTop: 3 } }),
+              h('div', { className: 'body' },
+                h('input', { className: 'ab-input', value: x.next, 'aria-label': '存进去的文字', onChange: (e) => set(i, { next: e.target.value }) }),
+                h('div', { className: 'ab-muted ab-small', style: { marginTop: 2 } }, (x.note ? x.note + '｜' : '') + INHERIT_OPS[x.op] + (x.next !== x.text ? '｜原文：' + x.text : '') + (x.reason ? '｜' + x.reason : ''))))))))),
+          h('div', { className: 'ab-flex', style: { marginTop: 8 } },
+            h(Btn, { small: true, kind: 'primary', onClick: commit, disabled: !picked }, '存进记忆库（' + picked + ' 条）'),
+            h(Btn, { small: true, kind: 'ghost', onClick: () => setPreview(null) }, '取消'))) : null)
     }
 
     function StyleEditor({ k, label, list, toast, onSaved }) {
