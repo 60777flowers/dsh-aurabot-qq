@@ -64,7 +64,9 @@ export default {
       use: (id) => api.use(id),
       personaText: () => { try { return api.core.personas?.current?.() || '' } catch { return '' } },
     })
-    api.every(60_000, () => purpose.tick(), '目的引擎')
+    // P4：接住原 speakup 壳的「网关未连接不空跑」守卫（scheduler-gateway-idle.test.js 锁的行为）——
+    // 网关没连上时 tick 跑了只会白白触发请求和日志（小闹钟触发也走 pushToSession → 网关）。
+    api.every(60_000, () => (api.core.onebot?.state && api.core.onebot.state !== 'connected' ? undefined : purpose.tick()), '目的引擎')
     // ---------- 她的小闹钟（P2b 自 speakup 迁入，Q2 拍板） ----------
     // 工具常驻在主人私聊里；「小闹钟」开关（speakUp.reminderEnabled，键冻结 Q3 口径）关着时
     // 执行层如实拒绝。数据兼容读旧 speakup-reminders.json、新写 purpose/reminders.json。
