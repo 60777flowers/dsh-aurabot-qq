@@ -7775,22 +7775,34 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
      */
     function ContentTab({ contentView, setContentView, boot, st, draft, setDraft, toast }) {
       const mods = (boot && boot.modules) || (st && st.modules) || []
-      const avail = CONTENT_PLATFORMS.filter((p) => mods.some((m) => m && m.id === p.mod && m.running))
-      const usable = avail.length ? avail.map((p) => p.id) : CONTENT_PLATFORMS.map((p) => p.id)
-      const picked = usable.includes(contentView) ? contentView : usable[0]
+      // 全部平台都可点（模块没在跑的也能点进标签）；running 只用来决定默认选中哪个。
+      const all = CONTENT_PLATFORMS.map((p) => p.id)
+      const defaultId = (CONTENT_PLATFORMS.find((p) => mods.some((m) => m && m.id === p.mod && m.running)) || CONTENT_PLATFORMS[0]).id
+      // 归一化：上次选择合法就沿用，否则回落默认。这里不能用「可用集合」判断——
+      // 否则模块没跑的平台一点就被弹回，表现为「按钮点不动」。
+      const picked = all.includes(contentView) ? contentView : defaultId
       const seg = h('div', { className: 'ab-seg', role: 'tablist', 'aria-label': '内容平台子视图' },
         CONTENT_PLATFORMS.map((p) => h('button', {
           key: p.id, type: 'button', role: 'tab',
           'aria-selected': picked === p.id,
           className: cx(picked === p.id && 'on'),
-          // 模块没在跑的也允许点进去看设置/登录状态，只是默认不选它
           onClick: () => setContentView(p.id),
         }, p.label)))
+      const runningOf = (id) => {
+        const p = CONTENT_PLATFORMS.find((x) => x.id === id)
+        return Boolean(p && mods.some((m) => m && m.id === p.mod && m.running))
+      }
+      // 模块没在跑时不要挂载子组件：它的 load() 会打到不存在的路由，拿回 {ok:false}
+      // 这种没有 history 的残对象，渲染层一取 .length 就整页崩（「这一页出错了」）。
       return h('div', null,
         h('div', { className: 'ab-flex', style: { margin: '0 0 12px' } }, seg),
-        picked === 'bili' ? h(Bili, { draft, setDraft, toast })
-          : picked === 'douyin' ? h(Douyin, { draft, setDraft, toast })
-            : h(Heybox, { draft, setDraft, toast }))
+        !runningOf(picked)
+          ? h(Card, { title: '这个平台还没启用' },
+              h('div', { className: 'ab-note' }, '对应的模块没在跑，所以看不到它的设置和登录状态。'),
+              h('div', { className: 'ab-small ab-muted', style: { marginTop: 8 } }, '到「模块」页把它启动（或装上），回来再点这个标签就行。'))
+          : picked === 'bili' ? h(Bili, { draft, setDraft, toast })
+            : picked === 'douyin' ? h(Douyin, { draft, setDraft, toast })
+              : h(Heybox, { draft, setDraft, toast }))
     }
 
     const BILI_KIND = { watch: '看了', comment: '评论', reply: '回复', share: '分享给你', shot: '发你截图', error: '没成功' }
@@ -7883,7 +7895,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h(Btn, { small: true, kind: 'primary', onClick: act('/bili/run', 'run'), disabled: !!busy }, busy === 'run' ? h(Fragment, null, h('i', { className: 'ab-spin' }), ' 正在刷…') : '现在刷一轮')) },
           s && s.pauseReason ? h('div', { className: 'ab-note warn', style: { marginBottom: 8 } }, '今天先不发评论和回复了：' + s.pauseReason + '。登录失效请保存新 Cookie 后点「检查登录」；验证、风控或频率限制不会因登录成功而解除。') : null,
           s ? h('div', { className: 'ab-muted ab-small', style: { marginBottom: 8 } }, '今天自动刷了 ' + s.runs + ' 轮 · 评论 ' + s.comments + ' 条 · 回复 ' + s.replies + ' 条' + (s.lastRun ? ' · 上次 ' + timeAgo(s.lastRun) : '') + '（手动刷不占次数）') : null,
-          !s ? h(Empty, { icon: '⏳', text: '加载中…' }) : s.history.length === 0 ? h(Empty, { icon: '📺', text: '还没刷过。点「现在刷一轮」试试。' }) :
+          !s ? h(Empty, { icon: '⏳', text: '加载中…' }) : !Array.isArray(s.history) || s.history.length === 0 ? h(Empty, { icon: '📺', text: '还没刷过。点「现在刷一轮」试试。' }) :
             h('div', { className: 'ab-list' }, s.history.map((x, i) => h('div', { key: i, className: 'ab-li' },
               h('div', { className: 'meta' }, timeAgo(x.at), h('br'), BILI_KIND[x.kind] || x.kind),
               h('div', { className: 'body' }, x.bvid ? h('a', { href: 'https://www.bilibili.com/video/' + x.bvid, target: '_blank', rel: 'noreferrer' }, '《' + x.title + '》') : h('b', null, '《' + x.title + '》'), x.text ? h('div', { className: 'ab-muted' }, x.text) : null)))),
@@ -8063,7 +8075,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             (s.newAccount ? '（新号，上限减半）' : '') +
             (s.lastRun ? ' · 上次 ' + timeAgo(s.lastRun) : '') +
             (s.lastSkipReason ? ' · 上次没刷成：' + s.lastSkipReason : '')) : null,
-          !s ? h(Empty, { icon: '⏳', text: '加载中…' }) : s.history.length === 0 ? h(Empty, { icon: '📱', text: '还没刷过。先扫码登录、打开开关，再点「现在刷一轮」。' }) :
+          !s ? h(Empty, { icon: '⏳', text: '加载中…' }) : !Array.isArray(s.history) || s.history.length === 0 ? h(Empty, { icon: '📱', text: '还没刷过。先扫码登录、打开开关，再点「现在刷一轮」。' }) :
             h('div', { className: 'ab-list' }, s.history.map((x, i) => h('div', { key: i, className: 'ab-li' },
               h('div', { className: 'meta' }, timeAgo(x.at), h('br'), DOUYIN_KIND[x.kind] || x.kind),
               h('div', { className: 'body' },
