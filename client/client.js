@@ -941,7 +941,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       { id: 'imagegen', label: '生图', flag: 'imageGen.enabled' },
       { id: 'video', label: '视频', flagFn: (cfg) => { const v = cfg.video || {}; const p = v.provider || 'local'; return p === 'local' ? Boolean(cfg.local && cfg.local.video) : p === 'minimax' ? Boolean(v.minimax && v.minimax.apiKeySet) : Boolean(v.custom && v.custom.createUrl && v.custom.queryUrl) } },
       { id: 'diary', label: '空间日记', flag: 'diary.enabled' },
-      { id: 'speakup', label: '主动搭话', flag: 'speakUp.enabled' },
+      { id: 'speakup', label: '目的引擎', flag: 'ext.purpose.enabled' },
       { id: 'autotelic', label: '自驱引擎', flag: 'ext.autotelic.enabled' },
       { id: 'pet', label: '桌宠' },
       { id: 'mood', label: '心情', flag: 'mood.enabled' },
@@ -1263,7 +1263,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h(Card, { title: '快捷操作', desc: '试一试ta是不是活着。这些操作会真的发到 QQ（试运行时只写日志）。' },
             h('div', { className: 'ab-flex' },
               h(Btn, { kind: 'primary', onClick: quick('/test-send') }, '给主人发一条自测'),
-              h(Btn, { onClick: quick('/speakup/fire') }, '让ta现在来找你'),
+              h(Btn, { onClick: quick('/purpose/fire') }, '让ta现在来找你'),
               h(Btn, { onClick: quick('/diary/run', { visibility: 'self' }) }, '写一篇日记（仅自己可见）'),
             ),
             h('p', { className: 'ab-muted ab-small', style: { marginTop: 12, marginBottom: 0 } }, '想看ta和每个人聊了什么、调了什么工具：点 DSH 侧栏「Aurabot · QQ」工作区里对应的会话，也可以直接在会话里插话。'),
@@ -1289,7 +1289,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       { key: 'pet', label: '桌宠', desc: '桌面上的悬浮窗形象，和 QQ 里是同一个她。', tab: 'pet', cli: 'pet' },
       { key: 'diary', label: '空间日记', desc: '自己写日记、发到空间说说。', tab: 'diary', flag: 'diary.enabled', cli: 'diary' },
       { key: 'platform', label: '内容平台', desc: '逛 B站 / 抖音 / 小黑盒，看内容也能互动。', tab: 'bili', cli: ['bili', 'douyin', 'heybox'] },
-      { key: 'speakup', label: '主动搭话', desc: '闲着的时候主动来找你说话。', tab: 'speakup', flag: 'speakUp.enabled', cli: 'speakup' },
+      { key: 'purpose', label: '主动搭话（目的引擎）', desc: '像人一样主动找你说话：攒素材 → 立目标 → 到点来找你。', tab: 'speakup', flag: 'ext.purpose.enabled', cli: 'purpose' },
       { key: 'autotelic', label: '自驱引擎', desc: '后台自己立项、做事、记账。', tab: 'autotelic', flag: 'ext.autotelic.enabled', cli: 'autotelic' },
     ]
 
@@ -3633,12 +3633,12 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const [closedReminders, setClosedReminders] = useState(() => new Set())
       const reminders = (st.speakUp?.reminders || []).filter((r) => !closedReminders.has(r.id))
       const closeReminder = async (id) => {
-        const r = await post('/speakup/reminder/close', { id }).catch(() => ({ ok: false, message: '关闭失败' }))
+        const r = await post('/purpose/reminder/close', { id }).catch(() => ({ ok: false, message: '关闭失败' }))
         toast(r.message, r.ok === false ? 'err' : 'ok')
         if (r.ok) setClosedReminders((prev) => new Set(prev).add(id))
       }
       return h('div', { className: 'ab-grid' },
-        h(Card, { title: '主动搭话', right: f.sw('speakUp.enabled'), desc: '只在和你的私聊里：你一阵子没理ta，ta会主动来找你说一句——每次由头不一样（分享小事、接着上次的话题、想起你的事、按时间问候……），内容是ta现想的，不是模板。群里不会这样。' },
+        h(Card, { title: '主动搭话（目的引擎）', desc: '只在和你的私聊里：闲的时候主动来找你说一句——每次由头不一样（分享小事、接着上次的话题、想起你的事、按时间问候……），内容是ta现想的，不是模板。群里不会这样。总开关在同页「目的引擎」卡里。' },
           h(Row, { label: '她的小闹钟', hint: '开着她可以在和你的私聊里自己定时间，到点由主动搭话的系统提醒叫醒她' }, f.sw('speakUp.reminderEnabled')),
           h(Row, { label: '最多保留', hint: '未过期、未关闭的提醒；最多 10 条' }, f.num('speakUp.reminderLimit', { min: 1, max: 10 }), h('span', { className: 'ab-muted' }, '条')),
           h(Row, { label: '触发失败时保留提醒', hint: '网络波动或模型调用失败时保留 15 分钟，每 5 分钟重试一次；关掉则失败即丢弃' }, f.sw('speakUp.reminderRetry')),
@@ -3651,7 +3651,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h('div', { className: 'ab-flex', style: { marginTop: 10 } },
             h('span', { className: 'ab-muted ab-small' }, '今天已经找过你 ' + (st.speakUp.count || 0) + ' 次'),
             h('div', { className: 'ab-spacer' }),
-            h(Btn, { small: true, onClick: async () => { const r = await post('/speakup/fire'); toast(r.message) } }, '现在就让ta来找我')),
+            h(Btn, { small: true, onClick: async () => { const r = await post('/panel/purpose/run'); toast(r.message) } }, '现在就让ta来找我')),
         ),
         h(Card, { title: '她的小闹钟', desc: '她自己在对话里定的一次性提醒；到点会触发主动搭话，让她按当时说好的内容来找你。过期或触发成功后会自动消失。' },
           reminders.length
