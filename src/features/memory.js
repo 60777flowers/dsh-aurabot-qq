@@ -20,6 +20,7 @@ import { clipText } from '../core/text.js'
 import { createVectorIndexByMode } from './memory-vector.js'
 import { createReranker } from './rerank.js'
 import { createMemoryStorage } from './memory-store.js'
+import { inheritBlocks, inheritBatches, inheritPrompt, inheritInput, parseInherit, applyInherit } from './memory-inherit.js'
 import { shouldDeferBackground } from '../core/offpeak.js'
 import { selfName, selfNames, isSelfName } from '../persona/personas.js'
 import { FACT_TIERS, isFactTier, isPermanentTier, followUpTier, tierDays, factTiers, strongerTier, memoryPlatforms } from './memory-rules.js'
@@ -1164,6 +1165,25 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
       if (add({ text: c.text, aboutName: c.aboutName || '', importance: c.importance ?? 0.5, source: 'import' }).id) n++
     }
     return n
+  }
+
+  // ---------- 记忆继承（见 memory-inherit.js）：另一个人格把记忆交出来，这个人格改完人称后收下 ----------
+  /** 交出去的记录，按块分批；设了「不再记住」的人不带。 */
+  function inheritPlan() {
+    return inheritBatches(inheritBlocks(load(), { keepItem: (m) => rememberedItem(m), keepPerson: (qq) => remembers(qq) }))
+  }
+  /** 一批交给模型改人称。日记是当时发出去的原文，不改也不用问模型。names：{ from, to, toBody } */
+  async function inheritBatch(batch, names) {
+    if (batch.kind === 'diary') return batch.records.map((r) => ({ id: r.id, text: r.text, op: 'keep', next: r.text, reason: '日记是当时发出去的原文，不改' }))
+    const out = await askModel(dsh, { cfg: getConfig(), system: inheritPrompt(batch.kind, names), text: inheritInput(batch.records), maxTokens: 8000, temperature: 0.2 })
+    return parseInherit(out, batch.records)
+  }
+  /** 收下勾选的记录（source 是来源人格的记忆状态，from 是它的人格 id）。 */
+  function inheritCommit(source, picks, from) {
+    const { state, added, skipped } = applyInherit(load(), source, picks, { from, same: (a, b) => similarity(a, b) >= 0.6 })
+    save(state)
+    tailCache = crossCache = null
+    return { ok: true, added, skipped, message: `继承了 ${added} 条` + (skipped ? `，${skipped} 条已经有了没再存` : '') }
   }
 
   /** 她自己做过的事（唱了歌、在空间评论了谁……）：记成「经历」，最近一天的会常驻在上下文里。 */
@@ -3693,6 +3713,9 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
   }
 
   return {
+    inheritPlan, inheritBatch, inheritCommit,
+    /** 记忆继承时交给另一个人格的完整记忆状态（只读）。 */
+    inheritState: () => load(),
     /** 设了「不再记住」的 QQ 号：别的人格据此也不记这些人。 */
     noMemoryIds: () => Object.entries(load().profiles || {}).filter(([, p]) => p?.noMemory === true).map(([qq]) => qq),
     /** 关掉记忆库文件（删除人格数据前要先关，不然 Windows 上删不掉打开着的 SQLite）。 */
