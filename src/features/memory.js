@@ -2640,7 +2640,8 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
     if (!out) out = await ask({ reasoningEffort: 'off', maxTokens: EXTRACT_RETRY_TOKENS })
     let result = parseExtraction(out)
     // 有输出但解析失败：多半是 1500 预算被截断（#346）。放宽预算重试一次，仍失败才报错。
-    if (!result && out) {
+    if (!result && out && /[{[]/.test(out)) {
+      // 只对「像 JSON 但被截断/格式坏了」的输出重试；完全没 JSON 的输出沿用原逻辑，交给下次整理。
       const retry = await ask({ reasoningEffort: 'off', maxTokens: EXTRACT_RETRY_TOKENS })
       if (retry) {
         out = retry
