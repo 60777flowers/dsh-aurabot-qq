@@ -171,6 +171,9 @@ export default {
         }
         const text = typeof notice === 'string' ? notice.trim().slice(0, 200) : ''
         let acknowledged = text ? await hub.sendText(chat.chatId, text) : null
+        // 「正在做」提示已经以 notice 发出去了：立刻登记，hub 的慢工具兜底（1.5s 定时器）就不再发
+        // 她当轮正文——否则 notice 和兜底各发一遍，同样的话出现两次（2026-11-18 主人私聊实测）。
+        if (acknowledged && typeof hub.markSlowNotice === 'function') hub.markSlowNotice(sessionId)
         const simulatedNotice = () => acknowledged === null && Boolean(cfg.debug || cfg.dryRun)
         if (!acknowledged && !simulatedNotice()) acknowledged = await hub.sendText(chat.chatId, '好，我来画。')
         if (!acknowledged && !simulatedNotice()) return { ok: false, message: '没能发送画图回复，请检查 QQ 网关' }
