@@ -11,6 +11,21 @@ import { askModel, canSeeImages } from '../core/llm.js'
 
 const dir = () => dataDir('stickers')
 const indexFile = () => join(dir(), 'index.json')
+
+/**
+ * 表情原件的体积上限。跟聊天收图用的 MAX_IMAGE_BYTES（src/chat/hub.js）取同一个量级：
+ * QQ 动图 5~15MB 很常见，1.2.0 说好了「图片不再限制 MB 大小」，收表情这条路不能还卡在 5MB。
+ * 所有入口（偷表情 / 工具存 / 工具加 / 从 QQ 导入）都必须用这一个值，否则同一张图
+ * 会出现「偷得到、存不进」「她看得见、说存不了」这种自相矛盾的表现（#332）。
+ */
+export const MAX_STICKER_BYTES = 1024 * 1024 * 1024
+
+/**
+ * 面板「上传」那一档单独放宽但另有上限：那条路是 JSON + base64（体积 ×1.33、整份在内存里），
+ * 跟 QQ 侧的下载链路不是一回事，不能照搬 1GB。这不是隐藏限制 —— 超了会明确告诉主人多大、上限多少。
+ */
+export const PANEL_UPLOAD_MAX_BYTES = 20 * 1024 * 1024
+
 const ext = (mime) => ({ 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp' })[mime] || 'jpg'
 
 export const DEFAULT_TAGS = ['开心', '卖萌', '生气', '委屈', '无语', '嘲讽', '疑惑', '早晚安']
@@ -154,7 +169,7 @@ export function createStickerStore({ dsh, getConfig, onebot, log }) {
     const d = seg.data || {}
     let buf
     try {
-      buf = await segmentBytes(seg, onebot, { maxBytes: 1024 * 1024 * 1024 })
+      buf = await segmentBytes(seg, onebot, { maxBytes: MAX_STICKER_BYTES })
     } catch (error) {
       return { ok: false, reason: '下载失败：' + error.message }
     }
@@ -349,7 +364,7 @@ export function createStickerStore({ dsh, getConfig, onebot, log }) {
       const named = []
       for (const url of urls) {
         let buf
-        try { buf = await fetchImage(url, { maxBytes: 1024 * 1024 * 1024 }) } catch (error) { failed++; continue }
+        try { buf = await fetchImage(url, { maxBytes: MAX_STICKER_BYTES }) } catch (error) { failed++; continue }
         const md5 = createHash('md5').update(buf).digest('hex')
         if (loadLibrary().items.some((i) => i.md5 === md5)) { existed++; continue }
         const r = await addFromBuffer(buf, { from: 'qq', toQQ: false })
