@@ -2573,12 +2573,15 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             h(Row, { label: '用哪些称呼叫它', hint: '一行一个；群里提到这些称呼时，按被叫到的规则回应。' }, f.list('group.wakeWords', { placeholder: '大肥鱼\n肥鱼' })),
             h(Row, { label: '@ 了别人不算叫ta', hint: '有人 @ 别人时顺口提到ta的名字，不算在叫ta；ta还是可以按平时的频率插话。默认关' }, f.sw('group.ignoreAtOthers')),
             h(Row, { label: '每小时必回上限', hint: '一个群里一小时内因被 @、引用、叫名字而必回的次数最多这么多，超过就不回（主人说话不受限，也不计入）；小时一过自动恢复。0 = 不限' }, f.range('group.mustMaxPerHour', 0, 100, 5, (v) => (v === 0 ? '不限' : v + ' 次'))),
-            h(Row, { label: '免打扰', hint: '这段时间内只有主人的消息能进；群里其他人 @、引用、唤醒词、追问都不起轮次。' },
-              h('input', { className: 'ab-input sm', 'aria-label': '免打扰开始小时', type: 'number', min: 0, max: 23, placeholder: '--', value: draft.group.guestQuietHours ? draft.group.guestQuietHours[0] : '', onChange: (e) => setDraft(setPath(draft, 'group.guestQuietHours', [Number(e.target.value), draft.group.guestQuietHours ? draft.group.guestQuietHours[1] : (Number(e.target.value) + 1) % 24])) }),
-              h('span', { className: 'ab-muted' }, '点 到'),
-              h('input', { className: 'ab-input sm', 'aria-label': '免打扰结束小时', type: 'number', min: 0, max: 23, placeholder: '--', value: draft.group.guestQuietHours ? draft.group.guestQuietHours[1] : '', onChange: (e) => setDraft(setPath(draft, 'group.guestQuietHours', [draft.group.guestQuietHours ? draft.group.guestQuietHours[0] : (Number(e.target.value) + 23) % 24, Number(e.target.value)])) }),
-              h('span', { className: 'ab-muted' }, '点'),
-              draft.group.guestQuietHours ? h(Btn, { small: true, kind: 'ghost', onClick: () => setDraft(setPath(draft, 'group.guestQuietHours', null)) }, '关掉') : null),
+            h(Row, { label: '免打扰', hint: '这段时间内只有主人的消息能进；群里其他人 @、引用、唤醒词、追问都不起轮次。清空 = 不启用' },
+              h('div', { className: 'ab-flex', style: { alignItems: 'center', gap: 8 } },
+                h('input', { className: 'ab-input', type: 'time', style: { width: '118px' }, 'aria-label': '免打扰开始时间', value: String(draft.group.guestQuietFrom || ''), onChange: (e) => setDraft(setPath(draft, 'group.guestQuietFrom', e.target.value)) }),
+                h('span', { className: 'ab-muted ab-small' }, '到'),
+                h('input', { className: 'ab-input', type: 'time', style: { width: '118px' }, 'aria-label': '免打扰结束时间', value: String(draft.group.guestQuietTo || ''), onChange: (e) => setDraft(setPath(draft, 'group.guestQuietTo', e.target.value)) }),
+                h(Btn, { small: true, onClick: () => { setDraft(setPath(setPath(draft, 'group.guestQuietFrom', ''), 'group.guestQuietTo', '')) } }, '清空=关'),
+                draft.group.guestQuietFrom && draft.group.guestQuietTo
+                  ? h('span', { className: 'ab-muted ab-small' }, '这段时间只有主人叫得醒她')
+                  : h('span', { className: 'ab-muted ab-small' }, '未启用')))
           )),
 
         // 组行 ② 没人叫时怎么接话：核心 4 参数排一行（时段/话题/防刷屏进折叠）
