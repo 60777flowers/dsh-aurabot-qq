@@ -589,6 +589,13 @@ export function normalize(raw) {
   g.activeWindowSec = num(g.activeWindowSec, 300, 1, BIG)
   if (!Array.isArray(g.quietHours) || g.quietHours.length !== 2) g.quietHours = DEFAULT_GROUP_POLICY.quietHours
   g.quietHours = g.quietHours.map((h) => num(h, 0, 0, 23))
+  // 对外静默窗口：这段内只有主人叫得醒她。两个数字相同（或没写）一律当不启用
+  if (Array.isArray(g.guestQuietHours) && g.guestQuietHours.length === 2) {
+    const gq = g.guestQuietHours.map((h) => num(h, 0, 0, 23))
+    g.guestQuietHours = gq[0] === gq[1] ? null : gq
+  } else {
+    g.guestQuietHours = null
+  }
   if (!isObj(g.overrides)) g.overrides = {}
   for (const o of Object.values(g.overrides)) {
     if (!isObj(o)) continue
