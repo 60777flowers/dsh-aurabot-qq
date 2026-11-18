@@ -115,8 +115,11 @@ export default {
     { key: 'maxSteps', label: '单行动单步数上限', type: 'number', min: 1, max: 32 },
     { key: 'maxTasksActive', label: '同时进行的行动单数', type: 'number', min: 1, max: 16 },
     { key: 'budgetActionsPerHour', label: '动作数 / 小时', type: 'number', min: 1, max: 120 },
-    { key: 'allowUserModules', label: '允许写用户模块', type: 'switch', hint: '写不到框架（src/ 锁死），只能写自己数据目录的 modules/<id>/' },
-    { key: 'allowPython', label: '允许跑 Python 脚本', type: 'switch' },
+    // 诚实边界（2026-11-18 审查）：用户模块是**在插件进程内执行的 JS**，沙箱只拦「写框架目录」
+    // 与「../ 往外 import」，拦不住 `import('node:child_process')` 这类运行时取用。所以这个开关
+    // 的真实语义是「允许她在本机跑自己写的代码」，不是「只写文本文件」——hint 必须说实话。
+    { key: 'allowUserModules', label: '允许写用户模块', type: 'switch', hint: '写不到框架（src/ 锁死），只能写自己数据目录的 modules/<id>/。⚠ 但用户模块是在插件进程内执行的 JS：开了等于允许她在这台机器上跑自己写的代码，沙箱不隔离运行时能力。拿不准就先关掉' },
+    { key: 'allowPython', label: '允许跑 Python 脚本', type: 'switch', hint: '子进程执行、超时击杀、不继承插件的敏感环境变量（白名单 env）' },
     { key: 'pythonBin', label: 'Python 解释器路径', type: 'string', hint: '留空 = 自动探测（会滤掉商店占位别名）；探测不到时填全路径' },
     { key: 'scriptTimeoutMs', label: '脚本超时（毫秒）', type: 'number', min: 1000, max: 600000 },
     { key: 'takeover', label: '接管浏览模块', type: 'switch', hint: '手动点开才生效：压制抖音/B站的自主循环（不关模块总开关，她的手还在）。关掉自动还原原配置' },

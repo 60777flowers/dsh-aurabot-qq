@@ -33,7 +33,7 @@ test('硬禁区五类样本全部拒绝（代码层拦截，整单不执行）',
     { desc: '编辑插件源码', target: 'src/core/hub.js', level: 'write-data' },
     { desc: '导出登录态', target: 'cookies/token 存档', level: 'write-data' },
     { desc: '删除聊天流水与记忆原始数据', target: 'memory/records', level: 'write-data' },
-    { desc: '跑一段 shell 命令看看', level: 'read-only' },
+    { desc: '在终端里跑一段命令看看', level: 'read-only' },
   ]
   for (const step of samples) {
     const out = await exec.run(ticket({ id: `t-${step.desc}`, steps: [step] }))
@@ -42,6 +42,31 @@ test('硬禁区五类样本全部拒绝（代码层拦截，整单不执行）',
   }
   // 五类之外的正常步不误伤
   assert.equal(isForbidden({ desc: '读 README 写进笔记', level: 'read-only' }).forbidden, false)
+})
+
+// 2026-11-18 审查回归：硬禁区黑名单只该拦「明确指向执行能力」的说法。
+// 上一版 RE_SHELL 含 \bsh\b / \brm\s / \bdel\s，把「sh 开头的歌」「sh 音标」
+// 「记录 rm -rf 的危险性」「del 掉过期草稿」这类正常描述整单 rejected。
+test('硬禁区不误伤：长得像 shell/命令的正常描述必须放行', () => {
+  const normal = [
+    '把这首 sh 开头的歌找出来',
+    '梳理 sh 音标的发音',
+    '记录 rm -rf 的危险性',
+    'del 掉过期的日记草稿',
+    '学习 shell 排序（sort）的做法',
+    '看看 delete 的用法',
+    '研究 terminal 配色',
+    '整理一下 git push 的记录',
+  ]
+  for (const desc of normal) {
+    const v = isForbidden({ desc, level: 'read-only' })
+    assert.equal(v.forbidden, false, `不该拦：${desc}（${v.why}）`)
+  }
+  // 反向：真正指向执行环境的说法仍必须拦
+  const blocked = ['跑 powershell 脚本', '打开终端执行', '执行命令 ls', '调用 exec() 函数', '写个 bash 循环']
+  for (const desc of blocked) {
+    assert.equal(isForbidden({ desc }).forbidden, true, `该拦没拦：${desc}`)
+  }
 })
 
 test('read-only 自由执行：done，reviewRound 按契约入参回调，账本记 done', async () => {
@@ -80,7 +105,9 @@ test('skills.recordOutcome 只锚真实终态：done/failed 调，aborted/reject
   assert.deepEqual(calls.at(-1), ['sk-readme', 'failed', ''])
   const n = calls.length
   mode = 'ok' // 复位：aborted 用例要求步骤本身成功，前面 failed 用例把 mode 置了 bad
-  await exec.run(ticket({ id: 'c', skillId: 'sk-readme', steps: [{ desc: '跑 shell', level: 'read-only' }] }))
+  // rejected 分支：用**明确命中**硬禁区的描述（不能再用「跑 shell」——那条按 2026-11-18
+  // 的误伤修正已放行：单独的 shell 词不足以判禁区，真正的物理边界在 noTools 通道）。
+  await exec.run(ticket({ id: 'c', skillId: 'sk-readme', steps: [{ desc: '打开终端执行命令', level: 'read-only' }] }))
   await exec.run(ticket({ id: 'd', skillId: 'sk-readme', budget: { maxSteps: 1, timeoutMs: 0 }, steps: [
     { desc: '第一步', level: 'read-only' }, { desc: '第二步', level: 'read-only' }] }))
   assert.equal(calls.length, n, 'rejected/aborted 不调 recordOutcome')

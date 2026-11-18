@@ -97,8 +97,41 @@ v5 的 `defaults` 与 `settings` 都是全新的一份，但**旧配置值留在
    - 配置里 v5 新增的键同样成为未读键，不删也不会影响 v4（v4 的 `defaults` 会为它自己声明的键兜底）。
 3. **回滚后需要重设的**：v4 的 `quietFrom`/`quietTo`（v5 新增的 `awakeFrom`/`awakeTo` 不被 v4 读；v4 原有的 `quietFrom`/`quietTo` 值其实一直留在配置里，通常无需重设）。
 
+## 五之二、已知限制（2026-11-18 审查新增，合并前请知悉）
+
+这一版是实验性功能，以下三项是**已知且刻意未在本次解决**的限制，写在这里避免合并后才发现：
+
+### 1. 三个 `.jsonl` 日志只追加、无轮转
+
+| 文件 | 写入频率 | 现状 |
+| --- | --- | --- |
+| `observations.jsonl` | 每 60s 采集，满 64 条 flush 一次 | 只 `appendFileSync`，无大小上限/轮转/清理 |
+| `decisions.jsonl` | 每轮决策 1~3 行（intent/gate/review） | 同上（`appendFile`） |
+| `feedback-events.jsonl` | 反馈事件触发时 | 同上（`appendFileSync`） |
+
+默认 `enabled: false` 时完全不写，所以**升级本身不会产生任何增长**。但开启后长期运行会持续膨胀，`observations.jsonl` 增长最快。
+
+**当前处置**：不阻塞本次合并，作为已知限制记录。需要清理时手动删这三个文件（都是纯追加流水，删掉不破坏账本 `ledger.json` 与审计哈希链 `audit/`）。后续版本应加入按大小或按天轮转。
+
+### 2. `allowUserModules` / `allowPython` 默认开
+
+`enabled: false` 时这两个工具根本不会出现在她的会话里，所以默认状态下没有暴露面；但**一旦打开总开关**，她就具备：
+
+- **写用户模块**：能写一个 `export default` 的模块并热加载 —— 那是在**插件进程内执行的 JS**。`writeUserModule` 的沙箱只拦「写框架目录」和「`../` 往外 import」，**拦不住 `import('node:child_process')` 这类运行时取用**。面板 hint 已改为如实说明。
+- **跑 Python**：子进程执行，但**不走 shell**、env 白名单、超时击杀，实际风险低于前者。
+
+**推荐**：拿不准就先在面板里把这两个开关关掉，只开 `enabled` 体验决策环。
+
+### 3. 硬禁区是「正则黑名单 + noTools」双兜底，不是语义不变量
+
+`isForbidden` 用正则匹配步骤描述（五类：宿主配置 / 源码 / 凭据 / 删聊天流水 / shell）。**自由文本改述可以绕过正则**——这层不是安全边界，真正的物理边界是执行通道固定的 `noTools: true`（她那条通道里根本没有文件/进程工具）。
+
+2026-11-18 同时修正了正则的**误伤面**：上一版 `\bsh\b`、`\brm\s`、`\bdel\s` 会把「sh 开头的歌」「sh 音标」「记录 rm -rf 的危险性」「del 掉过期草稿」这类正常描述整单 rejected。已删除这三个高误伤项，保留 `powershell`/`bash`/`终端`/`执行命令`/`exec()` 等明确无歧义的形态，并补了正反向回归用例。
+
 ## 六、验证记录
 
 - `git diff origin/beta -- src/autotelic/book.js`、`audit.js`、`reflect.js`、`takeover.js`、`reconcile.js`、`python.js` —— **全部为空**（legacy 件零改动）。
 - 全仓 grep `autotelic/engine`、`autotelic/runtime` —— **零引用**（删掉的两个文件没有外部使用者）。
-- 全量 `npm test`：2802 项 / 2790 过 / 6 skip / **6 挂**。6 挂中 4 项（`backup.test.js` 2 + `song-cpu-profile.test.js` 2）在**干净 `origin/beta`** 上同样复现（已建独立 worktree 实测），属基线自带的 Windows 平台项；另 2 项（`e2e.test.js` 的「#6 改资料」）单独复跑两次均全绿，是满载并发下的已知抖动。
+- 全量 `npm test`（2026-11-18 审查后复跑）：2803 项 / 2793 过 / 6 skip / **4 挂**。4 挂（`backup.test.js` 2 + `song-cpu-profile.test.js` 2）已在**干净 `origin/beta`** 的独立 worktree 上逐一复现同样挂，属基线自带的 Windows 平台项，与本 PR 无关。
+  - 另注：满载并发下 `e2e.test.js` 的「表情包她自己整理」「#6 改资料」偶发抖动，单跑均全绿——已复跑多轮确认非本 PR 回归。
+- 硬禁区误伤修正后，`isForbidden` 正反向 13 条样本全通过（8 条正常描述放行 / 5 条明确执行说法仍拦）。
