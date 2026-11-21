@@ -334,6 +334,7 @@ test('人物关系：只认本人或主人说的，别人传的和规则都不�
   const names = new Map([['111', '小明'], ['222', '路人'], ['999', '主人']])
   const base = { chatId: 'group:1', names, owner: '999' }
   assert.equal(normalizeRelation({ subj: '小明', pred: '的女朋友是', obj: '阿花', speaker: '111' }, base).subj, '小明')
+  assert.deepEqual([normalizeRelation({ subj: '主人', pred: '是', obj: '小明', speaker: '111' }, base).subj, normalizeRelation({ subj: '主人', pred: '是', obj: '小明', speaker: '111' }, base).obj], ['小明', '主人'], '说话人被写成宾语时要翻回主语')
   assert.equal(normalizeRelation({ subj: '小明', pred: '的女朋友是', obj: '阿花', speaker: '222' }, base), null)
   assert.ok(normalizeRelation({ subj: '小明', pred: '的女朋友是', obj: '阿花', speaker: '999' }, base))
   assert.equal(normalizeRelation({ subj: '小明', pred: '的女朋友是', obj: '阿花', speaker: '333' }, base), null, '不在这批发言人里')
