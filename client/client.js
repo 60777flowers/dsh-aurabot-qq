@@ -1180,20 +1180,36 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h(Btn, { small: true, kind: 'primary', onClick: claim }, '认领')))
     }
 
+    const usageCurrencies = { CNY: '人民币', USD: '美元', EUR: '欧元', HKD: '港元', JPY: '日元', GBP: '英镑', SGD: '新加坡元', CAD: '加元', AUD: '澳元', CHF: '瑞士法郎' }
+    const usageCodes = Object.fromEntries(Object.entries(usageCurrencies).map(([code, label]) => [label, code]))
+    // Preserve custom tariff units when their ISO currency is unknown (e.g. credits or an ambiguous $).
+    const usageMoney = (amount, from, to, fx) => {
+      const unit = String(from).trim().toUpperCase()
+      const code = unit === '元' || unit === 'RMB' ? 'CNY' : usageCodes[unit] || unit
+      if (!Object.hasOwn(usageCurrencies, code)) return fmtCost(amount, from) + '（原单位）'
+      const origin = fx?.rates?.[code], target = fx?.rates?.[to]
+      if (code === to || !(origin > 0 && target > 0)) return fmtCost(amount, code === 'CNY' ? '元' : usageCurrencies[code])
+      return fmtCost(amount * (target / origin), to === 'CNY' ? '元' : usageCurrencies[to])
+    }
+
     function UsageSummary({ sessions = {} }) {
       const [report, setReport] = useState(null)
       const [open, setOpen] = useState(false)
       const [precise, setPrecise] = useState(false)
+      const [currency, setCurrency] = useState(() => {
+        try { const c = localStorage.getItem('aurabot.usage.currency'); if (Object.hasOwn(usageCurrencies, c)) return c } catch {}
+        return 'CNY'
+      })
       const [range, setRange] = useState('all')
       const [busy, setBusy] = useState(false)
       const [failed, setFailed] = useState(false)
       const request = useRef(null)
-      const load = useCallback((selected) => {
+      const load = useCallback((selected, refreshFx = false) => {
         request.current?.abort()
         const controller = new AbortController()
         request.current = controller
         setBusy(true); setFailed(false)
-        fetch(API + '/usage?range=' + selected, { signal: controller.signal, cache: 'no-store' })
+        fetch(API + '/usage?range=' + selected + (refreshFx ? '&fx=refresh' : ''), { signal: controller.signal, cache: 'no-store' })
           .then(r => { if (!r.ok) throw new Error(); return r.json() })
           .then(r => { if (!r || r.ok === false || !r.current || !r.ranges) throw new Error(); if (!controller.signal.aborted) setReport(r) })
           .catch(() => { if (!controller.signal.aborted) setFailed(true) })
@@ -1205,11 +1221,11 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const tokenTitle = n => exact(n) + ' Tokens'
       const hit = r => r?.promptTokens ? (r.cacheHitRate * 100).toFixed(2) + '%' : '—'
       const price = r => {
-        if (typeof r?.cost === 'number') return fmtCost(r.cost, report.currency)
-        if (typeof r?.pricedCost === 'number') return fmtCost(r.pricedCost, report.currency) + '（另有 ' + exact(r.unpricedCalls) + ' 次未定价）'
+        if (typeof r?.cost === 'number') return usageMoney(r.cost, report.currency, currency, report.fx)
+        if (typeof r?.pricedCost === 'number') return usageMoney(r.pricedCost, report.currency, currency, report.fx) + '（另有 ' + exact(r.unpricedCalls) + ' 次未定价）'
         return '未定价'
       }
-      const official = r => typeof r?.officialUSD === 'number' ? fmtCost(r.officialUSD, '$') + (r.officialMissing ? '（另有 ' + exact(r.officialMissing) + ' 次无报价）' : '') : '暂无报价'
+      const official = r => typeof r?.officialUSD === 'number' ? usageMoney(r.officialUSD, 'USD', currency, report.fx) + (r.officialMissing ? '（另有 ' + exact(r.officialMissing) + ' 次无报价）' : '') : '暂无报价'
       const money = r => r?.runs ? ' · 官方参考费用：' + official(r) + (typeof r.pricedCost === 'number' ? ' · 渠道估算：' + price(r) : '') : ''
       const total = report?.ranges.all
       const label = k => {
@@ -1230,17 +1246,21 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       }
       const cur = report?.current
       return h('div', { className: 'ab-grid ab-usage' },
-        h('button', { type: 'button', className: 'ab-card ab-usage-summary', 'aria-expanded': open, onClick: () => { setOpen(!open); if (!open) load(range) } },
+        h('button', { type: 'button', className: 'ab-card ab-usage-summary', 'aria-expanded': open, onClick: () => { setOpen(!open); if (!open) load(range, true) } },
           h('span', { className: 'ab-section-title' }, 'Tokens 用量'),
           h('strong', { className: 'ab-usage-number', title: total ? tokenTitle(total.totalTokens) : undefined }, total ? tokens(total.totalTokens) : busy ? '读取中…' : '暂时无法读取'),
           h('span', null, '近 90 天 · 缓存命中率 ' + hit(total) + money(total)),
           h('span', { className: 'ab-muted' }, open ? '收起明细 ↑' : '查看明细 →')),
-        open ? h(Card, { title: '用量明细', right: h(Btn, { small: true, onClick: () => load(range), disabled: busy }, busy ? '读取中…' : '刷新'),
+        open ? h(Card, { title: '用量明细', right: h(Btn, { small: true, onClick: () => load(range, true), disabled: busy }, busy ? '读取中…' : '刷新'),
           desc: '只统计服务已上报的 Tokens。' },
           h('div', { className: 'ab-flex', style: { flexWrap: 'wrap', gap: 6 } },
             [['all','近 90 天'],['today','今天'],['yesterday','昨天'],['7','近 7 天'],['30','近 30 天']].map(([value,name]) =>
               h('button', { key: value, type: 'button', className: cx('ab-btn',range === value && 'primary'), 'aria-pressed': range === value, onClick: () => setRange(value) }, name))),
           h('div', { className: 'ab-flex', style: { flexWrap: 'wrap', gap: 8, alignItems: 'center', marginTop: 8 } },
+            h('label', { className: 'ab-flex', style: { alignItems: 'center', gap: 6 } }, '显示币种',
+              h('select', { className: 'ab-select', value: currency, onChange: e => {
+                const c = e.target.value; setCurrency(c); try { localStorage.setItem('aurabot.usage.currency', c) } catch {}
+              } }, Object.entries(usageCurrencies).map(([c, label]) => h('option', { key: c, value: c }, label + ' · ' + c)))),
             h('button', { type: 'button', className: 'ab-btn', 'aria-pressed': precise, onClick: () => setPrecise(!precise) }, precise ? '使用简写' : '显示精确数字')),
           failed ? h('div', { className: 'ab-note warn', role: 'alert' }, '暂时没能读取最新用量，请点刷新重试。' + (report ? '当前仍显示上次结果。' : '')) : null,
           report?.writeFailed ? h('div', { className: 'ab-note warn', role: 'alert' }, '用量暂未保存成功；重启可能丢失最近的记录。') : null,
@@ -1255,6 +1275,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             h('details', { style: { marginTop: 12 } }, h('summary', null, '按模型查看'), table(cur.byModel, k => k))) : null,
           h('details', { className: 'ab-muted ab-small', style: { marginTop: 12 } }, h('summary', null, '统计口径与价目'),
             h('p', null, '官方参考费用按原厂标准 API 价（美元）折算，中转按同价。价目核对：' + (report?.referenceDate || '—') + '。外部搜索、生图等单独计费。'),
+            report?.fx?.date ? h('p', null, '换算汇率：欧洲央行 · ' + report.fx.date) : null,
             h('p', null, '按北京时间分日。输入含缓存读写，命中率按输入 Tokens 计算。',
               report?.startedAt ? ' 后台用量自 ' + new Date(report.startedAt).toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' }) + ' 起记录。' : ''))) : null)
     }
