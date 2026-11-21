@@ -2693,8 +2693,12 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     if (disposed) return
     if (imgs.length && groupEntry) groupEntry.mediaPending = true // 这些图已经进 pending.images，groupPrompt 不用再带
     if (imgs.length) {
-      // 图片先留着，prompt 钩子里的模块可以接管（#167）；模型看不了图时 pushToSession 再换成文字
-      for (let i = 0; i < imgs.length; i++) content.push({ type: 'image', data: imgs[i].data, mediaType: imgs[i].mediaType, name: imgs[i].name || `qq-${msg.messageId}-${i + 1}` })
+      // 图片先留着，prompt 钩子里的模块可以接管（#167）；模型看不了图时 pushToSession 再换成文字。
+      // 每张图前写明发送者：图片块本身没有 QQ 号，群聊多人连发时模型会把人物串掉（#84）。
+      for (let i = 0; i < imgs.length; i++) {
+        if (msg.kind === 'group') content.push({ type: 'text', text: `【图片 ${i + 1}/${imgs.length}，发送者 ${msg.nickname}(${msg.userId})】` })
+        content.push({ type: 'image', data: imgs[i].data, mediaType: imgs[i].mediaType, name: imgs[i].name || `qq-${msg.userId}-${msg.messageId}-${i + 1}` })
+      }
       if (animatedNote(imgs) && (await canSeeFor(msg)) !== false) content.push({ type: 'text', text: animatedNote(imgs) })
     }
     // 引用里的图 / 表情包也给她看（最多 2 张，总数不超过 4；看不了图的模型靠上面的文字说明）
