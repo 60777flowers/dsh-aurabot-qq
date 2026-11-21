@@ -1684,7 +1684,10 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
   // ---------- 人物小档案：每个人一小段印象（是谁、什么关系、喜好、近况），聊天时常驻 ----------
   function profileOf(qq, state = load()) {
     if (!remembers(qq, state)) return null
-    return (state.dirtyProfiles || {})[String(qq)] ? null : (state.profiles || {})[String(qq)] || null
+    const old = (state.profiles || {})[String(qq)] || null
+    // 待重写时仍把旧档案给面板看，避免重写失败把整张小档案变成空白（#107）。
+    if ((state.dirtyProfiles || {})[String(qq)]) return old ? { ...old, stale: true } : null
+    return old
   }
   function setProfile(qq, text, name = '') {
     if (!canProfile(qq)) return false
@@ -1714,7 +1717,11 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
     const ensure = (qq) => {
       const id = String(qq || '')
       if (!/^\d+$/.test(id)) return null
-      if (!people.has(id)) people.set(id, { ...(s.profiles || {})[id], qq: id, notes: 0, lastActive: 0 })
+      if (!people.has(id)) {
+        const profile = (s.profiles || {})[id] || {}
+        const stale = Boolean((s.dirtyProfiles || {})[id])
+        people.set(id, { ...profile, qq: id, notes: 0, lastActive: 0, ...(stale && profile.text ? { stale: true } : {}) })
+      }
       return people.get(id)
     }
     for (const qq of Object.keys(s.profiles || {})) ensure(qq)
