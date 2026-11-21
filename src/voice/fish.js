@@ -1,6 +1,6 @@
 // Only send speech to the free endpoint selected here. Never redirect credentials.
 export async function fishSpeech(text, key, request = fetch, referenceId = '', signal = AbortSignal.timeout(90000)) {
-  if (!key?.trim()) throw new Error('请在「语音 → 发语音」填写 Fish API Key')
+  if (!key?.trim()) throw new Error('请在「语音 → 扩展服务 → Fish Audio」填写 API Key')
   if (referenceId && !/^[a-f\d]{32}$/i.test(referenceId)) throw new Error('Fish 音色 ID 应为 32 位十六进制字符')
   const response = await request('https://api.fish.audio/v1/tts', {
     method: 'POST', redirect: 'error', signal,

@@ -23,7 +23,7 @@ test('Fish：面板不回传 Key，保存空框不覆盖；试听、发语音和
 })
 test('Fish：无 Key 或音色无效时不出网，失败不重投收费型号，不回显服务返回的内容',async()=>{
   const no=()=>assert.fail('unexpected request')
-  await assert.rejects(fishSpeech('test','',no),/Fish API Key/)
+  await assert.rejects(fishSpeech('test','',no),/扩展服务 → Fish Audio/)
   await assert.rejects(fishSpeech('test','fixture',no,'invalid'),/音色 ID/)
   await assert.rejects(fishSpeech('test','fixture',async()=>new Response('sensitive',{status:429,headers:{'Retry-After':'3'}})),e=>e.status===429 && e.retryAfter==='3' && !e.message.includes('sensitive'))
   await assert.rejects(fishSpeech('test','fixture',async()=>new Response('not audio')),/MP3/)
