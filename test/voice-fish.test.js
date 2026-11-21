@@ -28,3 +28,20 @@ test('Fish：无 Key 或音色无效时不出网，失败不重投收费型号�
   await assert.rejects(fishSpeech('test','fixture',async()=>new Response('sensitive',{status:429,headers:{'Retry-After':'3'}})),e=>e.status===429 && e.retryAfter==='3' && !e.message.includes('sensitive'))
   await assert.rejects(fishSpeech('test','fixture',async()=>new Response('not audio')),/MP3/)
 })
+
+test('余额只读已保存的账号：保留零值、分开处理套餐和 API、错误不回显凭据', async t => {
+  const { fishBalances } = await import('../src/voice/fish.js')
+  const voice = { keyPools: { 'fish-free': { accounts: [{ apiKey: 'first' }, { name: '备用', apiKey: 'second' }] } } }
+  const calls = []
+  const result = await fishBalances(voice, () => ({ resolve: async () => ({ value: 'first' }) }), async (url, options) => {
+    const u = new URL(url); assert.equal(u.origin, 'https://api.fish.audio'); assert.equal(options.redirect, 'error'); assert.ok(!options.body)
+    const k = options.headers.Authorization; calls.push(k)
+    if (u.pathname.endsWith('/package')) return Response.json({ balance: 8000, total: 8000, extra_balance: 0, user_id: 'private-id' })
+    assert.equal(u.pathname,'/wallet/self/api-credit')
+    return k === 'Bearer first' ? Response.json({ credit:'0.0' }) : new Response('second',{ status:403 })
+  })
+  assert.deepEqual(calls.sort(), ['Bearer first','Bearer first','Bearer second','Bearer second'])
+  assert.deepEqual(result.rows.map(r => [r.name,r.wallet,r.pack.remaining]), [['主账号',{ usd:'0.0' },8000],['备用',{ error:'查询失败（HTTP 403）' },8000]])
+  assert.doesNotMatch(JSON.stringify(result), /private-id|first|second/)
+  assert.deepEqual((await fishBalances({}, () => null, () => assert.fail('unexpected network'))).rows, [])
+})

@@ -256,6 +256,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-deep:#9cc4f5;--ab-sea:#6
 .ab-finder-empty{padding:12px 10px;color:var(--ab-dim);font-size:12px}
 @media (max-width:640px){.ab-grp{padding:0 10px;gap:5px}.ab-find-btn .t,.ab-find-btn .ab-kbd{display:none}.ab-finder{left:6px;right:6px;width:auto;max-width:none}}
 .ab-grid{display:grid;gap:12px}
+.ab-pool>summary{cursor:pointer;font-weight:600}.ab-pool[open]>summary{margin-bottom:10px}
 @media (max-width:640px){.ab-voice-services .ab-row .ab-ctl{width:100%}}
 .ab-voice-options>summary{padding:8px 0;cursor:pointer;font-weight:560}
 .ab-market-grid{grid-template-columns:repeat(auto-fill,minmax(min(100%,280px),1fr))}
@@ -2931,7 +2932,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       // 试听用面板上现在这一份（Key 没保存也能听），不用先存配置
       const preview = async () => {
         setPv({ src: '', busy: true, err: '' })
-        const r = await post('/voice/volcano-preview', { apiKey: cv.apiKey || '', voiceType: cv.voiceType || '', resourceId: cv.resourceId || '', speedRatio: cv.speedRatio })
+        const r = await post('/voice/volcano-preview', { keyPool: draft.voice.keyPools?.volcano, apiKey: cv.apiKey || '', voiceType: cv.voiceType || '', resourceId: cv.resourceId || '', speedRatio: cv.speedRatio })
         if (r && r.ok) setPv({ src: 'data:' + r.mime + ';base64,' + r.data, busy: false, err: '' })
         // 后端还是老进程时，这个接口根本不存在，插件框架会统一回「模块没开」——别让人去翻「已安装」
         else if (r && r.moduleOff) setPv({ src: '', busy: false, err: '试听接口还没生效：把 DeepSeek Harness 关掉重开一次，再回来点这个' })
@@ -3063,14 +3064,51 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
 
     const VOICE_SERVICES = { 'fish-free': 'Fish Audio', breeze: 'Breeze', edge: '微软在线语音', volcano: '豆包语音', minimax: 'MiniMax', cosyvoice: 'CosyVoice', gptsovits: 'GPT-SoVITS', http: '自定义 HTTP' }
 
+    function FishBalance() {
+      const [busy, setBusy] = useState(false), [result, setResult] = useState(null)
+      const check = async () => {
+        setBusy(true)
+        try { setResult(await get('/voice/fish-balances')) }
+        finally { setBusy(false) }
+      }
+      return h(Row, { label: '账号余额' }, h('div', null,
+        h(Btn, { small: true, disabled: busy, onClick: check }, busy ? '查询中…' : '查询已保存账号'),
+        result && h('div', { role: 'status', style: { marginTop: 8 } }, result.ok && Array.isArray(result.rows) && result.rows.length ? [
+          ...result.rows.map(({ name, wallet, pack }, i) => h('div', { key: i }, h('b', null, name), ' · API 余额：', wallet.error || ('$' + wallet.usd), ' · 套餐点数：', pack.error || (pack.remaining.toLocaleString() + ' / ' + pack.total.toLocaleString() + (pack.extra ? '，额外 ' + pack.extra.toLocaleString() : '')))),
+          h('small', { className: 'ab-muted', key: 'note' }, '免费语音不扣 API 余额。Fish 未提供免费语音的剩余字数。'),
+        ] : result.ok ? '还没有已保存的 Fish 密钥。' : '查询失败，请稍后重试。')))
+    }
+
+    function VoiceKeyPool({ id, draft, setDraft }) {
+      const path = 'voice.keyPools.' + id
+      const pool = getPath(draft, path) || {}, rows = pool.accounts || []
+      let origin = ''
+      if (id === 'http') { try { const u = new URL(draft.voice.http.urlTemplate); if (u.protocol === 'https:') origin = u.origin } catch {} }
+      const update = (field, value) => setDraft(setPath(draft, path + '.' + field, value))
+      const edit = (row, patch) => update('accounts', rows.map(a => a.id === row.id ? { ...a, ...patch } : a))
+      return h('details', { className: 'ab-card ab-pool' }, h('summary', null, '多账号设置' + (rows.length ? ' · ' + rows.length + ' 个附加账号' : '')),
+        h(Row, { label: '分配方式' }, h(Select, { ariaLabel: '分配方式', width: 230, value: pool.strategy || 'balanced', onChange: v => update('strategy', v), options: [
+          { value: 'balanced', label: '均衡使用（推荐）', desc: '优先空闲账号，同样空闲就轮流用' },
+          { value: 'ordered', label: id === 'http' ? '按添加顺序' : '优先主账号', desc: id === 'http' ? '先用排在前面的账号' : '主账号不可用时，按添加顺序使用' },
+        ] })),
+        ...rows.map((row, i) => h(Row, { key: row.id, label: '附加账号 ' + (i + 1), hint: id === 'http' && row.origin !== origin ? '服务地址已更换，请重新填写密钥。' : '' },
+          h('input', { className: 'ab-input', 'aria-label': '账号备注 ' + (i + 1), placeholder: '账号备注（可选）', value: row.name || '', maxLength: 80, onChange: e => edit(row, { name: e.target.value }) }),
+          h('input', { className: 'ab-input', type: 'password', autoComplete: 'new-password', 'aria-label': '附加密钥 ' + (i + 1), placeholder: row.apiKeySet ? '密钥已保存，留空不改' : '粘贴 API Key', value: row.apiKey || '', onChange: e => edit(row, { apiKey: e.target.value, ...(id === 'http' && { origin }) }) }),
+          h(Btn, { small: true, onClick: () => update('accounts', rows.filter(a => a.id !== row.id)) }, '移除'))),
+        id === 'http' && !origin ? h('span', { className: 'ab-muted' }, '先填写 HTTPS 服务地址。') : h(Btn, { small: true, onClick: () => update('accounts', [...rows, { id: globalThis.crypto?.randomUUID?.() || 'k-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2), name: '', apiKey: '', ...(id === 'http' && { origin }) }]) }, '添加账号'))
+    }
+
     function VoiceServices({ selected, onSelect, extensions = [], st, draft, setDraft, toast, reload }) {
       const options = [...Object.entries(VOICE_SERVICES).map(([value, label]) => ({ value, label })), ...extensions.map(m => ({ value: 'ext:' + m.id, label: m.name || m.id }))]
       const active = options.find(o => o.value === selected) || options[0]
+      const httpPool = active.value === 'http' && String(draft.voice.http?.headers || '').includes('{apiKey}')
+      const poolId = httpPool ? 'http' : ['fish-free', 'minimax', 'volcano'].includes(active.value) || (active.value === 'breeze' && draft.voice.breeze?.mode !== 'local') ? active.value : null
       return h('div', { className: 'ab-grid ab-voice-services' },
         h('div', { className: 'ab-flex' }, h('b', null, '配置服务'), h(Select, { ariaLabel: '配置服务', options, value: active.value, onChange: onSelect, width: 220 })),
         active.value.startsWith('ext:')
           ? h(ExtPage, { key: active.value, mod: active.value.slice(4), st, draft, setDraft, toast, reload, embedded: true })
-          : h(Card, { key: active.value, title: active.label }, h(VoiceServiceFields, { id: active.value, st, draft, setDraft, toast, reload })))
+          : h(Card, { key: active.value, title: active.label }, h(VoiceServiceFields, { id: active.value, st, draft, setDraft, toast, reload })),
+        poolId ? h(VoiceKeyPool, { key: poolId, id: poolId, draft, setDraft }) : null)
     }
 
     function VoiceServiceFields({ id, st, draft, setDraft, toast, reload }) {
@@ -3110,7 +3148,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h('input', { className: 'ab-input wide', type: 'password', autoComplete: 'new-password', 'aria-label': 'Fish API Key', value: draft.voice.fishApiKey || '', placeholder: draft.voice.fishApiKey === null ? '保存后移除' : draft.voice.fishApiKeySet ? '已保存，留空不改' : '粘贴 Fish API Key', onChange: e => setDraft(setPath(draft, 'voice.fishApiKey', e.target.value)) }),
           h('a', { href: 'https://fish.audio/app/developers/get-started/', target: '_blank', rel: 'noreferrer', className: 'ab-btn sm' }, '获取密钥 ↗'),
           draft.voice.fishApiKeySet ? h(Btn, { small: true, onClick: () => setDraft(setPath(draft, 'voice.fishApiKey', draft.voice.fishApiKey === null ? '' : null)) }, draft.voice.fishApiKey === null ? '撤销移除' : '移除已存密钥') : null),
-        h(Row, { label: '音色 ID', hint: '留空使用默认声音。' }, f.text('voice.fishReferenceId', { size: 'wide', placeholder: '音色 ID（32 位）' })))
+        h(Row, { label: '音色 ID', hint: '留空使用默认声音。' }, f.text('voice.fishReferenceId', { size: 'wide', placeholder: '音色 ID（32 位）' })), h(FishBalance))
       if (id === 'volcano') return h(VolcanoVoice, { key: 'volcano', draft, setDraft })
       if (id === 'breeze') return [
         (() => {
@@ -3119,7 +3157,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           const miss = b.mode === 'local'
             ? (!String(b.url || '').trim() ? ['服务地址'] : [])
             : [
-              !String(b.key || '').trim() && !b.keySet ? 'API Key' : '',
+              !String(b.key || '').trim() && !b.keySet && !draft.voice.keyPools?.breeze?.accounts?.some(a => a.apiKeySet || a.apiKey) ? 'API Key' : '',
               !String(b.voiceId || '').trim() ? '音色 id' : '',
             ].filter(Boolean)
           const localDown = b.mode === 'local' && !String(b.url || '').trim()
@@ -3163,7 +3201,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           // 缺东西时先提示（不拦保存）：不然只有点「试听」才报错，还看不懂缺哪个
           const m = draft.voice.minimax || {}
           const miss = [
-            !String(m.apiKey || '').trim() && !m.apiKeySet ? 'API Key' : '',
+            !String(m.apiKey || '').trim() && !m.apiKeySet && !draft.voice.keyPools?.minimax?.accounts?.some(a => a.apiKeySet || a.apiKey) ? 'API Key' : '',
             !String(m.voiceId || '').trim() ? 'Voice ID' : '',
           ].filter(Boolean)
           return miss.length
@@ -3189,7 +3227,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       if (id === 'http') return [
         h(Row, { key: 'u', label: '接口地址', hint: 'GET：地址里带 {text}；POST：填接口地址就行' }, f.text('voice.http.urlTemplate', { size: 'wide', placeholder: 'https://openspeech.bytedance.com/api/v1/tts' })),
         h(Row, { key: 'm', label: '请求方式' }, f.select('voice.http.method', [{ value: 'GET', label: 'GET' }, { value: 'POST', label: 'POST' }], { width: 140 })),
-        h(Row, { key: 'h', label: '请求头', hint: '一行一个。多个头就多写几行' }, f.area('voice.http.headers', { size: 'wide', rows: 2, placeholder: 'Authorization: Bearer;你的token' })),
+        h(Row, { key: 'h', label: '请求头', hint: '每行一项。多账号可填 Authorization: Bearer {apiKey}。' }, f.area('voice.http.headers', { size: 'wide', rows: 2, placeholder: 'Authorization: Bearer;你的token' })),
         String((draft.voice.http || {}).method || 'GET').toUpperCase() !== 'GET'
           ? h(Row, { key: 'b', label: '请求体', hint: '{text} 换成要念的话（自动转义），{reqid} 换成每次不同的随机串' }, f.area('voice.http.body', { size: 'wide', rows: 6, placeholder: '{"app":{"appid":"你的appid","token":"随便填","cluster":"volcano_tts"},"user":{"uid":"aurabot"},"audio":{"voice_type":"zh_female_wanwanxiaohe_moon_bigtts","encoding":"mp3"},"request":{"reqid":"{reqid}","text":"{text}"}}' }))
           : null,
