@@ -9935,7 +9935,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         if (draftBaseRef.current) setDraft(clone(draftBaseRef.current))
         loadConfigDraft() // 顺手把基线对齐到最新权威快照（没在编辑时直接采纳）
       }
-      const save = async (override) => {
+      const saveImpl = async (override) => {
         const { allow, commandAllow, capabilityAllow, ...rest } = clone(override || draft)
         // 基线来自 /panel/config 快照；只提交本次编辑过的顶层字段，没变的键不回传
         //（整表字段照旧整键发送，mergeFromPanel 语义不变）。
@@ -10013,6 +10013,14 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         // 按约定再读一次 /panel/config 校准快照（在途合并；在编辑的草稿不会被覆盖）
         loadConfigDraft()
         return true
+      }
+      const savingRef = useRef(false)
+      const save = async (override) => {
+        if (savingRef.current) return false
+        savingRef.current = true
+        try { return await saveImpl(override) }
+        catch (error) { toast('保存失败：' + (error && error.message ? error.message : error), 'err'); return false }
+        finally { savingRef.current = false }
       }
       saveRef.current = save
       // 右上角的开关立刻生效；有没保存的改动时连同改动一起保存，不会把它们冲掉
