@@ -113,6 +113,30 @@ export function reallySent (r) {
   return Boolean(r) && r.message_id !== undefined && !String(r.message_id).startsWith('sim-')
 }
 
+/**
+ * 聊天流水里的图片：只留能长期重建下载地址的稳定字段。
+ * 图片段自带的 url 里含 rkey，一小时左右就过期，光存 url 等于没存；
+ * 换成文件 id 之后随时能用网关当前的 rkey 拼回来（qq_api_call 的 get_msg 会现取现用）。
+ */
+function chatImageRefs(segs, cap = 4) {
+  const out = []
+  for (const s of Array.isArray(segs) ? segs : []) {
+    if (s?.type !== 'image') continue
+    const d = s.data ?? {}
+    let appid = ''
+    let fileid = ''
+    try {
+      const u = new URL(String(d.url ?? ''))
+      appid = u.searchParams.get('appid') ?? ''
+      fileid = u.searchParams.get('fileid') ?? ''
+    } catch (error) {}
+    if (!appid || !fileid) continue
+    out.push({ appid, fileid, ...(d.file ? { file: String(d.file).slice(0, 80) } : {}) })
+    if (out.length >= cap) break
+  }
+  return out
+}
+
 export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, buildTools, contextProviders, onActivity, memoryScore, onMemoryCommand, onCommand, isMuted, dislikes, random = Math.random, moodEffects, localApi, hooks, availableModels, toolsGeneration, capabilitiesOf }) {
   const archives = new Map()
   let forgottenRules = null
@@ -510,7 +534,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
 
   // ---------- 聊天流水（给空间日记、主动搭话、面板用） ----------
   let chatLogRevision = 0
-  function logChat(chatId, who, text, uid = '', { via, at, interaction, originId, proactive } = {}) {
+  function logChat(chatId, who, text, uid = '', { via, at, interaction, originId, proactive, images, mid } = {}) {
     // 模块「模拟测试」的 simulation 上下文：只回放给面板看，不能写真实聊天流水。
     // 否则 private:10001 这类模拟会话会进短时记忆和人物记忆，删掉又出现。
     if (simulationStore.getStore() || isBeforeMemoryReset(String(chatId), uid, at ?? Date.now())) return false
@@ -531,7 +555,8 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       const dir = chatDir()
       mkdirSync(dir, { recursive: true })
       const forgotten = String(chatId).startsWith('private:') && getConfig().memory?.enabled && getConfig().memory?.instantCommands !== false && parseMemoryCommand(text)?.action === 'forget'
-      const row = { t: timestamp, chatId, who, ...(uid ? { uid: String(uid) } : {}), text: redact(String(text).slice(0, 500)), ...(via ? { via } : {}), ...(proactive ? { proactive } : {}), ...(interaction?.length ? { interaction: [...new Set(interaction.map(String))] } : {}), ...(forgotten ? { forgottenAt: Date.now() } : {}) }
+      const pics = chatImageRefs(images)
+      const row = { t: timestamp, chatId, who, ...(uid ? { uid: String(uid) } : {}), text: redact(String(text).slice(0, 500)), ...(mid ? { mid: String(mid) } : {}), ...(pics.length ? { images: pics } : {}), ...(via ? { via } : {}), ...(proactive ? { proactive } : {}), ...(interaction?.length ? { interaction: [...new Set(interaction.map(String))] } : {}), ...(forgotten ? { forgottenAt: Date.now() } : {}) }
       appendFileSync(join(dir, `${day}.jsonl`), JSON.stringify(row) + '\n', 'utf8')
       chatLogRevision++
       try { hooks?.journal?.({ ...row, ...(originId ? { originId } : {}) }) } catch (error) { log.warn('流水通知失败：', error.message) }
@@ -2469,7 +2494,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       // 旁听只走现有文字流水 → 记忆整理；不展开转发、不识图/听音、不运行消息钩子或命令。
       // 头衔过滤、人格隔离、调试模式和清空记忆的保护仍由上方检查及 logChat 负责。
       if (shouldObserveGroup(cfg, msg) && msg.text.trim()) {
-        logChat(msg.chatId, msg.nickname, msg.text, msg.userId, { at: now })
+        logChat(msg.chatId, msg.nickname, msg.text, msg.userId, { at: now, images: msg.images, mid: msg.messageId })
       }
       log.debug(`忽略 ${msg.chatId}（${allowed.reason}）`)
       return
@@ -2481,7 +2506,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     if (disposed || wasCleared()) return
     const interaction = msg.kind === 'private' || msg.mentioned || quotedBot ? [msg.userId] : []
     const originId = chatMessageOrigin(msg.chatId, msg.messageId, 'in', cfg.botQQ)?.originId
-    const logIncoming = (text = msg.text) => logChat(msg.chatId, msg.nickname, text, msg.userId, { interaction, at: now, originId })
+    const logIncoming = (text = msg.text) => logChat(msg.chatId, msg.nickname, text, msg.userId, { interaction, at: now, originId, images: msg.images, mid: msg.messageId })
     // 合并转发：一进来就展开并写回缓冲，哪怕这条不交给她——否则群里回头问她「上面那条转发说了啥」，她只看得见占位符。
     // 默认关：开着就是每来一条转发多调一次 get_forward_msg，接口慢的时候会拖慢这一轮。
     if (cfg.forward?.expandEarly && msg.forwards?.length) {
