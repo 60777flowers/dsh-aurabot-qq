@@ -475,3 +475,11 @@ test('面板一键清理按 QQ 隔离，旧流水不再读入，下一条私聊�
     assert.equal(memory.remembers(OWNER), true)
   } finally { fake.dispose() }
 })
+
+test('待重写的人物小档案仍显示旧正文，不因重写失败变空白（#107）', (t) => {
+  const s = setup(t)
+  const mem = s.make()
+  const detail = mem.personaPerson(ALICE)
+  assert.equal(detail.person.text, '旧档案')
+  assert.equal(detail.person.stale, true)
+})
