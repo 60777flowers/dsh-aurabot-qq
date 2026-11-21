@@ -5416,6 +5416,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const [data, setData] = useState(null)
       const [form, setForm] = useState(null)
       const [editing, setEditing] = useState(false)
+      const [relationEdit, setRelationEdit] = useState(null)
       const [tagInput, setTagInput] = useState('')
       const [error, setError] = useState('')
       const [notesBusy, setNotesBusy] = useState(false)
@@ -5470,6 +5471,20 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         const r = await post('/persona/person/save', { qq, ...fields, ...(tagsChanged ? { tags } : {}) })
         toast(r.message, r.ok ? 'ok' : 'err')
         if (r.ok) { setEditing(false); await load(false, Math.max(20, (data.notes || []).length)); onChanged() }
+      }
+      const editRelation = async (r) => {
+        setRelationEdit(r.id)
+        const text = window.prompt('按「主语 关系 宾语」修改这条关系，例如：大肥鱼 是 主人的猫', r.text)
+        if (text == null) { setRelationEdit(null); return }
+        const parts = String(text).trim().split(/\s+/)
+        if (parts.length < 3) { toast('要写成「主语 关系 宾语」', 'err'); setRelationEdit(null); return }
+        const subj = parts.shift()
+        const obj = parts.pop()
+        const pred = parts.join(' ')
+        const res = await post('/memory/relations/save', { ...r, subj, pred, obj })
+        toast(res.message || (res.ok ? '改好了' : '没改成'), res.ok ? 'ok' : 'err')
+        setRelationEdit(null)
+        if (res.ok) await load(true)
       }
       const rebuild = async () => {
         if (!(data.notesLive > 0)) return toast('还没有能用来重写小档案的事实', 'err')
@@ -5532,7 +5547,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         (data.relations || []).length ? h(Card, { title: '人物关系' }, data.relations.map((r) => h('div', { key: r.id, className: 'ab-pm-fact' },
           h('span', { className: 'ab-pm-dot', 'aria-hidden': 'true' }),
           h('div', { className: 'main' }, h('div', { className: 'text' }, r.text), h('div', { className: 'sub' }, h('span', null, memoryDate(r.at)), h('span', null, gistSource(r.chatId)))),
-          h('div', { className: 'ab-pm-acts' }, h('button', { type: 'button', className: 'ab-pm-link danger', onClick: async () => {
+          h('div', { className: 'ab-pm-acts' }, h('button', { type: 'button', className: 'ab-pm-link', disabled: relationEdit === r.id, onClick: () => editRelation(r) }, relationEdit === r.id ? '改…' : '改'), h('button', { type: 'button', className: 'ab-pm-link danger', onClick: async () => {
             if (!confirm('删除这条关系？')) return
             const res = await post('/memory/relations/delete', { id: r.id })
             toast(res.message, res.ok ? 'ok' : 'err')
