@@ -5847,6 +5847,26 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     const SM_CHILD_TINTS = ['255, 159, 200', '127, 212, 255', '255, 209, 102', '167, 139, 250', '134, 239, 172', '240, 166, 202', '186, 146, 255']
     const SM_GROUP_TINTS = ['255, 209, 102', '134, 239, 172', '127, 212, 255', '255, 159, 200', '167, 139, 250', '255, 160, 122', '186, 146, 255', '248, 113, 113']
     const smClamp = (n, min, max) => Math.min(max, Math.max(min, n))
+    /** 星图搜索/筛选：记忆星图渲染前统一判一次，避免筛选逻辑和渲染各写一套（#85）。 */
+    const smStarMatches = (s, query = '', typeFilter = '', quickFilter = '', nowMs = Date.now()) => {
+      const q = String(query || '').trim().toLowerCase()
+      if (q) {
+        const hay = [s.text, s.about, s.aboutName, ...(Array.isArray(s.tags) ? s.tags : [])].join(' ').toLowerCase()
+        if (!hay.includes(q)) return false
+      }
+      if (typeFilter) {
+        if (typeFilter === 'archived') { if (!s.archivedAt) return false }
+        else if (typeFilter === 'outdated') { if (!s.invalidAt || s.archivedAt) return false }
+        else if (typeFilter === 'core') { if (s.tier !== 'core' && s.region !== 'core') return false }
+        else if (s.region !== typeFilter) return false
+      }
+      if (quickFilter === 'dim' && !(Number(s.brightness) < 0.35)) return false
+      if (quickFilter === 'recent') {
+        const at = Number(s.lastHit || s.at || 0)
+        if (!at || nowMs - at > 7 * 86400_000) return false
+      }
+      return true
+    }
     const smTintIndexOf = (id) => {
       const text = String(id || '')
       let hash = 0
