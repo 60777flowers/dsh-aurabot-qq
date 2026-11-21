@@ -107,6 +107,7 @@ window.__ModuleLoader__.load({
      */
     const fmtCost = (n, currency = '元') => {
       const v = Number(n) || 0
+      if (v > 0 && v < 0.0001) return '< ' + fmtCost(0.0001, currency)
       const text = v === 0 ? '0' : v < 0.01 ? v.toFixed(4).replace(/0+$/, '').replace(/\.$/, '') : v.toFixed(2)
       return /[\u3400-\u9fff]/.test(String(currency)) ? text + ' ' + currency : String(currency) + text
     }
@@ -1203,7 +1204,13 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const tokens = n => precise ? exact(n) : fmtTokens(n)
       const tokenTitle = n => exact(n) + ' Tokens'
       const hit = r => r?.promptTokens ? (r.cacheHitRate * 100).toFixed(2) + '%' : '—'
-      const money = r => typeof r?.cost === 'number' ? ' · 约 ' + fmtCost(r.cost, report.currency) : ''
+      const price = r => {
+        if (typeof r?.cost === 'number') return fmtCost(r.cost, report.currency)
+        if (typeof r?.pricedCost === 'number') return fmtCost(r.pricedCost, report.currency) + '（另有 ' + exact(r.unpricedCalls) + ' 次未定价）'
+        return '未定价'
+      }
+      const official = r => typeof r?.officialUSD === 'number' ? fmtCost(r.officialUSD, '$') + (r.officialMissing ? '（另有 ' + exact(r.officialMissing) + ' 次无报价）' : '') : '暂无报价'
+      const money = r => r?.runs ? ' · 官方参考费用：' + official(r) + (typeof r.pricedCost === 'number' ? ' · 渠道估算：' + price(r) : '') : ''
       const total = report?.ranges.all
       const label = k => {
         const title = sessions[k]?.title
@@ -1211,43 +1218,45 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       }
       const table = (rows, nameOf) => {
         if (!rows?.length) return h('p', { className: 'ab-muted' }, '这段时间没有已记录的用量。')
-        const priced = rows.some(r => typeof r.cost === 'number')
+        const priced = rows.some(r => typeof (r.pricedCost ?? r.cost) === 'number')
         return h('div', { className: 'ab-usage-table', tabIndex: 0, 'aria-label': '用量明细，可横向滚动' },
           h('table', { className: 'ab-table num' },
-            h('thead', null, h('tr', null, ['对话 / 来源', '已上报调用', '输入 Tokens', '输出 Tokens', '合计 Tokens', '缓存命中率', ...(priced ? ['估算费用'] : [])].map(x => h('th', { key: x }, x)))),
+            h('thead', null, h('tr', null, ['对话 / 来源', '已上报调用', '输入 Tokens', '输出 Tokens', '合计 Tokens', '缓存命中率', '官方参考费用', ...(priced ? ['渠道估算'] : [])].map(x => h('th', { key: x }, x)))),
             h('tbody', null, rows.map(r => h('tr', { key: r.key },
               h('td', null, nameOf(r.key)), h('td', null, exact(r.runs)),
               h('td', { title: tokenTitle(r.promptTokens) }, tokens(r.promptTokens)), h('td', { title: tokenTitle(r.completionTokens) }, tokens(r.completionTokens)),
-              h('td', { title: tokenTitle(r.totalTokens) }, tokens(r.totalTokens)), h('td', null, hit(r)),
-              priced ? h('td', null, typeof r.cost === 'number' ? fmtCost(r.cost, report.currency) : '—') : null)))))
+              h('td', { title: tokenTitle(r.totalTokens) }, tokens(r.totalTokens)), h('td', null, hit(r)), h('td', null, official(r)),
+              priced ? h('td', null, price(r)) : null)))))
       }
       const cur = report?.current
       return h('div', { className: 'ab-grid ab-usage' },
         h('button', { type: 'button', className: 'ab-card ab-usage-summary', 'aria-expanded': open, onClick: () => { setOpen(!open); if (!open) load(range) } },
           h('span', { className: 'ab-section-title' }, 'Tokens 用量'),
           h('strong', { className: 'ab-usage-number', title: total ? tokenTitle(total.totalTokens) : undefined }, total ? tokens(total.totalTokens) : busy ? '读取中…' : '暂时无法读取'),
-          h('span', null, '已记录合计 · 输入缓存命中率 ' + hit(total) + money(total)),
-          h('span', { className: 'ab-muted' }, open ? '收起明细 ↑' : '查看各对话用量 →')),
+          h('span', null, '近 90 天 · 缓存命中率 ' + hit(total) + money(total)),
+          h('span', { className: 'ab-muted' }, open ? '收起明细 ↑' : '查看明细 →')),
         open ? h(Card, { title: '用量明细', right: h(Btn, { small: true, onClick: () => load(range), disabled: busy }, busy ? '读取中…' : '刷新'),
-          desc: '只统计已上报的用量；输入包含缓存读取和写入。命中率按输入 Token 数计算，不是请求次数。' },
+          desc: '只统计服务已上报的 Tokens。' },
           h('div', { className: 'ab-flex', style: { flexWrap: 'wrap', gap: 6 } },
-            [['all','已记录（近 90 天）'],['today','今天'],['yesterday','昨天'],['7','近 7 天'],['30','近 30 天']].map(([value,name]) =>
+            [['all','近 90 天'],['today','今天'],['yesterday','昨天'],['7','近 7 天'],['30','近 30 天']].map(([value,name]) =>
               h('button', { key: value, type: 'button', className: cx('ab-btn',range === value && 'primary'), 'aria-pressed': range === value, onClick: () => setRange(value) }, name))),
           h('div', { className: 'ab-flex', style: { flexWrap: 'wrap', gap: 8, alignItems: 'center', marginTop: 8 } },
-            h('span', { className: 'ab-muted ab-small' }, 'K = 千 · M = 百万 · B = 十亿'),
             h('button', { type: 'button', className: 'ab-btn', 'aria-pressed': precise, onClick: () => setPrecise(!precise) }, precise ? '使用简写' : '显示精确数字')),
           failed ? h('div', { className: 'ab-note warn', role: 'alert' }, '暂时没能读取最新用量，请点刷新重试。' + (report ? '当前仍显示上次结果。' : '')) : null,
           report?.writeFailed ? h('div', { className: 'ab-note warn', role: 'alert' }, '用量暂未保存成功；重启可能丢失最近的记录。') : null,
           busy || report?.range !== range ? h('p', { className: 'ab-muted', role: 'status' }, busy ? '正在读取所选时段…' : '请刷新以读取所选时段。') : cur ? h(Fragment, null,
             h('div', { className: 'ab-note', title: tokenTitle(cur.totalTokens) }, '合计 ' + tokens(cur.totalTokens) + ' Tokens · 命中率 ' + hit(cur) + money(cur)),
-            table(cur.byChat, label),
-            cur.background?.runs ? h('div', { className: 'ab-note', title: tokenTitle(cur.background.totalTokens) }, '未归入具体对话的后台用量：' + tokens(cur.background.totalTokens) + ' Tokens · 命中率 ' + hit(cur.background) + money(cur.background) + '。已包含在合计中。') : null,
-            h('details', { style: { marginTop: 12 } }, h('summary', null, '按来源和模型查看'),
-              table(cur.byModule, k => k), table(cur.byModel, k => k))) : null,
-          h('p', { className: 'ab-muted ab-small' },
-            '按北京时间分日，保留近 90 天的数字记录。没有上报用量的调用、搜索或生图等独立 API 费用不计入。',
-            report?.startedAt ? ' 独立后台调用从 ' + new Date(report.startedAt).toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' }) + ' 起记录；更早的未记录用量无法补算。' : '',
-            ' 没有可靠渠道价格时不显示金额；显示的金额也仅供参考，以账单为准。')) : null)
+            h('details', { style: { marginTop: 12 } }, h('summary', null, '群和私聊'), table(cur.byChat, label)),
+            h('details', { style: { marginTop: 12 } }, h('summary', null, '记忆用量'),
+              cur.byMemoryTask?.length ? table(cur.byMemoryTask, k => k) : h('p', { className: 'ab-muted' }, '这段时间没有单列的记忆用量。旧版未区分的记录仍在原分类里。')),
+            h('details', { style: { marginTop: 12 } }, h('summary', null, '按来源查看'),
+              cur.background?.runs ? h('p', { className: 'ab-muted' }, '后台任务：' + tokens(cur.background.totalTokens) + ' Tokens（已计入合计）') : null,
+              table(cur.byModule, k => k)),
+            h('details', { style: { marginTop: 12 } }, h('summary', null, '按模型查看'), table(cur.byModel, k => k))) : null,
+          h('details', { className: 'ab-muted ab-small', style: { marginTop: 12 } }, h('summary', null, '统计口径与价目'),
+            h('p', null, '官方参考费用按原厂标准 API 价（美元）折算，中转按同价。价目核对：' + (report?.referenceDate || '—') + '。外部搜索、生图等单独计费。'),
+            h('p', null, '按北京时间分日。输入含缓存读写，命中率按输入 Tokens 计算。',
+              report?.startedAt ? ' 后台用量自 ' + new Date(report.startedAt).toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' }) + ' 起记录。' : ''))) : null)
     }
 
     function Overview({ st, toast, go }) {
