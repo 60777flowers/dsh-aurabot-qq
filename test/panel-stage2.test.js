@@ -220,26 +220,6 @@ test('VoiceTab：send 视图渲染语音合成页，树里没有 Asr/AsrStatus�
   assert.equal(p.intervals.filter((i) => i.ms === 5000).length, 0, 'send 视图不能起 5 秒轮询')
 })
 
-test('Breeze 的音色在首页，签到单独展开；本地模式不出现账户选项', () => {
-  for (const mode of ['cloud', 'local']) {
-    const p = loadPanel()
-    const draft = { ...voiceDraft, voice: { engine: 'breeze', breeze: { mode } } }
-    const { raw } = p.render('Voice', { st: voiceSt, draft, setDraft() {}, toast() {}, reload() {} })
-    const fold = title => find(raw, n => n.type === 'details' && text(n.children[0]) === title)
-    assert.ok(fold('Breeze 声音微调'))
-    const quota = fold('每日额度与签到')
-    if (mode === 'cloud') {
-      assert.ok(find(raw, n => n.props?.label === '音色 id'))
-      assert.ok(quota && !quota.props.open)
-      assert.ok(find(quota, n => n.props?.label === '自动领每日额度'))
-      assert.ok(!find(quota, n => n.props?.label === '音色 id'))
-    } else {
-      assert.equal(quota, null)
-      assert.equal(find(raw, n => n.props?.label === '账号密码'), null)
-    }
-  }
-})
-
 test('VoiceTab：listen 视图渲染 Asr（含 AsrStatus，首查 /voice/asr-status，起 5 秒轮询）', () => {
   const p = loadPanel()
   const { tree } = p.render('VoiceTab', { voiceView: 'listen', setVoiceView() {}, st: voiceSt, draft: voiceDraft, setDraft() {}, toast() {}, reload() {} })
@@ -370,7 +350,7 @@ test('Manage：清单固定 9 项且 key 不重复（MANAGE_FEATURES 契约）',
 
 test('折叠契约：语音页低频参数收进 collapsible Card（defaultOpen=false，源码级）', () => {
   const src = CLIENT()
-  const start = src.indexOf("title: '什么时候发语音'")
+  const start = src.indexOf("title: '更多设置（3 项）'")
   assert.ok(start > 0, '语音页要有「更多设置」折叠卡')
   const end = src.indexOf('VoiceSongModel', start)
   const block = src.slice(Math.max(0, start - 120), end)
@@ -388,7 +368,7 @@ test('折叠契约：语音页低频参数收进 collapsible Card（defaultOpen=
 
 test('Card 折叠行为：defaultOpen=false 时 children 不渲染；点标题展开后出现', () => {
   const p = loadPanel()
-  const props = { title: '什么时候发语音', desc: '折叠描述', collapsible: true, defaultOpen: false }
+  const props = { title: '更多设置（3 项）', desc: '折叠描述', collapsible: true, defaultOpen: false }
   let { tree } = p.render('Card', props, '低频参数内容')
   assert.ok(!text(tree).includes('低频参数内容'), '折叠时 children 不能进树（不渲染、不注册控件）')
   assert.match(text(tree), /▸ 展开/, '折叠态要有展开提示')
