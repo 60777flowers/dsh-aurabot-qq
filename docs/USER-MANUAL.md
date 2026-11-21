@@ -360,6 +360,10 @@ QQ 指令中的「窗口」对应面板的「聊起来后继续回应」，现�
 
 只想重开当前对话时，由主人在目标聊天发送 `/reset` 或 `/重开`。旧 DSH 会话归档，长期记忆不删除；`/clear` 不是内置命令。启用 `chat.seedHistory` 时，新会话仍会补读近期 QQ 记录，且长期记忆会继续召回。若不希望补读，先关闭该设置。
 
+### 用 Fish Audio 发语音
+
+在「语音 → 发语音」里选择 **Fish Audio**。点「获取 Key」打开 Fish 开发者页面，把生成的 API Key 粘回密码框；音色 ID 可以留空。试听满意后保存即可。已配置 `FISH_API_KEY` 的用户不用重复填写；在这里填写的 Key 优先，移除并保存后恢复使用 DSH 凭据。面板不回显已保存的密钥。
+
 ### HTTP 语音失败时的声音
 
 `voice.http.fallback` 可选 `windows`（旧配置默认）、`edge` 或 `text`。`edge` 使用已安装的 Edge TTS 和当前 `voice.voice` 音色；Edge 也失败时交给聊天层改发文字，不继续降成 Windows 语音。`text` 直接将 HTTP 错误交给聊天层，不调用其他合成引擎。

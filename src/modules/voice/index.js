@@ -18,7 +18,7 @@ export default {
   version: '1.0.0',
   description: '发语音条：把她的话念出来（关掉后想发语音时改发文字）',
   tab: 'voice',
-  files: ['voice/tts.js', 'voice/asr.js', 'voice/rvc.js', 'voice/volcano-voices.js'],
+  files: ['voice/tts.js', 'voice/fish.js', 'voice/asr.js', 'voice/rvc.js', 'voice/volcano-voices.js'],
   setup(api) {
     const { hub, onebot, local, http } = api.core
 
@@ -29,6 +29,10 @@ export default {
           const file = fileOf(await local.call('tts', { text }))
           if (file && existsSync(file)) return { file, engine: 'local' }
         } catch (error) {}
+      }
+      if (voice.engine === 'fish-free' && !voice.fishApiKey) {
+        const stored = await api.dsh?.get?.('credentials')?.resolve?.('FISH_API_KEY')
+        return textToSpeech(text, { ...voice, fishApiKey: stored?.value }, api.log)
       }
       return textToSpeech(text, voice, api.log)
     }

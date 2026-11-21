@@ -125,6 +125,8 @@ export const DEFAULTS = {
     enabled: true,
     // auto = 先 edge-tts，不行用 Windows 语音；edge / windows / cosyvoice / gptsovits / volcano / breeze / minimax / http = 指定引擎（失败都会退回 Windows 语音）
     engine: 'auto',
+    fishApiKey: '',
+    fishReferenceId: '',
     cosyvoice: { url: 'http://127.0.0.1:50000', mode: 'sft', spkId: '中文女', instruct: '', sampleRate: 22050 },
     gptsovits: { url: 'http://127.0.0.1:9880', refAudio: '', promptText: '', promptLang: 'zh', textLang: 'zh' },
     // 通用 HTTP 引擎：GET 时地址里带 {text}；POST 时填接口地址，请求头一行一个，请求体里 {text} 自动替换（已做 JSON 转义）
@@ -959,7 +961,9 @@ export function normalize(raw) {
   g.burstMax = num(g.burstMax, 8, 1, BIG)
   g.engagedMax = num(g.engagedMax, 6, 0, BIG)
   g.burstWindowSec = num(g.burstWindowSec, 120, 1, BIG)
-  if (!['auto', 'edge', 'windows', 'cosyvoice', 'gptsovits', 'http', 'volcano', 'breeze', 'minimax'].includes(c.voice.engine)) c.voice.engine = 'auto'
+  c.voice.fishApiKey = String(c.voice.fishApiKey || '').trim()
+  c.voice.fishReferenceId = String(c.voice.fishReferenceId || '').trim()
+  if (!['auto', 'edge', 'windows', 'cosyvoice', 'gptsovits', 'http', 'volcano', 'breeze', 'minimax', 'fish-free'].includes(c.voice.engine)) c.voice.engine = 'auto'
   c.voice.songVoice = String(c.voice.songVoice || '').slice(0, 120)
   c.voice.songPitch = Math.max(-24, Math.min(24, Math.round(Number(c.voice.songPitch) || 0)))
   c.voice.cosyvoice.sampleRate = num(c.voice.cosyvoice.sampleRate, 22050, 8000, 48000)
@@ -1095,7 +1099,7 @@ export function normalize(raw) {
 }
 
 // 面板里不回传原文的字段：路径（几层都行）
-const SECRETS = [['snowluma', 'webuiPassword'], ['snowluma', 'httpToken'], ['snowluma', 'wsToken'], ['imageGen', 'apiKey'], ['imageGen', 'minimax', 'apiKey'], ['voice', 'asrApi', 'apiKey'], ['memory', 'vector', 'apiKey'], ['memory', 'rerank', 'apiKey'], ['song', 'neteaseCookie'], ['bili', 'cookie'], ['bili', 'sessdata'], ['bili', 'biliJct'], ['heybox', 'cookie'], ['bridge', 'token'], ['video', 'minimax', 'apiKey'], ['video', 'custom', 'headers'], ['voice', 'volcano', 'apiKey'], ['voice', 'breeze', 'key'], ['voice', 'breeze', 'password'], ['voice', 'minimax', 'apiKey'], ['backup', 'remote', 'token'], ['backup', 'remote', 'webdav', 'password']]
+const SECRETS = [['voice', 'fishApiKey'], ['snowluma', 'webuiPassword'], ['snowluma', 'httpToken'], ['snowluma', 'wsToken'], ['imageGen', 'apiKey'], ['imageGen', 'minimax', 'apiKey'], ['voice', 'asrApi', 'apiKey'], ['memory', 'vector', 'apiKey'], ['memory', 'rerank', 'apiKey'], ['song', 'neteaseCookie'], ['bili', 'cookie'], ['bili', 'sessdata'], ['bili', 'biliJct'], ['heybox', 'cookie'], ['bridge', 'token'], ['video', 'minimax', 'apiKey'], ['video', 'custom', 'headers'], ['voice', 'volcano', 'apiKey'], ['voice', 'breeze', 'key'], ['voice', 'breeze', 'password'], ['voice', 'minimax', 'apiKey'], ['backup', 'remote', 'token'], ['backup', 'remote', 'webdav', 'password']]
 // 扩展模块设置里的密码类字段（模块加载时登记）：['ext', 模块id, 字段]
 const extraSecrets = new Map()
 export function registerSecretField(path) { extraSecrets.set(path.join('\u0000'), path) }

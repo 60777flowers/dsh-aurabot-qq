@@ -3,6 +3,7 @@
 //   兜底：Windows 自带的中文语音（System.Speech / Huihui），什么都不装也能用（只有 Windows 有）。
 // 管线：文字 → TTS → 文件路径。任何一步失败由调用方退回发文字。（RVC 音色目前用在翻唱上，见 src/song/）
 
+import { fishSpeech } from './fish.js'
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, statSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { buildWav } from './wav.js'
@@ -548,7 +549,10 @@ export async function textToSpeech(text, opt = {}, log) {
   let file = ''
   let engine = ''
   const local = { cosyvoice: cosyvoiceSynth, gptsovits: gptsovitsSynth, http: httpSynth, volcano: volcanoSynth, breeze: breezeSynth, minimax: minimaxSynth }[opt.engine]
-  if (local) {
+  if (opt.engine === 'fish-free') {
+    file = saveAudio(await fishSpeech(clean, opt.fishApiKey, undefined, opt.fishReferenceId))
+    engine = 'fish-free'
+  } else if (local) {
     try {
       file = await local(clean, opt[opt.engine] || {})
       engine = opt.engine
