@@ -692,7 +692,7 @@ export function parseReply(text, options) {
     const part = bubble.trim()
     if (!part) continue
     // 依次切出 poke / reply / voice / sticker / markdown 图片，其余是文字
-    const re = /<poke\s*\/?>|<\/poke\s*>|<reply:\s*(\d+)\s*>|<voice>([\s\S]*?)<\/voice>|<sticker:([^>]+?)>(?:\s*<\/sticker>)?|!\[[^\]]*\]\(\s*([^)\s]+)\s*\)/g
+    const re = /<poke\s*\/?>|<\/poke\s*>|<reply:\s*(\d+)\s*>|<voice>([\s\S]*?)<\/voice>|<sticker:([^>]+?)>(?:\s*<\/sticker>)?|!\[[^\]]*\]\(\s*([^)\s]+)\s*\)|\[表情[:：]\s*([^\]\n]+?)\s*\]/g
     let last = 0
     let m
     while ((m = re.exec(part)) !== null) {
@@ -712,6 +712,10 @@ export function parseReply(text, options) {
         if (v) items.push({ kind: 'sticker', value: v })
       } else if (m[4] !== undefined) {
         items.push({ kind: 'image', value: m[4] })
+      } else if (m[5] !== undefined) {
+        // 模型常写成「[表情: 无语死鱼脸]」而不是 <sticker:…>：按表情名尝试匹配，匹配不到宁可不发，也不能把描述当文字发出去。
+        const v = m[5].trim()
+        if (v) items.push({ kind: 'sticker', value: v })
       }
       attach(from)
       last = re.lastIndex
