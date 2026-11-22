@@ -2465,7 +2465,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
 
     function GroupOverrides({ draft, setDraft, setSection }) {
       const overrides = draft.group.overrides || {}
-      const groupIds = [...new Set([...draft.allow.groups, ...(draft.group.moduleOnlyGroups || []), ...Object.keys(overrides), ...(draft.memory.passiveGroups || [])])]
+      const groupIds = [...new Set([...draft.allow.groups, ...(draft.group.moduleOnlyGroups || []), ...Object.keys(overrides), ...Object.keys(draft.memory.groupExtraction || {}), ...(draft.memory.passiveGroups || [])])]
       const [newGid, setNewGid] = useState('')
       const [selected, setSelected] = useState('')
       const selectedId = groupIds.includes(selected) ? selected : groupIds[0]
@@ -2513,6 +2513,12 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
                 h(Row, { label: '群响应模式' }, h(Select, { ariaLabel: '群 ' + gid + ' 响应模式', value: mode,
                   options: [{ value: 'off', label: '不响应群消息' }, { value: 'modules', label: '仅模块' }, { value: 'chat', label: '允许 AI 聊天' }], onChange: changeMode })),
                 mode !== 'chat' ? h('div', { className: 'ab-note' }, mode === 'modules' ? '群消息只交给模块；是否回应仍看各模块的开关、权限和时段。AI 聊天设置暂不生效。' : '未加入白名单，群消息不触发模块或 AI；以下接话设置暂不生效。') : h('p', { className: 'ab-muted ab-small' }, '被 @、引用或叫名字时按规则回复，仍受总开关、暂停和次数限制。'),
+                h(Row, { label: '长期记忆整理', hint: '相关对话包括主人发言、与她的互动和紧邻前文。群聊上下文不变。' }, h(Select, { ariaLabel: '群 ' + gid + ' 长期记忆整理', value: draft.memory.groupExtraction?.[gid] || 'related',
+                  options: [{ value: 'related', label: '只整理相关对话（默认）' }, { value: 'all', label: '整理全部对话' }, { value: 'auto', label: '按群消息量自动切换' }], onChange: value => {
+                    const modes = { ...draft.memory.groupExtraction }; if (value === 'related') delete modes[gid]; else modes[gid] = value
+                    setDraft(setPath(draft, 'memory.groupExtraction', modes))
+                  } })),
+                draft.memory.groupExtraction?.[gid] === 'auto' && h('p', { className: 'ab-muted ab-small' }, '当日近一小时超过 80 行，只整理相关对话；降至 40 行及以下恢复全部。'),
                 h('details', { key: gid + ':' + mode, open: mode === 'chat' ? true : undefined },
                   h('summary', { style: { cursor: 'pointer', margin: '12px 0' } }, mode === 'chat' ? 'AI 聊天设置' : 'AI 聊天设置（开启 AI 聊天后生效）'),
                 ...[['proactiveEnabled', '没人叫时主动插话'], ['engagedEnabled', '聊起来后继续回应']].map(([key, label]) =>
@@ -4933,8 +4939,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         data && h('div', { style: { marginTop: 8 } },
           h('b', null, data.pending ? '待整理 ' + num(data.pending) + ' 行' : '没有待整理流水'),
           h('span', { className: 'ab-muted ab-small' }, ' · 今日已用 ' + num(data.used) + ' / ' + num(data.limit) + ' 批'),
-          data.total > 0 && h('progress', { max: data.total, value: data.total - data.pending, 'aria-label': '留存流水已处理比例', style: { width: '100%', display: 'block', margin: '6px 0' } }),
-          h('div', { className: 'ab-small ab-muted' }, '留存流水已处理 ' + num(data.total - data.pending) + ' / ' + num(data.total) + ' 行' + (data.oldest ? ' · 最早待整理 ' + data.oldest : '') + ' · ' + new Date(data.at).toLocaleTimeString() + ' 更新'),
+          data.total > 0 && h('progress', { max: data.total, value: data.total - data.pending, 'aria-label': '纳入整理的流水已处理比例', style: { width: '100%', display: 'block', margin: '6px 0' } }),
+          h('div', { className: 'ab-small ab-muted' }, '纳入整理的流水已处理 ' + num(data.total - data.pending) + ' / ' + num(data.total) + ' 行' + (data.outOfScope ? ' · 不纳入整理 ' + num(data.outOfScope) + ' 行' : '') + (data.oldest ? ' · 最早待整理 ' + data.oldest : '') + ' · ' + new Date(data.at).toLocaleTimeString() + ' 更新'),
           (all ? data.chats : data.chats.slice(0, 5)).map(c => h('div', { key: c.id, style: { display: 'flex', gap: 8, justifyContent: 'space-between', marginTop: 7 } },
             h('span', { style: { minWidth: 0, overflowWrap: 'anywhere' } }, label(c)),
             h('b', { style: { whiteSpace: 'nowrap' } }, num(c.pending) + ' 行'))),
@@ -10023,6 +10029,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         if (changed(rest.group, baseline.group)) { body.group = rest.group; expected.group = baseline.group }
         if (changed(rest.memory, baseline.memory)) {
           const mem = clone(rest.memory || {})
+          if (changed(mem.groupExtraction, baseline.memory?.groupExtraction)) expected.groupExtraction = baseline.memory?.groupExtraction || {}
+          else delete mem.groupExtraction
           if (changed(mem.passiveGroups, baseline.memory?.passiveGroups)) expected.passiveGroups = baseline.memory?.passiveGroups
           else delete mem.passiveGroups
           if (Object.keys(mem).length) body.memory = mem
@@ -10206,7 +10214,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         const base = draftBaseRef.current || cfg
         if (id.startsWith('ext:')) { const k = id.slice(4); return JSON.stringify((draft.ext || {})[k]) !== JSON.stringify((base.ext || {})[k]) }
         // 「聊天」页的旁听名单存于 memory，也需要显示未保存标记。
-        if (id === 'group' && (JSON.stringify(draft.memory?.passiveGroups) !== JSON.stringify(base.memory?.passiveGroups) || JSON.stringify(draft.allow?.groups) !== JSON.stringify(base.allow?.groups))) return true
+        if (id === 'group' && (JSON.stringify(draft.memory?.groupExtraction) !== JSON.stringify(base.memory?.groupExtraction) || JSON.stringify(draft.memory?.passiveGroups) !== JSON.stringify(base.memory?.passiveGroups) || JSON.stringify(draft.allow?.groups) !== JSON.stringify(base.allow?.groups))) return true
         // 「生图」页也管着 dsh-image 模块的设置。
         if (id === 'imagegen' && JSON.stringify((draft.ext || {})['dsh-image']) !== JSON.stringify((base.ext || {})['dsh-image'])) return true
         return (TAB_KEYS[id] || []).some((k) => JSON.stringify(draft[k]) !== JSON.stringify(base[k]))

@@ -15,7 +15,7 @@ function setup(t, logs, processed, extra) {
   const directory = mkdtempSync(join(tmpdir(), 'aurabot-backlog-'))
   writeMemoryState(directory, { items: [], processed, ...extra })
   const hub = { sessions: () => ({ [dm]: { title: '私聊示例' } }), groupNames: new Map([['10001', '测试群']]), chatLogDays: () => Object.keys(logs), chatLogOf: d => { assert.notEqual(d, future); return logs[d] } }
-  const config = normalize({ memory: { extractDailyBatches: 30 } })
+  const config = normalize({ memory: { extractDailyBatches: 30, groupExtraction: { '10001': 'all', '90000': 'all' } } })
   const mem = createMemoryStore({ directory, dsh: {}, getConfig: () => config, hub, log: { warn() {} } })
   t.after(() => { mem.close(); rmSync(directory, { recursive: true, force: true }) })
   return { mem, state: () => readMemoryState(directory) }

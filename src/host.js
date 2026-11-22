@@ -1422,6 +1422,7 @@ export function apply(ctx) {
       (Object.hasOwn(expected, 'groups') && !isDeepStrictEqual(expected.groups, cfg.allow.groups)) ||
       (Object.hasOwn(expected, 'memberFilter') && !isDeepStrictEqual(expected.memberFilter, cfg.memberFilter)) ||
       (Object.hasOwn(expected, 'group') && !isDeepStrictEqual(expected.group, cfg.group)) ||
+      (Object.hasOwn(expected, 'groupExtraction') && !isDeepStrictEqual(expected.groupExtraction, cfg.memory.groupExtraction || {})) ||
       (Object.hasOwn(expected, 'passiveGroups') && !isDeepStrictEqual(expected.passiveGroups, cfg.memory.passiveGroups))
     )) return saveEnvelope({ ok: false, code: 'group_settings_conflict', message: '群设置已在别处修改，本次没有保存。请记下要保留的改动，再点「读取最新设置」放弃草稿。' })
     const before = cfg
