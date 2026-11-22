@@ -40,6 +40,7 @@ function isSelfFact(fact, cfg) {
   })
 }
 
+class ExtractionFormatError extends Error {}
 const NO_ARRAY = '提炼记忆时模型输出无法解析为 JSON 数组'
 const EXTRACT_RETRY_TOKENS = 16000
 const VIA_NAMES = { douyin: '抖音', heybox: '小黑盒' }
@@ -718,7 +719,8 @@ export function parseExtraction(out) {
   const text = String(out || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
   const start = text.indexOf('{')
   const end = text.lastIndexOf('}')
-  if (start >= 0 && end > start && (text.indexOf('[') < 0 || start < text.indexOf('['))) {
+  if (start >= 0 && (text.indexOf('[') < 0 || start < text.indexOf('['))) {
+    if (end <= start) return null // 残缺对象里的 [] 不是旧格式的完整提炼结果
     try {
       const result = JSON.parse(text.slice(start, end + 1).replace(/,\s*([\]}])/g, '$1'))
       if (Array.isArray(result.facts)) return result
@@ -2579,7 +2581,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
       return { ok: true, added: n, insights: ins }
     } catch (error) {
       log.warn('提炼记忆失败：', error.message)
-      return { ok: false, message: error.message, added: 0, insights: 0 }
+      return { ok: false, formatError: error instanceof ExtractionFormatError, message: error.message, added: 0, insights: 0 }
     }
   }
 
@@ -2660,7 +2662,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
     if (version !== forgetVersion) throw new Error('聊天中有新的忘记请求，稍后重新提炼')
     if (!result) {
       const why = out ? '非空但截断或格式非法' : '空输出'
-      throw new Error(`${NO_ARRAY}（${why}；模型返回：${out ? clipText(out, 60) : lastEmptyInfo()}）`)
+      throw new ExtractionFormatError(`${NO_ARRAY}（${why}；模型返回：${out ? clipText(out, 60) : lastEmptyInfo()}）`)
     }
     const arr = result.facts
     let n = 0
@@ -2750,6 +2752,25 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
   const EXTRACT_WINDOW = 240 // 每段流水按聊天分组；完成后才推进整段的行号
   const EXTRACT_LIMIT = 12 // 每次整理最多提炼多少批，剩下的留到下次
   const BAD_BATCH_LIMIT = 3 // 同一批连续几次提炼不出来就跳过，别让它卡住后面的记忆
+
+  // 只累计同一批连续的格式错误。旧版数字混入过网络错误，不用它决定是否跳过。
+  function recordBatchFailure(key, result) {
+    const state = load()
+    const previous = state.badBatches?.[key]
+    if (!result.formatError) {
+      if (previous !== undefined) { delete state.badBatches[key]; save(state) }
+      throw new Error(result.message || '提炼记忆失败')
+    }
+    const streak = (previous?.formatErrors || 0) + 1
+    if (streak < BAD_BATCH_LIMIT) {
+      state.badBatches ??= {}
+      state.badBatches[key] = { formatErrors: streak }
+      save(state)
+      throw new Error(result.message)
+    }
+    return streak // 调用方和进度一起清掉计数
+  }
+
 
   // 提炼调度排序：私聊优先，其次积压少的小群，再按最久没发言的。谁也不能把一次 tick 的
   // 12 批全吃光——否则一个活跃千人群的流水会永远挡在私聊前面（#31 / issue #376）。
@@ -3183,24 +3204,21 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
                 end++
               }
               const version = forgetVersion
+              const key = `${day}:${chatId}:${part[0].index}`
               const r = await extractLines(chatId, part.map((x) => x.line), () => {
                 if (extractionStale(day, part.filter((x) => !x.line.forgottenAt).map((x) => x.index), version)) throw new Error('聊天中有新的忘记请求，稍后重新提炼')
                 const s = load()
+                if (s.badBatches) delete s.badBatches[key]
                 s.processed = s.processed || {}
                 s.processed[day] = { ...progress, chats: { ...progress.chats, [chatId]: end } }
                 save(s)
               })
               if (!r.ok) {
                 // 只跳过模型答非所问的；断网、上游出错等恢复了还要接着提炼
-                const key = `${day}:${chatId}:${n}`
-                const s = load()
-                s.badBatches = s.badBatches || {}
-                const fails = (s.badBatches[key] || 0) + 1
-                s.badBatches[key] = fails
-                save(s)
-                if (!String(r.message).includes(NO_ARRAY) || fails < BAD_BATCH_LIMIT) throw new Error(r.message || '提炼记忆失败')
+                const fails = recordBatchFailure(key, r)
                 log.warn(`${chatId} 第 ${n} 行起的 ${part.length} 行连续 ${fails} 次提炼不出来，跳过（流水还在）`)
-                delete s.badBatches[key]
+                const s = load()
+                if (s.badBatches) delete s.badBatches[key]
                 s.processed = s.processed || {}
                 s.processed[day] = { ...progress, chats: { ...progress.chats, [chatId]: end } }
                 save(s)
@@ -3446,9 +3464,11 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
             if (!part.length) { progressed = true; continue }
             if (!takeBatch()) return { ok: true, batches }
             const version = forgetVersion
+            const key = `idle:${task.day}:${q.chatId}:${part[0].index}`
             const checkpoint = () => {
               if (extractionStale(task.day, part.filter((x) => !x.line.forgottenAt).map((x) => x.index), version)) throw new Error('聊天中有新的忘记请求，稍后重新提炼')
               const s = load()
+              if (s.badBatches) delete s.badBatches[key]
               s.processed = s.processed || {}
               const saved = s.processed[task.day]
               const progress = saved && typeof saved === 'object' ? saved : { offset: 0, end: 0, chats: {} }
@@ -3457,13 +3477,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
             }
             const r = await extractLines(q.chatId, part.map((x) => x.line), checkpoint)
             if (!r.ok) {
-              const key = `idle:${task.day}:${q.chatId}:${part[0].index}`
-              const s = load()
-              s.badBatches = s.badBatches || {}
-              const fails = (s.badBatches[key] || 0) + 1
-              s.badBatches[key] = fails
-              save(s)
-              if (!String(r.message).includes(NO_ARRAY) || fails < BAD_BATCH_LIMIT) throw new Error(r.message || '提炼记忆失败')
+              const fails = recordBatchFailure(key, r)
               log.warn(`${q.chatId} 的空闲批次连续 ${fails} 次提炼不出来，跳过（流水还在）`)
               checkpoint()
             }
