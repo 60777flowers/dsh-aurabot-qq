@@ -16,7 +16,7 @@ import { ownerAuthorizationRevision } from '../core/config.js'
 import { dataDir, readJson, writeJson } from '../core/store.js'
 import { isDefiniteFailure } from '../onebot/client.js'
 import { parseMessageEvent, gifFrames, segmentsOf } from './inbound.js'
-import { parseReply, bubbleDelay, wantsVoice, itemsToLine, cleanOutboundText, cleanOutboundSegments, capOutboundSegments, clockLabel } from './reply.js'
+import { parseReply, bubbleDelay, wantsVoice, itemsToLine, cleanOutboundText, cleanOutboundSegments, capOutboundSegments, clockLabel, tidyPunctuation } from './reply.js'
 import { decideGroupReply, engagedHint, pickAutoReply, pickDirectRequester, policyFor, sameNameNote, topicRelevance } from './group-policy.js'
 import { checkAllowed, groupResponseMode, shouldObserveGroup, levelFor, presetFor, isOwner, groupOwnerTools } from './access.js'
 import { fetchImage, segmentBytes } from '../core/net.js'
@@ -1794,6 +1794,8 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       if (all.length <= cfg.voice.autoMaxChars && Math.random() < cfg.voice.autoChance * mood().voice) items = [{ kind: 'voice', value: all }]
     }
     items = limitReplyStickers(items)
+    // 收尾标点后紧跟的逗号统一收掉：文字气泡原本也没洗过这一处，语音条更是一直漏（#546）。
+    items = items.map((it) => (it.kind === 'text' || it.kind === 'voice') ? { ...it, value: tidyPunctuation(it.value) } : it)
     const inGroup = chatId.startsWith('group:')
     // 群里别刷屏：一段最多 3 条。超了不静默截断——整段并成一条发出去，条数照样不涨
     if (inGroup && items.length > 3) {
@@ -1851,6 +1853,9 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
         else if (it.kind === 'voice') {
           if (cfg.voice.enabled) await sendVoice(chatId, it.value, replyId, userId)
           else await sendText(chatId, it.value, replyId, missedAt, userId)
+          // 手机客户端渲染媒体比文字慢，紧跟着发配文会被压到语音条上面。语音发完先停一下再发下一条（#546）。
+          const next = items[i + 1]
+          if (!opts.simulate && next && (next.kind === 'text' || next.kind === 'image' || next.kind === 'sticker')) await pause(1200)
         } else if (it.kind === 'sticker') await sendSticker(chatId, it.value, replyId, userId)
         else if (it.kind === 'poke') { if (!opts.simulate) await pokeBack(chatId) }
         else if (it.kind === 'image') {

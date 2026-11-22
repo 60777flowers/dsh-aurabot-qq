@@ -208,6 +208,14 @@ export function isSilence(text) {
   return t.replace(SILENCE_MARK, '').replace(/[\s\p{P}]/gu, '') === ''
 }
 
+/**
+ * 收尾标点后面又跟了逗号（「。，」「！，」）：人格卡要求每句有收尾标点，模型想停顿时会再补一个逗号。
+ * 只在紧邻的位置收掉逗号，正常的中文逗号不受影响；语音条和文字气泡共用这一份（#546）。
+ */
+export function tidyPunctuation(text) {
+  return String(text || '').replace(/([。！？…~～]+)[ \t]*[，,]+/g, '$1')
+}
+
 /** 剥掉正文里残留的沉默标记；整条只有标记时会变成空串，由 isSilence 判沉默。 */
 export function stripSilenceMarks(text) {
   return String(text || '').replace(SILENCE_MARK_WITH_SPACE, '')
