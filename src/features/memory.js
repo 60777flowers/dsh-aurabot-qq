@@ -3123,6 +3123,49 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
   let idleDeferLogged = false
   let vectorDeferLogged = false
 
+  // 只在面板请求时读取。沿用本人格的流水和整理进度；不碰模型、配额、进度或记忆内容。
+  async function backlog() {
+    const state = load(), cfg = getConfig().memory, today = dayKey()
+    const sessions = hub.sessions?.() || {}, chats = new Map()
+    let total = 0, pending = 0, oldest = '', batches = 0
+    for (const day of hub.chatLogDays().filter(d => d <= today).sort()) {
+      await new Promise(resolve => setImmediate(resolve))
+      const rows = hub.chatLogOf(day), progress = state.processed?.[day]
+      // 旧版纯数字进度和整理器一样从头算。chats 的序号包括后来忘掉的行。
+      const offset = progress?.offset || 0, end = progress?.end || 0
+      const seen = new Map(), windowCounts = new Map(), idle = progress?.idle || []
+      let range = 0, windowEnd = end > offset ? end : offset + EXTRACT_WINDOW
+      for (let i = 0; i < rows.length; i++) {
+        if (i >= windowEnd) { windowCounts.clear(); windowEnd += EXTRACT_WINDOW }
+        const row = rows[i], id = row.chatId
+        if (!id || id.startsWith('system:')) continue
+        let done = i < offset
+        if (!done && i < end) {
+          const n = seen.get(id) || 0
+          seen.set(id, n + 1)
+          done = n < (progress.chats?.[id] || 0)
+        }
+        if (row.forgottenAt || !rememberedRow(row, state)) continue
+        total++
+        while (range < idle.length && idle[range][1] <= i) range++
+        if (done || (range < idle.length && idle[range][0] <= i)) continue
+        pending++
+        if (!oldest) oldest = day
+        const n = windowCounts.get(id) || 0
+        if (n % EXTRACT_LINES === 0) batches++
+        windowCounts.set(id, n + 1)
+        let chat = chats.get(id)
+        if (!chat) {
+          const name = (id.startsWith('group:') && hub.groupNames?.get(id.slice(6))) || sessions[id]?.title || (id === 'qzone' ? 'QQ 空间' : id)
+          chat = { id, name, pending: 0 }; chats.set(id, chat)
+        }
+        chat.pending++
+      }
+    }
+    return { at: Date.now(), total, pending, oldest, batches, used: state.extractBatches?.day === today ? state.extractBatches.count : 0,
+      limit: cfg.extractDailyBatches ?? 24, chats: [...chats.values()].sort((a, b) => b.pending - a.pending || a.id.localeCompare(b.id)) }
+  }
+
   /**
    * 整理临时记忆。
    * @param {{includeToday?:boolean}} o includeToday：连今天的也提炼（手动整理时），但今天的流水不删（写日记还要用）
@@ -3850,6 +3893,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
     },
     // 星图点「还记得」时用：整理一份命中，让她真的复习一次（会涨 hitDays / 刷新 lastHit）
     touch,
+    backlog,
     stats: () => {
       const state = load()
       const items = state.items

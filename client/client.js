@@ -4911,6 +4911,36 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             : h(StarMap, { toast }))
     }
 
+    function MemoryBacklog() {
+      const [data, setData] = useState(null), [error, setError] = useState(''), [all, setAll] = useState(false)
+      async function refresh() {
+        setError('')
+        const r = await get('/memory/backlog')
+        if (!r.ok || !Array.isArray(r.chats)) { setError(r.message || '读取失败，请重试'); return }
+        setData(r)
+      }
+      const num = n => n.toLocaleString('zh-CN')
+      function label(c) {
+        const id = c.id.replace(/^(?:group|private):/, ''), name = c.name
+        if (name === c.id || name === id) return (c.id.startsWith('group:') ? '群 ' : c.id.startsWith('private:') ? '私聊 ' : '') + id
+        return h(Fragment, null, name, !name.endsWith(id) && h('small', { className: 'ab-muted' }, ' · ' + id))
+      }
+      return h('section', { 'aria-label': '整理进度', style: { margin: '12px 0' } },
+        h('div', { className: 'ab-flex' }, h('strong', null, '整理进度'), h('div', { className: 'ab-spacer' }),
+          h(Btn, { small: true, onClick: refresh }, data ? '刷新进度' : '查看待整理流水')),
+        !data && !error && h('div', { className: 'ab-muted ab-small' }, '只看进度，不会启动整理。'),
+        error && h('p', { role: 'alert' }, error),
+        data && h('div', { style: { marginTop: 8 } },
+          h('b', null, data.pending ? '待整理 ' + num(data.pending) + ' 行' : '没有待整理流水'),
+          h('span', { className: 'ab-muted ab-small' }, ' · 今日已用 ' + num(data.used) + ' / ' + num(data.limit) + ' 批'),
+          data.total > 0 && h('progress', { max: data.total, value: data.total - data.pending, 'aria-label': '留存流水已处理比例', style: { width: '100%', display: 'block', margin: '6px 0' } }),
+          h('div', { className: 'ab-small ab-muted' }, '留存流水已处理 ' + num(data.total - data.pending) + ' / ' + num(data.total) + ' 行' + (data.oldest ? ' · 最早待整理 ' + data.oldest : '') + ' · ' + new Date(data.at).toLocaleTimeString() + ' 更新'),
+          (all ? data.chats : data.chats.slice(0, 5)).map(c => h('div', { key: c.id, style: { display: 'flex', gap: 8, justifyContent: 'space-between', marginTop: 7 } },
+            h('span', { style: { minWidth: 0, overflowWrap: 'anywhere' } }, label(c)),
+            h('b', { style: { whiteSpace: 'nowrap' } }, num(c.pending) + ' 行'))),
+          data.chats.length > 5 && h(Btn, { small: true, onClick: () => setAll(!all) }, all ? '收起会话' : '查看全部 ' + data.chats.length + ' 个会话')))
+    }
+
     function MemoryPage({ st, draft, setDraft, toast }) {
       const f = useField(draft, setDraft)
       const [mem, setMem] = useState(null)
@@ -4962,6 +4992,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             h('div', { className: 'ab-card ab-stat' }, h('div', { className: 'n' }, stats ? stats.count : '–'), h('div', { className: 'l' }, '条长期记忆')),
             h('div', { className: 'ab-card ab-stat' }, h('div', { className: 'n' }, stats ? stats.auto : '–'), h('div', { className: 'l' }, '条来自每日整理' + (stats && stats.outdated ? '（另有 ' + stats.outdated + ' 条已过时）' : ''))),
             h('div', { className: 'ab-card ab-stat' }, h('div', { className: 'n', style: { fontSize: 16, paddingTop: 6 } }, last ? new Date(last.at).toLocaleString() : '还没整理过'), h('div', { className: 'l' }, '上次整理'))),
+          h(MemoryBacklog, { key: st.persona?.current || 'current' }),
           h('div', { className: 'ab-grp-row' },
             h(Row, { label: '每天自动整理两次', hint: '把临时记忆（聊天流水）提炼成长期记忆、相处经验和说话方式；第二次只处理新聊天，过了一天的流水整理完清空；各会话自己的上下文不受影响' },
               f.sw('memory.dailyConsolidate'), h('span', { className: 'ab-muted' }, '每天'),
