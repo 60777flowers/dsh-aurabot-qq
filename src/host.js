@@ -1758,6 +1758,29 @@ export function apply(ctx) {
     // 历史上限与保留天数：与模块 settings 的 min/max 对齐（10~2000 条；0 天 = 永久保留）
     if (Number.isFinite(b.petChatMaxEntries)) patch.petChatMaxEntries = Math.min(2000, Math.max(10, Math.round(b.petChatMaxEntries)))
     if (Number.isFinite(b.petChatRetentionDays)) patch.petChatRetentionDays = Math.min(3650, Math.max(0, Math.round(b.petChatRetentionDays)))
+    // ---------- 语音对讲（pet 1.2.0 起在模块库）：独立设置键的唯一写入通道 ----------
+    // 同「三处必须同步」：模块 defaults/settings 已声明这些键，这里补白名单，
+    // client/client.js 桌宠页另起一张独立的「语音对讲」卡（不塞进对话框卡）。
+    // toggle 模式：按一下开始听、再按一下发送，不再需要 PTT 键与静音断句秒数，
+    // 因此 callPttKey / callVadSilence 不再写入（旧配置里残留的值也不再被面板改动）。
+    // 口径与现有键一致：类型/枚举/协议不对的坏值忽略（不写 patch，保持原值）；
+    // 数值用有限数并 clamp 到模块 settings 的 min/max；文本 trim 后按上限截断（空串合法 = 关掉/回落默认）。
+    if (b.callEngine === 'native' || b.callEngine === 'sovits' || b.callEngine === 'voice') patch.callEngine = b.callEngine
+    // 说话方式固定 toggle；旧值 free/ptt 也收，仅为兼容旧配置读写，面板不再暴露该控件
+    if (b.callTalkMode === 'free' || b.callTalkMode === 'ptt' || b.callTalkMode === 'toggle') patch.callTalkMode = b.callTalkMode
+    if (typeof b.callRvc === 'boolean') patch.callRvc = b.callRvc
+    for (const [k, max] of [['callRvcVoice', 60], ['voiceHotkey', 40], ['callMicDeviceId', 200], ['callSpeakerDeviceId', 200]]) {
+      if (typeof b[k] === 'string') patch[k] = b[k].trim().slice(0, max)
+    }
+    // 两个服务地址：只收 http/https，留空 = 回落模块内置默认（sovitsUrl 默认 9880 / callAsrUrl 默认 8000）
+    for (const k of ['sovitsUrl', 'callAsrUrl']) {
+      if (typeof b[k] === 'string') {
+        const u = b[k].trim().slice(0, 300)
+        if (!u || /^https?:\/\//i.test(u)) patch[k] = u
+      }
+    }
+    // 一次最多字数 20~300（与模块 settings 的 min/max 对齐）；toggle 模式不再有「说完判定秒数」
+    if (Number.isFinite(b.callMaxChars)) patch.callMaxChars = Math.min(300, Math.max(20, Math.round(b.callMaxChars)))
     if (typeof b.whisperLines === 'string') patch.whisperLines = b.whisperLines.slice(0, 4000)
     // 素材包下载地址：内建模块的 settings 字段不渲染成表单（同上），这里是它唯一的写入通道。
     // 只收 http/https（或空 = 回到内置默认），别把 file:// 之类塞进来当下载源

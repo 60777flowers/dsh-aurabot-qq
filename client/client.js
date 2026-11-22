@@ -4317,6 +4317,9 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const [emUrl, setEmUrl] = useState(null)
       // 对话框（pet 1.0.5）配置草稿：快捷键/关键字/数字/城市要「保存」才下发，开关即点即存
       const [cc, setCc] = useState(null)
+      // 语音对讲（pet 1.2.0）配置草稿：热键/地址/音色/数字要「保存」才下发，开关与下拉即点即存。
+      // 独立草稿，不跟对话框的 cc 抢状态；null = 跟着服务端下发的 pet.voiceTalk 走。
+      const [cac, setCac] = useState(null)
       const load = async () => {
         const [pr, pu] = await Promise.all([get('/panel/pet/status'), get('/panel/purpose/status')])
         if (pr.ok) { setPet(pr.pet); setWs((old) => old || (pr.pet && pr.pet.whisper ? { ...pr.pet.whisper } : null)) }
@@ -4470,6 +4473,18 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         toast((r && r.message) || '没成功', 'err')
         return false
       }
+      // ---------- 语音对讲（pet 1.2.0）独立配置：从 pet.voiceTalk 读，写入仍走 savePetSetting ----------
+      // 服务端 status() 下发 pet.voiceTalk（hotkey/engine/rvc/rvcVoice/maxChars/asrUrl/sovitsUrl/
+      // micDeviceId/speakerDeviceId/asrReady/asrReason）。老模块只下发 pet.call 时兼容读取，
+      // 两者都没有时用安全默认值兜底照常渲染，这样模块升级顺序不同也不会白屏；
+      // 保存即写 ext.pet.call*（引擎等沿用 call* 键）+ ext.pet.voiceHotkey，宿主白名单见 host.js /panel/pet/config。
+      const CALL_DEFAULTS = { hotkey: 'Alt+Space', engine: 'native', rvc: false, rvcVoice: '', maxChars: 120, asrUrl: 'http://127.0.0.1:8000', sovitsUrl: 'http://127.0.0.1:9880', micDeviceId: '', speakerDeviceId: '', asrReady: null, asrReason: '' }
+      // 优先读新快照 pet.voiceTalk，老模块只有 pet.call 时兼容读取；状态字段（asrReady/asrReason）只在新快照里
+      const voiceTalk = pet?.voiceTalk || pet?.call || {}
+      const callCfg = { ...CALL_DEFAULTS, ...voiceTalk }
+      const cacVal = (k) => (cac && cac[k] != null ? cac[k] : callCfg[k])
+      const setCacVal = (k, v) => setCac((old) => ({ ...(old || {}), [k]: v }))
+      const saveCall = async (patch, msg) => { const ok = await savePetSetting(patch, msg); if (ok) setCac(null); return ok }
       return h('div', { className: 'ab-grid' },
         h(Card, { title: '桌宠', desc: '把「大肥鱼」请到桌面上：一个小小的ta待在屏幕角落，主动搭话走气泡；你也可以点ta聊天。' },
         h('div', { className: 'ab-flex', style: { marginBottom: 8 } },
@@ -4605,6 +4620,54 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         h(Row, { label: '表情预览', hint: '气泡与心情事件会用到这些表情' },
           h('div', { style: { flex: 1, display: 'flex', flexWrap: 'wrap', gap: 6 } },
             moods.map((m, i) => h('span', { key: (m.key || m) + i, className: 'ab-pill' }, moodLabel(m))))),
+        ),
+        // ---------- 语音对讲（1.2.0）：桌宠页里**独立的一张卡**，不是对话框卡的一部分 ----------
+        // 值从 pet.voiceTalk（兼容 pet.call）读，写入仍走 savePetSetting → /panel/pet/config。
+        // 下拉与开关即点即存；文本/数字用独立草稿 cac（改一半别被 8 秒轮询冲掉），点各自的「保存」才下发。
+        // toggle 模式：热键按一下开始听、再按一下发送；不设独立界面状态概念，只做收听与外放。
+        h(Card, { title: '语音对讲', desc: '按一下热键开始听、再按一下发送——大肥鱼「听到」（识别）→ 想（人格+记忆）→ 直接用系统音箱说出来，像智能音箱一样对讲。不弹窗、不发 QQ，设备由桌宠客户端上报。' },
+          h('div', { className: 'ab-small ab-muted', style: { marginBottom: 6 } },
+            '当前：' + (callCfg.engine === 'sovits' ? '本地 GPT-SoVITS' : callCfg.engine === 'voice' ? '「语音」页接管' : '系统原生')
+            + '｜触发热键：' + (callCfg.hotkey || '（未启用）')
+            + (callCfg.rvc ? '｜RVC 变声：' + (callCfg.rvcVoice || '未设音色') : '')),
+          // ASR 前置状态：未连通时红字显示人话原因，别等说完才报错（设计权威 §3）
+          callCfg.asrReady === false
+            ? h('div', { className: 'ab-small', style: { color: '#d9534f', marginBottom: 6 } }, '⚠ 识别未就绪：' + (callCfg.asrReason || '本地识别未连通，请配 faster-whisper 或开 DSH 语音输入'))
+            : callCfg.asrReady === true
+              ? h('div', { className: 'ab-small ab-muted', style: { marginBottom: 6 } }, '✓ 识别已就绪，可以开始对讲')
+              : null,
+          h(Row, { label: '触发热键', hint: '全局热键：按一下开始听、再按一下发送。留空 = 不启用' },
+            h('div', { className: 'ab-flex', style: { alignItems: 'center', gap: 8 } },
+              h('input', { className: 'ab-input', style: { width: 'min(200px, 100%)' }, placeholder: 'Alt+Space', value: cacVal('hotkey'), onChange: (e) => setCacVal('hotkey', e.target.value) }),
+              h(Btn, { small: true, disabled: busy === 'cfg', onClick: async () => { await saveCall({ voiceHotkey: String(cacVal('hotkey')).trim() }, '触发热键已保存') } }, '保存'))),
+          h(Row, { label: '麦克风设备 ID', hint: '桌宠客户端上报；空 = 系统默认。面板只显示当前值，要换设备请到桌宠客户端里选' },
+            h('span', { className: 'ab-muted ab-small' }, callCfg.micDeviceId || '系统默认')),
+          h(Row, { label: '扬声器设备 ID', hint: '桌宠客户端上报；空 = 系统默认外放' },
+            h('span', { className: 'ab-muted ab-small' }, callCfg.speakerDeviceId || '系统默认')),
+          h(Row, { label: '识别地址（callAsrUrl）', hint: '本地 faster-whisper 地址；DSH「语音输入」没开或音频不是 WAV 时退回这里。留空 = 回落内置默认 http://127.0.0.1:8000。识别未就绪看上面的提示' },
+            h('div', { className: 'ab-flex', style: { alignItems: 'center', gap: 8 } },
+              h('input', { className: 'ab-input', style: { width: 'min(320px, 100%)' }, placeholder: 'http://127.0.0.1:8000', value: cacVal('asrUrl'), onChange: (e) => setCacVal('asrUrl', e.target.value) }),
+              h(Btn, { small: true, disabled: busy === 'cfg', onClick: async () => { await saveCall({ callAsrUrl: String(cacVal('asrUrl')).trim() }, '识别地址已保存') } }, '保存'))),
+          h(Row, { label: '回答引擎（嘴）', hint: '只影响对讲里回答的声音，不改全局语音设置。系统原生 = edge 合成失败退 Windows 语音；本地 GPT-SoVITS = 用参考音频音色；语音页接管 = 豆包，你自选接管时才碰' },
+            h(Select, { value: cacVal('engine'), width: 320, options: [
+              { value: 'native', label: 'native 系统原生（默认，edge 合成，失败退 Windows 语音）' },
+              { value: 'sovits', label: 'sovits 本地 GPT-SoVITS（参考音频音色）' },
+              { value: 'voice', label: 'voice 语音页接管（豆包，自选才碰）' },
+            ], onChange: (v) => saveCall({ callEngine: v }, '回答引擎已保存') })),
+          h(Row, { label: 'GPT-SoVITS 地址', hint: '引擎选「本地 GPT-SoVITS」才用；参考音频沿用「语音」页的 gptsovits 配置。留空 = 回落内置默认 http://127.0.0.1:9880' },
+            h('div', { className: 'ab-flex', style: { alignItems: 'center', gap: 8 } },
+              h('input', { className: 'ab-input', style: { width: 'min(320px, 100%)' }, placeholder: 'http://127.0.0.1:9880', value: cacVal('sovitsUrl'), onChange: (e) => setCacVal('sovitsUrl', e.target.value) }),
+              h(Btn, { small: true, disabled: busy === 'cfg', onClick: async () => { await saveCall({ sovitsUrl: String(cacVal('sovitsUrl')).trim() }, 'GPT-SoVITS 地址已保存') } }, '保存'))),
+          h(Row, { label: 'RVC 变声', hint: 'TTS 出稿后用「翻唱」模块导入的音色再变一次声；翻唱没就绪时自动不变声并在状态里说明' },
+            h(Switch, { on: Boolean(cacVal('rvc')), onChange: (v) => saveCall({ callRvc: v }, v ? 'RVC 变声已开启' : 'RVC 变声已关闭') })),
+          h(Row, { label: '音色名', hint: '翻唱模块里导入的音色名（翻唱页能看到清单）；RVC 变声打开才生效' },
+            h('div', { className: 'ab-flex', style: { alignItems: 'center', gap: 8 } },
+              h('input', { className: 'ab-input', style: { width: 'min(200px, 100%)' }, placeholder: '如 小鱼', value: cacVal('rvcVoice'), onChange: (e) => setCacVal('rvcVoice', e.target.value) }),
+              h(Btn, { small: true, disabled: busy === 'cfg', onClick: async () => { await saveCall({ callRvcVoice: String(cacVal('rvcVoice')).trim() }, '音色名已保存') } }, '保存'))),
+          h(Row, { label: '一次最多字数', hint: '回答别太长，长了反而不像人（20~300 字，默认 120）' },
+            h('div', { className: 'ab-flex', style: { alignItems: 'center', gap: 8 } },
+              h('input', { className: 'ab-input', type: 'number', min: 20, max: 300, step: 1, style: { width: 96 }, value: cacVal('maxChars'), onChange: (e) => setCacVal('maxChars', e.target.value) }),
+              h(Btn, { small: true, disabled: busy === 'cfg', onClick: async () => { const v = Number(cacVal('maxChars')); if (!(v >= 20 && v <= 300)) { toast('一次最多字数要填 20 ~ 300 之间的数', 'err'); return } await saveCall({ callMaxChars: Math.round(v) }, '字数上限已保存') } }, '保存'))),
         ),
         // ---------- 素材包：默认形象包（大肥鱼）自动下载落位，也可在这里换镜像地址重下 ----------
         h(Card, { title: '素材包', desc: '桌宠的形象与动画（「大肥鱼」那 106 段）。插件发现缺包会自动从素材仓库下载落位，通常不用你动手；下载不动时可以在这里换镜像地址再重下。没有素材时桌宠会显示内置的静态形象（蓝色小鲸鱼）。' },
