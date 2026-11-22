@@ -3346,8 +3346,10 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     }
     if (senderId) addSender(senderId)
     for (const s of opts.extraSenders || []) addSender(s)
-    // 群聊本机工具按「这一轮说话的人」开合：全是主人就放开，掺了别人就收回去
-    if (chat.kind === 'group') applyGroupGate(key, turnSendersAllOwner(sessionId))
+    // 群聊本机工具按「这一轮说话的人」开合：全是主人就放开，掺了别人就收回去。
+    // 必须把本轮这份 st 递进去：turnState.set(key, st) 在下面，这之前 map 里还没有这一轮，
+    // 让判定自己去查会读到上一轮（新会话则是空），首条消息就被锁成「不是主人」。
+    if (chat.kind === 'group') applyGroupGate(key, turnSendersAllOwner(sessionId, st))
     // 排队消息的直接请求者不能给正在执行的上一轮借权。
     if (!opts.steer) {
       if (queuedNextTurn) st.pendingDirectRequester = opts.directRequester || null
@@ -3741,8 +3743,8 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     return [...(turnState.get(sessionKey(sessionId))?.senders || [])]
   }
 
-  function turnSendersAllOwner(sessionId) {
-    const st = turnState.get(sessionKey(sessionId))
+  function turnSendersAllOwner(sessionId, state) {
+    const st = state || turnState.get(sessionKey(sessionId))
     if (st && st.directOwner) return true // 主人在 DSH 面板里直接打字
     if (!st || !st.senders.size) return ownerPrivateChat(sessionId)
     return [...st.senders].every((u) => isOwner(getConfig(), u))
