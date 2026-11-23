@@ -1427,7 +1427,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
         if (extras && getConfig().voice.emojiSeparate !== false) {
           // 补发是额外的一条：失败只记日志，不算这一轮发失败（不然语音明明发出去了也会被当成没发）
           try {
-            if (!getConfig().dryRun && !opts.simulate) await pause(1200)
+            if (getConfig().enabled && !getConfig().dryRun && !opts.simulate) await pause(1200)
             const sent = await sendText(chatId, extras, undefined, undefined, undefined, { quiet: true })
             log.debug(sent ? `语音后面补发了一条表情：${chatId}` : '表情没补发出去（不影响语音条）')
           } catch (error) {
@@ -1740,6 +1740,13 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     }
   }
 
+  // 拼语音正文时把非末段的收尾标点收掉再拼，避免 ``。`` + `，` 生成双标点；
+  // 不在这里整段 tidy，否则会把代码示例里的字面量一起改掉。
+  function joinSpoken(parts) {
+    const list = (parts || []).map((v) => String(v || '').trim()).filter(Boolean)
+    return list.map((v, i) => i < list.length - 1 ? v.replace(/[。！？…]+$/, '') : v).join('，')
+  }
+
   async function deliverTurn(chatId, text, opts = {}) {
     if (disposed) return
     const cfg = getConfig()
@@ -1785,13 +1792,13 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     }
     // 对方明确要语音、她却只打了字：整段改成语音发（模型偶尔会忘，这里兜底）
     if (!interim && opts.wantVoice && cfg.voice.enabled && !items.some((i) => i.kind === 'voice')) {
-      const spoken = tidyPunctuation(items.filter((i) => i.kind === 'text').map((i) => i.value).join('，'))
+      const spoken = joinSpoken(items.filter((i) => i.kind === 'text').map((i) => i.value))
       if (spoken && spoken.length <= 300) items = [{ kind: 'voice', value: spoken }, ...items.filter((i) => i.kind !== 'text')]
     }
     // 短回复按概率整条变语音
     const texts = items.filter((i) => i.kind === 'text')
     if (!interim && cfg.voice.enabled && items.length === texts.length && texts.length > 0) {
-      const all = tidyPunctuation(texts.map((t) => t.value).join('，'))
+      const all = joinSpoken(texts.map((t) => t.value))
       if (all.length <= cfg.voice.autoMaxChars && Math.random() < cfg.voice.autoChance * mood().voice) items = [{ kind: 'voice', value: all }]
     }
     items = limitReplyStickers(items)

@@ -282,17 +282,34 @@ const PROTO_NAMES = ['functioncalls', 'functioncall', 'toolcalls', 'toolcall', '
 function codeRanges (raw) {
   const ranges = []
   const chars = String(raw).split('')
-  for (const m of raw.matchAll(/```[\s\S]*?```/g)) {
-    ranges.push({ start: m.index, end: m.index + m[0].length, fence: true })
-    // 先挖掉围栏，避免收尾的 ``` 和后面的行内代码被行内正则当成一对反引号。
-    for (let i = m.index; i < m.index + m[0].length; i++) chars[i] = ' '
+  // 代码围栏既可能从行首开始（~~~ / 未闭合 ```，由 fenceRanges 认），
+  // 也可能夹在行内（```js…```）；两路合并后再挖掉，避免收尾 ``` 与后面的行内反引号误配。
+  const fences = []
+  for (const m of raw.matchAll(/```[\s\S]*?```/g)) fences.push({ start: m.index, end: m.index + m[0].length })
+  for (const f of fenceRanges(raw)) fences.push({ start: f.start, end: f.end })
+  const mergedFences = []
+  for (const f of fences.sort((a, b) => a.start - b.start || a.end - b.end)) {
+    const prev = mergedFences[mergedFences.length - 1]
+    if (prev && f.start <= prev.end) prev.end = Math.max(prev.end, f.end)
+    else mergedFences.push({ ...f })
+  }
+  for (const f of mergedFences) {
+    ranges.push({ ...f, fence: true })
+    for (let i = f.start; i < f.end; i++) chars[i] = ' '
   }
   const masked = chars.join('')
   for (const m of masked.matchAll(/`[^`\n]+`/g)) {
     ranges.push({ start: m.index, end: m.index + m[0].length, fence: false })
   }
-  // 行内代码可能出现在围栏前面；后续按区间切分必须按起点排序。
-  return ranges.sort((a, b) => a.start - b.start || a.end - b.end)
+  // 行内代码可能出现在围栏前面；后续按区间切分必须按起点排序并合并重叠。
+  const sorted = ranges.sort((a, b) => a.start - b.start || a.end - b.end)
+  const merged = []
+  for (const r of sorted) {
+    const prev = merged[merged.length - 1]
+    if (prev && r.start <= prev.end) prev.end = Math.max(prev.end, r.end)
+    else merged.push({ ...r })
+  }
+  return merged
 }
 const insideCode = (code, start, end) => code.some((r) => start >= r.start && end <= r.end)
 

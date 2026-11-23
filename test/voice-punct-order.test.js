@@ -59,6 +59,18 @@ test('代码围栏和行内代码混排时不重复也不误伤', () => {
   assert.deepEqual(parseReply('前 `a。，b` 后 ```js\nx。，\n``` 尾').items.map((x) => x.value), ['前 a。，b 后 x。，', '尾'])
 })
 
+test('~~~ 与未闭合代码围栏也按字面量保护', () => {
+  assert.equal(tidyPunctuation('~~~js\nx。，\n~~~'), '~~~js\nx。，\n~~~')
+  assert.equal(tidyPunctuation('```js\nx。，\n'), '```js\nx。，\n')
+})
+
+test('wantVoice 含代码块且合成失败时保留代码字面量', async (t) => {
+  const s = setup(t, { synthFails: true })
+  await s.hub.deliver('private:1', '看示例：\n```js\nx。，\n```', { wantVoice: true })
+  const texts = s.calls.flatMap((c) => (c.params.message || []).filter((x) => x.type === 'text').map((x) => x.data.text))
+  assert.ok(texts.some((x) => x.includes('x。，')), JSON.stringify(texts))
+})
+
 test('wantVoice 派生的语音文本也收「。，」，合成失败回退文字不漏', async (t) => {
   const s = setup(t, { synthFails: true })
   await s.hub.deliver('private:1', '第一句。|||第二句。', { wantVoice: true })
