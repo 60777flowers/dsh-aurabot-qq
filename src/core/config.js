@@ -364,6 +364,7 @@ export const DEFAULTS = {
     gistEnabled: true, gistDays: 180, impressionDays: 365, gistDailyBatches: 6, tierDays: { ...DEFAULT_TIER_DAYS },
     extractIdleMinutes: 30, extractMinLines: 20, extractDailyBatches: 24, capacity: { auto: 2000, event: 600, diary: 400 }, eventExpireDays: 90, vector: {
       enabled: false,
+      mode: 'local',
       // provider 只影响面板预置的地址/模型；请求统一走 OpenAI 兼容的 {baseUrl}/embeddings
       provider: 'siliconflow',
       baseUrl: '',
@@ -906,19 +907,9 @@ export function normalize(raw) {
   vector.queryTimeoutMs = Math.round(num(vector.queryTimeoutMs, 3000, 500, 15000))
   vector.headers = headerLines(vector.headers)
   // 检索方式：本地小模型（离线，推荐）或自己配的在线服务。
-  // 老配置只有 baseUrl、没有 mode（DEFAULTS 会补上 'local'，所以要拿原始输入判断），
-  // 这时按「填了地址就是在用在线服务」跑，不然升级后向量检索会悄悄失效。
-  const rawVec = isObj(raw?.memory?.vector) ? raw.memory.vector : {}
-  const declaredMode = String(rawVec.mode || '').trim().toLowerCase()
-  // mode 是**派生值**（本地小模型 / 在线服务），不是用户直接填的配置项：
-  // 定义成不可枚举属性，这样 Object.entries / deepEqual 看不到它（升级兼容测试要求
-  // 配置结构和 DEFAULTS 完全一致），但 cfg.memory.vector.mode 仍能正常读。
-  Object.defineProperty(vector, 'mode', {
-    value: declaredMode === 'remote' || declaredMode === 'local' ? declaredMode : (vector.baseUrl ? 'remote' : 'local'),
-    enumerable: false,
-    writable: true,
-    configurable: true,
-  })
+  // 老配置只有地址时继续走在线；显式选择必须随配置保存并回传面板。
+  const declaredMode = String(raw?.memory?.vector?.mode || '').trim().toLowerCase()
+  vector.mode = declaredMode === 'remote' || declaredMode === 'local' ? declaredMode : (vector.baseUrl ? 'remote' : 'local')
   if (!isObj(c.memory.rerank)) c.memory.rerank = structuredClone(DEFAULTS.memory.rerank)
   const rerank = c.memory.rerank
   rerank.enabled = bool(rerank.enabled, false)
