@@ -213,7 +213,17 @@ export function isSilence(text) {
  * 只在紧邻的位置收掉逗号，正常的中文逗号不受影响；语音条和文字气泡共用这一份（#546）。
  */
 export function tidyPunctuation(text) {
-  return String(text || '').replace(/([。！？…~～]+)[ \t]*[，,]+/g, '$1')
+  const raw = String(text || '')
+  const tidy = (chunk) => chunk.replace(/([。！？…]+)[ \t]*[，,]+/g, '$1')
+  const code = codeRanges(raw)
+  if (!code.length) return tidy(raw)
+  let out = ''
+  let last = 0
+  for (const range of code) {
+    out += tidy(raw.slice(last, range.start)) + raw.slice(range.start, range.end)
+    last = range.end
+  }
+  return out + tidy(raw.slice(last))
 }
 
 /** 剥掉正文里残留的沉默标记；整条只有标记时会变成空串，由 isSilence 判沉默。 */
@@ -684,7 +694,7 @@ export function parseReply(text, options) {
   if (isSilence(raw)) return { silent: true, items: [] }
   // 工具显式指定语音：仍经过同一份清洗，但正文不再当作媒体/气泡指令解析。
   if (options?.voice === true) {
-    const value = stripSilenceMarks(stripMarkdown(raw))
+    const value = stripSilenceMarks(stripMarkdown(tidyPunctuation(raw)))
     return { silent: !value, items: value ? [{ kind: 'voice', value }] : [] }
   }
   const items = []
@@ -713,7 +723,7 @@ export function parseReply(text, options) {
       } else if (m[1] !== undefined) {
         replyTo = m[1]
       } else if (m[2] !== undefined) {
-        const v = stripSilenceMarks(stripMarkdown(m[2]))
+        const v = stripSilenceMarks(stripMarkdown(tidyPunctuation(m[2])))
         if (v) items.push({ kind: 'voice', value: v })
       } else if (m[3] !== undefined) {
         const v = m[3].trim()
@@ -800,7 +810,7 @@ export function itemsToLine(items, resolveSticker = () => null) {
 
 function pushText(items, s) {
   // 写坏的引用标签直接去掉；混在正文里的沉默标记也全部剥掉，整行只剩标记时按沉默跳过。
-  const t = stripSilenceMarks(stripMarkdown(String(s || '').replace(/<\/?reply[^>]*>/g, '')))
+  const t = stripSilenceMarks(stripMarkdown(tidyPunctuation(String(s || '').replace(/<\/?reply[^>]*>/g, ''))))
   if (!t || isSilence(t)) return
   for (const line of splitLines(t)) if (!isSilence(line)) items.push({ kind: 'text', value: line })
 }
