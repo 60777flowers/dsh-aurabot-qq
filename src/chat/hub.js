@@ -16,7 +16,7 @@ import { ownerAuthorizationRevision } from '../core/config.js'
 import { dataDir, readJson, writeJson } from '../core/store.js'
 import { isDefiniteFailure } from '../onebot/client.js'
 import { parseMessageEvent, gifFrames, segmentsOf } from './inbound.js'
-import { parseReply, bubbleDelay, wantsVoice, itemsToLine, cleanOutboundText, cleanOutboundSegments, capOutboundSegments, clockLabel } from './reply.js'
+import { parseReply, bubbleDelay, wantsVoice, itemsToLine, cleanOutboundText, cleanOutboundSegments, capOutboundSegments, clockLabel, tidyPunctuation } from './reply.js'
 import { decideGroupReply, engagedHint, pickAutoReply, pickDirectRequester, policyFor, sameNameNote, topicRelevance } from './group-policy.js'
 import { checkAllowed, groupResponseMode, shouldObserveGroup, levelFor, presetFor, isOwner, groupOwnerTools } from './access.js'
 import { fetchImage, segmentBytes } from '../core/net.js'
@@ -1425,7 +1425,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     return sendSegments(chatId, [...quote(replyId), ...mention(userId, segs), ...segs], (replyId ? '[引用] ' : '') + text.slice(0, 60), verdict ? { ...opts, outboundVerdict: verdict } : opts)
   }
 
-  async function sendVoice(chatId, text, replyId, userId) {
+  async function sendVoice(chatId, text, replyId, userId, opts = {}) {
     text = cleanOutboundText(text, cleaningFor(chatId))
     if (!text.trim()) return false
     let b64, engine, extras
@@ -1452,6 +1452,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
         if (extras && getConfig().voice.emojiSeparate !== false) {
           // 补发是额外的一条：失败只记日志，不算这一轮发失败（不然语音明明发出去了也会被当成没发）
           try {
+            if (getConfig().enabled && !getConfig().dryRun && !opts.simulate) await pause(1200)
             const sent = await sendText(chatId, extras, undefined, undefined, undefined, { quiet: true })
             log.debug(sent ? `语音后面补发了一条表情：${chatId}` : '表情没补发出去（不影响语音条）')
           } catch (error) {
@@ -1764,6 +1765,16 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     }
   }
 
+  // 拼语音正文时把非末段的收尾标点收掉再拼，避免 ``。`` + `，` 生成双标点；
+  // 不在这里整段 tidy，否则会把代码示例里的字面量一起改掉。
+  function joinSpoken(parts) {
+    const list = (parts || []).map((v) => String(v || '').trim()).filter(Boolean)
+    if (list.length <= 1) return list[0] || ''
+    // 段间插入逗号后再统一收双标点：代码段里的「x。」只去掉 join 出来的逗号，
+    // 不会像逐段剪尾那样把代码自己的句号剪掉。
+    return tidyPunctuation(list.join('，'))
+  }
+
   async function deliverTurn(chatId, text, opts = {}) {
     if (disposed) return
     const cfg = getConfig()
@@ -1807,15 +1818,17 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       stickersFiltered = true
       return list.filter((i) => i.kind !== 'sticker')
     }
+    // 含代码块的回复不走自动语音：代码字面量不能被语音兜底/自动语音的重拼改坏。
+    const hasCodeBlock = /```|~~~/.test(text)
     // 对方明确要语音、她却只打了字：整段改成语音发（模型偶尔会忘，这里兜底）
-    if (!interim && opts.wantVoice && cfg.voice.enabled && !items.some((i) => i.kind === 'voice')) {
-      const spoken = items.filter((i) => i.kind === 'text').map((i) => i.value).join('，')
+    if (!interim && !hasCodeBlock && opts.wantVoice && cfg.voice.enabled && !items.some((i) => i.kind === 'voice')) {
+      const spoken = joinSpoken(items.filter((i) => i.kind === 'text').map((i) => i.value))
       if (spoken && spoken.length <= 300) items = [{ kind: 'voice', value: spoken }, ...items.filter((i) => i.kind !== 'text')]
     }
     // 短回复按概率整条变语音
     const texts = items.filter((i) => i.kind === 'text')
-    if (!interim && cfg.voice.enabled && items.length === texts.length && texts.length > 0) {
-      const all = texts.map((t) => t.value).join('，')
+    if (!interim && !hasCodeBlock && cfg.voice.enabled && items.length === texts.length && texts.length > 0) {
+      const all = joinSpoken(texts.map((t) => t.value))
       if (all.length <= cfg.voice.autoMaxChars && Math.random() < cfg.voice.autoChance * mood().voice) items = [{ kind: 'voice', value: all }]
     }
     items = limitReplyStickers(items)
@@ -1834,6 +1847,8 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       const pick = stickers.pickForReply(texts.map((t) => t.value).join(' '))
       if (pick) items.push({ kind: 'sticker', value: pick })
     }
+    const beforeHook = new Set(items)
+    const beforeValues = new Map(items.map((it) => [it, (it.kind === 'text' || it.kind === 'voice') ? it.value : undefined]))
     if (hooks?.items) {
       try {
         const next = await hooks.items(items, { chatId, text, userText: opts.userText || '' })
@@ -1844,6 +1859,12 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       }
     }
     items = limitReplyStickers(items)
+    // 模块通过 items 钩子追加或原地改写过的文字也走同一份标点清洗；原有气泡已在 parseReply 里处理过。
+    items = items.map((it) => {
+      if (it.kind !== 'text' && it.kind !== 'voice') return it
+      const changed = !beforeHook.has(it) || beforeValues.get(it) !== it.value
+      return changed ? { ...it, value: tidyPunctuation(it.value) } : it
+    })
     // 钩子改写后仍走同一个清洗，保留每条的语音/引用元数据。
     items = cleanOutboundSegments(items.map((item) => ({
       type: ['text', 'voice'].includes(item.kind) ? 'text' : item.kind,
@@ -1874,8 +1895,12 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
         const sentBefore = outputScope.getStore().sent
         if (it.kind === 'text') await sendText(chatId, it.value, replyId, missedAt, userId)
         else if (it.kind === 'voice') {
-          if (cfg.voice.enabled) await sendVoice(chatId, it.value, replyId, userId)
+          const asVoice = cfg.voice.enabled
+          if (asVoice) await sendVoice(chatId, it.value, replyId, userId, opts)
           else await sendText(chatId, it.value, replyId, missedAt, userId)
+          // 手机客户端渲染媒体比文字慢，紧跟着发配文会被压到语音条上面。语音发完先停一下再发下一条（#546）。
+          const next = items[i + 1]
+          if (asVoice && !opts.simulate && next && (next.kind === 'text' || next.kind === 'image' || next.kind === 'sticker')) await pause(1200)
         } else if (it.kind === 'sticker') await sendSticker(chatId, it.value, replyId, userId)
         else if (it.kind === 'poke') { if (!opts.simulate) await pokeBack(chatId) }
         else if (it.kind === 'image') {

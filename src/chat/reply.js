@@ -208,6 +208,24 @@ export function isSilence(text) {
   return t.replace(SILENCE_MARK, '').replace(/[\s\p{P}]/gu, '') === ''
 }
 
+/**
+ * 收尾标点后面又跟了逗号（「。，」「！，」）：人格卡要求每句有收尾标点，模型想停顿时会再补一个逗号。
+ * 只在紧邻的位置收掉逗号，正常的中文逗号不受影响；语音条和文字气泡共用这一份（#546）。
+ */
+export function tidyPunctuation(text) {
+  const raw = String(text || '')
+  const tidy = (chunk) => chunk.replace(/([。！？…]+)[ \t]*[，,]+/g, '$1')
+  const code = codeRanges(raw)
+  if (!code.length) return tidy(raw)
+  let out = ''
+  let last = 0
+  for (const range of code) {
+    out += tidy(raw.slice(last, range.start)) + raw.slice(range.start, range.end)
+    last = range.end
+  }
+  return out + tidy(raw.slice(last))
+}
+
 /** 剥掉正文里残留的沉默标记；整条只有标记时会变成空串，由 isSilence 判沉默。 */
 export function stripSilenceMarks(text) {
   return String(text || '').replace(SILENCE_MARK_WITH_SPACE, '')
@@ -263,12 +281,35 @@ const PROTO_NAMES = ['functioncalls', 'functioncall', 'toolcalls', 'toolcall', '
 /** 代码围栏 / 行内代码范围：解释语境下里面的工具示例保留。 */
 function codeRanges (raw) {
   const ranges = []
-  for (const m of raw.matchAll(/```[\s\S]*?```/g)) ranges.push({ start: m.index, end: m.index + m[0].length, fence: true })
-  for (const m of raw.matchAll(/`[^`\n]+`/g)) {
-    if (ranges.some((r) => m.index >= r.start && m.index < r.end)) continue
+  const chars = String(raw).split('')
+  // 代码围栏既可能从行首开始（~~~ / 未闭合 ```，由 fenceRanges 认），
+  // 也可能夹在行内（```js…```）；两路合并后再挖掉，避免收尾 ``` 与后面的行内反引号误配。
+  const fences = []
+  for (const m of raw.matchAll(/```[\s\S]*?```/g)) fences.push({ start: m.index, end: m.index + m[0].length })
+  for (const f of fenceRanges(raw)) fences.push({ start: f.start, end: f.end })
+  const mergedFences = []
+  for (const f of fences.sort((a, b) => a.start - b.start || a.end - b.end)) {
+    const prev = mergedFences[mergedFences.length - 1]
+    if (prev && f.start <= prev.end) prev.end = Math.max(prev.end, f.end)
+    else mergedFences.push({ ...f })
+  }
+  for (const f of mergedFences) {
+    ranges.push({ ...f, fence: true })
+    for (let i = f.start; i < f.end; i++) chars[i] = ' '
+  }
+  const masked = chars.join('')
+  for (const m of masked.matchAll(/`[^`\n]+`/g)) {
     ranges.push({ start: m.index, end: m.index + m[0].length, fence: false })
   }
-  return ranges
+  // 行内代码可能出现在围栏前面；后续按区间切分必须按起点排序并合并重叠。
+  const sorted = ranges.sort((a, b) => a.start - b.start || a.end - b.end)
+  const merged = []
+  for (const r of sorted) {
+    const prev = merged[merged.length - 1]
+    if (prev && r.start <= prev.end) prev.end = Math.max(prev.end, r.end)
+    else merged.push({ ...r })
+  }
+  return merged
 }
 const insideCode = (code, start, end) => code.some((r) => start >= r.start && end <= r.end)
 
@@ -676,7 +717,7 @@ export function parseReply(text, options) {
   if (isSilence(raw)) return { silent: true, items: [] }
   // 工具显式指定语音：仍经过同一份清洗，但正文不再当作媒体/气泡指令解析。
   if (options?.voice === true) {
-    const value = stripSilenceMarks(stripMarkdown(raw))
+    const value = stripSilenceMarks(stripMarkdown(tidyPunctuation(raw)))
     return { silent: !value, items: value ? [{ kind: 'voice', value }] : [] }
   }
   const items = []
@@ -705,7 +746,7 @@ export function parseReply(text, options) {
       } else if (m[1] !== undefined) {
         replyTo = m[1]
       } else if (m[2] !== undefined) {
-        const v = stripSilenceMarks(stripMarkdown(m[2]))
+        const v = stripSilenceMarks(stripMarkdown(tidyPunctuation(m[2])))
         if (v) items.push({ kind: 'voice', value: v })
       } else if (m[3] !== undefined) {
         const v = m[3].trim()
@@ -792,9 +833,12 @@ export function itemsToLine(items, resolveSticker = () => null) {
 
 function pushText(items, s) {
   // 写坏的引用标签直接去掉；混在正文里的沉默标记也全部剥掉，整行只剩标记时按沉默跳过。
-  const t = stripSilenceMarks(stripMarkdown(String(s || '').replace(/<\/?reply[^>]*>/g, '')))
+  const raw = String(s || '').replace(/<\/?reply[^>]*>/g, '')
+  const t = stripSilenceMarks(stripMarkdown(tidyPunctuation(raw)))
   if (!t || isSilence(t)) return
-  for (const line of splitLines(t)) if (!isSilence(line)) items.push({ kind: 'text', value: line })
+  // 代码块在 stripMarkdown 之后围栏就没了，必须在原文里先判断，整段保留不拆行。
+  const lines = /```|~~~/.test(raw) ? [t] : splitLines(t)
+  for (const line of lines) if (!isSilence(line)) items.push({ kind: 'text', value: line })
 }
 
 /** 对方是不是明确要她发语音（「用语音说」「发个语音」「语音回我」……）。 */
