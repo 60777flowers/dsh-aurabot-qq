@@ -1744,7 +1744,10 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
   // 不在这里整段 tidy，否则会把代码示例里的字面量一起改掉。
   function joinSpoken(parts) {
     const list = (parts || []).map((v) => String(v || '').trim()).filter(Boolean)
-    return list.map((v, i) => i < list.length - 1 ? v.replace(/[。！？…]+$/, '') : v).join('，')
+    if (list.length <= 1) return list[0] || ''
+    // 段间插入逗号后再统一收双标点：代码段里的「x。」只去掉 join 出来的逗号，
+    // 不会像逐段剪尾那样把代码自己的句号剪掉。
+    return tidyPunctuation(list.join('，'))
   }
 
   async function deliverTurn(chatId, text, opts = {}) {

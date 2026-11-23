@@ -833,9 +833,12 @@ export function itemsToLine(items, resolveSticker = () => null) {
 
 function pushText(items, s) {
   // 写坏的引用标签直接去掉；混在正文里的沉默标记也全部剥掉，整行只剩标记时按沉默跳过。
-  const t = stripSilenceMarks(stripMarkdown(tidyPunctuation(String(s || '').replace(/<\/?reply[^>]*>/g, ''))))
+  const raw = String(s || '').replace(/<\/?reply[^>]*>/g, '')
+  const t = stripSilenceMarks(stripMarkdown(tidyPunctuation(raw)))
   if (!t || isSilence(t)) return
-  for (const line of splitLines(t)) if (!isSilence(line)) items.push({ kind: 'text', value: line })
+  // 代码块在 stripMarkdown 之后围栏就没了，必须在原文里先判断，整段保留不拆行。
+  const lines = /```|~~~/.test(raw) ? [t] : splitLines(t)
+  for (const line of lines) if (!isSilence(line)) items.push({ kind: 'text', value: line })
 }
 
 /** 对方是不是明确要她发语音（「用语音说」「发个语音」「语音回我」……）。 */

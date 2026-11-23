@@ -56,7 +56,7 @@ test('语音条和文字气泡都不再带「。，」', async (t) => {
 test('代码围栏和行内代码混排时不重复也不误伤', () => {
   assert.equal(tidyPunctuation('看 `x` 然后 ```js\ny。，\n``` 完'), '看 `x` 然后 ```js\ny。，\n``` 完')
   assert.equal(tidyPunctuation('```js\nx。，\n``` 中间 `a。，b` 尾'), '```js\nx。，\n``` 中间 `a。，b` 尾')
-  assert.deepEqual(parseReply('前 `a。，b` 后 ```js\nx。，\n``` 尾').items.map((x) => x.value), ['前 a。，b 后 x。，', '尾'])
+  assert.deepEqual(parseReply('前 `a。，b` 后 ```js\nx。，\n``` 尾').items.map((x) => x.value), ['前 a。，b 后 x。，\n 尾'])
 })
 
 test('~~~ 与未闭合代码围栏也按字面量保护', () => {
