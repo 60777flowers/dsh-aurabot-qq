@@ -281,12 +281,18 @@ const PROTO_NAMES = ['functioncalls', 'functioncall', 'toolcalls', 'toolcall', '
 /** 代码围栏 / 行内代码范围：解释语境下里面的工具示例保留。 */
 function codeRanges (raw) {
   const ranges = []
-  for (const m of raw.matchAll(/```[\s\S]*?```/g)) ranges.push({ start: m.index, end: m.index + m[0].length, fence: true })
-  for (const m of raw.matchAll(/`[^`\n]+`/g)) {
-    if (ranges.some((r) => m.index >= r.start && m.index < r.end)) continue
+  const chars = String(raw).split('')
+  for (const m of raw.matchAll(/```[\s\S]*?```/g)) {
+    ranges.push({ start: m.index, end: m.index + m[0].length, fence: true })
+    // 先挖掉围栏，避免收尾的 ``` 和后面的行内代码被行内正则当成一对反引号。
+    for (let i = m.index; i < m.index + m[0].length; i++) chars[i] = ' '
+  }
+  const masked = chars.join('')
+  for (const m of masked.matchAll(/`[^`\n]+`/g)) {
     ranges.push({ start: m.index, end: m.index + m[0].length, fence: false })
   }
-  return ranges
+  // 行内代码可能出现在围栏前面；后续按区间切分必须按起点排序。
+  return ranges.sort((a, b) => a.start - b.start || a.end - b.end)
 }
 const insideCode = (code, start, end) => code.some((r) => start >= r.start && end <= r.end)
 

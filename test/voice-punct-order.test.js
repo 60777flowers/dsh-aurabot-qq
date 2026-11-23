@@ -8,7 +8,7 @@ import { createHub } from '../src/chat/hub.js'
 import { normalize } from '../src/core/config.js'
 import { tidyPunctuation, parseReply } from '../src/chat/reply.js'
 
-function setup(t, { hooks } = {}) {
+function setup(t, { hooks, synthFails = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'aurabot-voice-order-'))
   const old = process.env.AURABOT_DATA_DIR
   process.env.AURABOT_DATA_DIR = dir
@@ -22,7 +22,7 @@ function setup(t, { hooks } = {}) {
     onebot: { async call(action, params) { calls.push({ action, params, at: Date.now() }); return { message_id: calls.length } } },
     stickers: { match: () => null, segmentFor: () => null, pickForReply: () => null, markUsed: () => {} },
     moodEffects: () => ({ voice: 1, sticker: 1, delay: 0 }),
-    tts: { async speak(text) { spoken.push(text); return { file, engine: 'test' } } },
+    tts: { async speak(text) { spoken.push(text); if (synthFails) throw new Error('tts failed'); return { file, engine: 'test' } } },
   })
   t.after(() => { hub.dispose(); if (old === undefined) delete process.env.AURABOT_DATA_DIR; else process.env.AURABOT_DATA_DIR = old; rmSync(dir, { recursive: true, force: true }) })
   return { hub, calls, spoken }
@@ -51,6 +51,27 @@ test('语音条和文字气泡都不再带「。，」', async (t) => {
   assert.ok(texts.length, JSON.stringify(s.calls))
   for (const text of texts) assert.doesNotMatch(text, /[。！？…][，,]/)
   assert.deepEqual(s.spoken, [])
+})
+
+test('代码围栏和行内代码混排时不重复也不误伤', () => {
+  assert.equal(tidyPunctuation('看 `x` 然后 ```js\ny。，\n``` 完'), '看 `x` 然后 ```js\ny。，\n``` 完')
+  assert.equal(tidyPunctuation('```js\nx。，\n``` 中间 `a。，b` 尾'), '```js\nx。，\n``` 中间 `a。，b` 尾')
+  assert.deepEqual(parseReply('前 `a。，b` 后 ```js\nx。，\n``` 尾').items.map((x) => x.value), ['前 a。，b 后 x。，', '尾'])
+})
+
+test('wantVoice 派生的语音文本也收「。，」，合成失败回退文字不漏', async (t) => {
+  const s = setup(t, { synthFails: true })
+  await s.hub.deliver('private:1', '第一句。|||第二句。', { wantVoice: true })
+  const texts = s.calls.flatMap((c) => (c.params.message || []).filter((x) => x.type === 'text').map((x) => x.data.text))
+  assert.ok(texts.length, JSON.stringify(s.calls))
+  for (const text of texts) assert.doesNotMatch(text, /[。！？…][，,]/)
+})
+
+test('模块经 items 钩子原地改写已有文字也收「。，」', async (t) => {
+  const s = setup(t, { hooks: { items: (items) => { if (items[0]) items[0].value = '原正文。，'; return items } } })
+  await s.hub.deliver('private:1', '正常一句')
+  const texts = s.calls.flatMap((c) => (c.params.message || []).filter((x) => x.type === 'text').map((x) => x.data.text))
+  assert.ok(!texts.some((x) => x.includes('。，')), JSON.stringify(texts))
 })
 
 test('模块经 items 钩子追加的文字也收「。，」', async (t) => {
