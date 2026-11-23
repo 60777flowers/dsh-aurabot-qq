@@ -51,3 +51,9 @@ test('拉不到时不抛错', async () => {
   // 占位文案要说清可能的原因（过期 / 风控 / 内层消息），不能只写「内容没拉到」
   assert.equal(forwardBody(r), FORWARD_NOT_EXPANDED)
 })
+
+test('转发里的无正文、语音和图片分别按实际消息段展示', async () => {
+  const r = await readForward(gateway({ a: [node('甲', [{ type: 'at', data: { qq: '9' } }]), node('乙', [{ type: 'record', data: {} }]), node('丙', [image(1)])] }), 'a', { selfId: 9 })
+  assert.deepEqual(r.lines.map(s => s.trim()), ['甲：（没有文字）', '乙：[语音]', '丙：[图片]'])
+  assert.equal(r.images.length, 1)
+})
