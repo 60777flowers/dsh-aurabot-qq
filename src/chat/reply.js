@@ -251,6 +251,106 @@ function pokeCloseTagRanges(text) {
   return ranges
 }
 
+// ---------- ACP 协议标记（DSH 上下文代理的传输层包装） ----------
+//
+// DSH 的上下文代理会给每条消息套一层 ACP 包装：`<acp tokens="86" type="text" time="…">mNNNNN</acp>`。
+// 模型状态差时会把这层标记当正文**模仿复述**出来，于是带属性串原样漏进 QQ（2026-11-22 实况三形态：
+// 完整空标签 `<acp …></acp>`、属性尾巴 `="text" time="…">>`、截断残片 `6-11-22 17:26:55">`）。
+//
+// 为什么必须单独写一套规则：
+//   · html-fragments 的 TAG_RE 要求 `<` 开头，**删不掉没有 `<` 的半截尾巴**；
+//   · toolTag 的 PROTO_NAMES 是工具协议名白名单，语义是「删标签连中间内容」，与这里不同；
+//   · 整条只剩标记时必须能变成空串，交给 isSilence 判沉默（不能发一条空气泡）。
+//
+// 这里只认 acp 这一个名字，且要求名字后紧跟空白 / `/` / `>`（`(?=[\s/>])`），
+// 所以正文里正常写 `acp`、`acpxxx`、`<acpx>` 都不受影响。
+const ACP_NAME = /acp(?=[\s/>])/i
+
+/**
+ * ACP 开标签 + 紧随其后的消息编号 `mNNNNN`（闭合参数可选）。
+ * 编号是代理侧的流水号，对读消息的人没有任何意义，所以连编号一起删；
+ * 模型常常只复述了开标签、没写闭合标签，闭合段必须是可选的。
+ *
+ * 末尾的 `[ \t]*\r?\n?` 是为了吃掉「标签独占一行」时留下的空行：
+ * 否则 `前\n<acp…>m1</acp>\n后` 剥完会变成 `前\n\n后`（多一个空气泡行）。
+ * 只有在序列后紧跟着换行时才吃，行中间的行内标记不受影响。
+ */
+const ACP_PAIRED = /<\s*acp\b[^<>]*>\s*m\d{1,8}\s*(?:<\s*\/\s*acp\s*>)?[ \t]*\r?\n?/gi
+/** 落单的 ACP 开/闭标签（含自闭合），只删标签本身。 */
+const ACP_TAG = /<\s*\/?\s*acp(?=[\s/>])[^<>]*>/gi
+/**
+ * 属性尾巴残片：真标签的头被截掉了，只剩属性串和收尾尖括号。
+ * 两种形态都要覆盖：
+ *   · `="text" time="2026-11-22 17:26:47">>` —— 属性名 `type` 被截掉，只剩它的值；
+ *   · `tokens="86" type="text" time="…">` —— 头被截掉但属性名还在。
+ * 只锚 tokens / type / time 这三个 ACP 属性名，且必须以 `">` 或 `">>` 收尾。
+ * **不做通用的「任意 xxx="…"」匹配**——那样会误伤正文里正常引用的一段配置/JSON 片段。
+ */
+const ACP_ATTR_TAIL = /(?:^|[\s(【\[])(?:=\s*"[^"]*"\s*)?(?:(?:tokens|type|time)\s*=\s*"[^"]*"\s*)+>>?/gi
+/**
+ * 只剩日期时间 + 收尾尖括号的极短残片（实况 `6-11-22 17:26:55">`，是 `2026-…` 被截掉的尾巴）。
+ * 必须带 `">` 尾锚定：正常聊天里写「我们约 2026-11-22 17:26:55 见」不会被误删（实测通过）。
+ */
+const ACP_TIME_TAIL = /(?:^|[\s(【\[])\d{1,4}-\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2}:\d{2}\s*">/g
+
+/**
+ * 文本里是否还有「标签 / 属性串」形状的东西（给模型兜底的触发条件用，不做删除）。
+ * 判据故意宽于 acpLeakRanges：它的用途是「正则剥完还像有残渣吗」，宁可多问一次模型。
+ */
+export function hasSuspectTagShape(text) {
+  const s = String(text || '')
+  return /<\s*\/?\s*[A-Za-z][\w:-]*\s+[\w:-]+\s*=/i.test(s) || /=\s*"[^"]*"\s+[\w:-]+\s*=\s*"/i.test(s)
+}
+
+/**
+ * 收集 ACP 协议标记的删除区间（原文坐标）。
+ * 代码块 / 行内代码内一律不碰——模型可能在教人写标签，那是正当输出。
+ */
+function acpLeakRanges(raw) {
+  const text = String(raw || '')
+  if (!text) return []
+  const code = codeRanges(text)
+  // 完整标签的区间：属性尾巴/时间残片**只处理 `<` 已经被截掉的残片**，
+  // 绝不进到完好的 `<...>` 里面去切属性——否则 `<future-mark tokens="9" …>` 会被切成
+  // `<future-mark </future-mark>` 这种更脏的半截标签（自测踩过）。
+  const tagSpans = [...text.matchAll(/<[^<>]*>/g)].map((m) => ({ start: m.index, end: m.index + m[0].length }))
+  const inTag = (start, end) => tagSpans.some((t) => start >= t.start && end <= t.end)
+  const out = []
+  const push = (start, end) => {
+    if (end <= start) return
+    if (insideCode(code, start, end)) return
+    out.push({ start, end })
+  }
+  // 顺序有讲究：先整段配对的（含编号），再落单标签，最后才是属性尾巴。
+  for (const m of text.matchAll(ACP_PAIRED)) push(m.index, m.index + m[0].length)
+  for (const m of text.matchAll(ACP_TAG)) push(m.index, m.index + m[0].length)
+  // 属性尾巴与时间残片都带了前导空白/括号：只删残片本身，前导字符留着（它是正文里的正常分隔）。
+  for (const re of [ACP_ATTR_TAIL, ACP_TIME_TAIL]) {
+    for (const m of text.matchAll(re)) {
+      const lead = /^[\s(【\[]/.exec(m[0])
+      const start = m.index + (lead ? lead[0].length : 0)
+      const end = m.index + m[0].length
+      if (inTag(start, end)) continue // 完好标签内部：交给上面的 acp 标签规则，别切一半
+      push(start, end)
+    }
+  }
+  return out
+}
+
+/** 这段文本里还有没有 ACP 标记可剥（出口断言与日志用，不做删除）。 */
+export function hasAcpResidue(text) {
+  return acpLeakRanges(text).length > 0
+}
+
+/** 剥掉 ACP 标记（幂等）：出口层用，返回剥干净的文本。 */
+export function stripAcpLeak(text) {
+  const raw = String(text || '')
+  if (!raw) return raw
+  const ranges = acpLeakRanges(raw)
+  if (!ranges.length) return raw
+  return withoutToolRanges(raw, mergeRanges(ranges)).trim()
+}
+
 const ZERO_WIDTH_CHARS = new Set(['\u200B', '\u200C', '\u200D', '\uFEFF', '\u2060'])
 const stripZeroWidth = (s) => { let out = ''; for (const ch of String(s || '')) if (!ZERO_WIDTH_CHARS.has(ch)) out += ch; return out }
 const FULLWIDTH = (s) => String(s || '').replace(/[！-～]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
@@ -561,8 +661,12 @@ export function cleanOutboundText(text, { warn, promptSources, fingerprint, user
   const recordRanges = [...chatRecordRanges(raw), ...memoryTranscriptRanges(raw)]
   const pokeRanges = pokeCloseTagRanges(raw)
   const memoRanges = memoLeakRanges(raw)
-  const noiseCount = toolRanges.length + contextRanges.length + htmlCuts.length
-  const tools = [...toolRanges, ...contextRanges, ...silence, ...stateRanges, ...recordRanges, ...pokeRanges, ...memoRanges]
+  // ACP 协议标记（DSH 上下文代理的传输层包装）被模型复述时漏进正文：
+  // 这是所有出站口的**公共必经点**，放这里一次就覆盖 deliver / sendText / sendSegments / 语音 /
+  // 模块快捷 API 全部出口，不必在每个出口各写一遍。
+  const acpRanges = acpLeakRanges(raw)
+  const noiseCount = toolRanges.length + contextRanges.length + htmlCuts.length + acpRanges.length
+  const tools = [...toolRanges, ...contextRanges, ...silence, ...stateRanges, ...recordRanges, ...pokeRanges, ...memoRanges, ...acpRanges]
     .sort((a, b) => a.start - b.start || b.end - a.end)
   const baseRanges = mergeRanges([...tools, ...htmlCuts, ...mediaCuts])
   const toolClean = withoutToolRanges(raw, baseRanges)

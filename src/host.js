@@ -487,6 +487,9 @@ export function apply(ctx) {
     outbox,
     stickers,
     tts,
+    // ACP 标记的模型兜底（chat.acpSanitize.modelFallback，默认关）要用它问一次宿主模型。
+    // 走的是「不进会话」的既有封装 askModel，不占聊天会话、不计入她的上下文。
+    askModel: (opts) => askModel(ctx, { cfg: getConfig(), ...opts }),
     buildTools: (where) => mods.buildTools(where),
     // 模块声明的能力（module.json capabilities）：子智能体委派这类要本机权限的能力靠它把关（一审 #177）
     capabilitiesOf: (id) => (typeof mods.capabilitiesOf === 'function' ? mods.capabilitiesOf(id) : []),
