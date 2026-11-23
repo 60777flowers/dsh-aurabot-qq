@@ -64,11 +64,12 @@ test('~~~ 与未闭合代码围栏也按字面量保护', () => {
   assert.equal(tidyPunctuation('```js\nx。，\n'), '```js\nx。，\n')
 })
 
-test('wantVoice 含代码块且合成失败时保留代码字面量', async (t) => {
+test('wantVoice 含代码块时不转语音，代码字面量保留', async (t) => {
   const s = setup(t, { synthFails: true })
-  await s.hub.deliver('private:1', '看示例：\n```js\nx。，\n```', { wantVoice: true })
+  await s.hub.deliver('private:1', '看示例：\n```js\nx。，\n```|||后面', { wantVoice: true })
   const texts = s.calls.flatMap((c) => (c.params.message || []).filter((x) => x.type === 'text').map((x) => x.data.text))
   assert.ok(texts.some((x) => x.includes('x。，')), JSON.stringify(texts))
+  assert.deepEqual(s.spoken, [])
 })
 
 test('wantVoice 派生的语音文本也收「。，」，合成失败回退文字不漏', async (t) => {

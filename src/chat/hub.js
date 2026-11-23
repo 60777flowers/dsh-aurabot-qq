@@ -1793,14 +1793,16 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       stickersFiltered = true
       return list.filter((i) => i.kind !== 'sticker')
     }
+    // 含代码块的回复不走自动语音：代码字面量不能被语音兜底/自动语音的重拼改坏。
+    const hasCodeBlock = /```|~~~/.test(text)
     // 对方明确要语音、她却只打了字：整段改成语音发（模型偶尔会忘，这里兜底）
-    if (!interim && opts.wantVoice && cfg.voice.enabled && !items.some((i) => i.kind === 'voice')) {
+    if (!interim && !hasCodeBlock && opts.wantVoice && cfg.voice.enabled && !items.some((i) => i.kind === 'voice')) {
       const spoken = joinSpoken(items.filter((i) => i.kind === 'text').map((i) => i.value))
       if (spoken && spoken.length <= 300) items = [{ kind: 'voice', value: spoken }, ...items.filter((i) => i.kind !== 'text')]
     }
     // 短回复按概率整条变语音
     const texts = items.filter((i) => i.kind === 'text')
-    if (!interim && cfg.voice.enabled && items.length === texts.length && texts.length > 0) {
+    if (!interim && !hasCodeBlock && cfg.voice.enabled && items.length === texts.length && texts.length > 0) {
       const all = joinSpoken(texts.map((t) => t.value))
       if (all.length <= cfg.voice.autoMaxChars && Math.random() < cfg.voice.autoChance * mood().voice) items = [{ kind: 'voice', value: all }]
     }
