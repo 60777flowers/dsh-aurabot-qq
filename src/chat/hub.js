@@ -16,7 +16,7 @@ import { ownerAuthorizationRevision } from '../core/config.js'
 import { dataDir, readJson, writeJson } from '../core/store.js'
 import { isDefiniteFailure } from '../onebot/client.js'
 import { parseMessageEvent, gifFrames, segmentsOf } from './inbound.js'
-import { parseReply, bubbleDelay, wantsVoice, itemsToLine, cleanOutboundText, cleanOutboundSegments, capOutboundSegments, clockLabel, tidyPunctuation } from './reply.js'
+import { parseReply, bubbleDelay, wantsVoice, itemsToLine, cleanOutboundText, cleanOutboundSegments, capOutboundSegments, clockLabel, tidyPunctuation, stripAcpLeak, hasSuspectTagShape } from './reply.js'
 import { decideGroupReply, engagedHint, pickAutoReply, pickDirectRequester, policyFor, sameNameNote, topicRelevance } from './group-policy.js'
 import { checkAllowed, groupResponseMode, shouldObserveGroup, levelFor, presetFor, isOwner, groupOwnerTools } from './access.js'
 import { fetchImage, segmentBytes } from '../core/net.js'
@@ -137,7 +137,7 @@ function chatImageRefs(segs, cap = 4) {
   return out
 }
 
-export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, buildTools, contextProviders, onActivity, memoryScore, onMemoryCommand, onCommand, isMuted, dislikes, random = Math.random, moodEffects, localApi, hooks, availableModels, toolsGeneration, capabilitiesOf }) {
+export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, buildTools, contextProviders, onActivity, memoryScore, onMemoryCommand, onCommand, isMuted, dislikes, random = Math.random, moodEffects, localApi, hooks, availableModels, toolsGeneration, capabilitiesOf, askModel }) {
   const archives = new Map()
   let forgottenRules = null
   const forgottenFile = () => join(dataDir('conversation-context'), 'forgotten.json')
@@ -1270,6 +1270,18 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     }
   }
 
+  // 真实出口的 ACP 标记兜底：只动 text 段，引用/@/媒体段原样保留。
+  // 剥完变空的 text 段直接丢掉（不能留一条空气泡）；全空就返回 []，由调用方判失败。
+  function stripAcpSegments (message) {
+    const out = []
+    for (const seg of message) {
+      if (seg.type !== 'text') { out.push(seg); continue }
+      const text = stripAcpLeak(String(seg.data?.text || ''))
+      if (text) out.push({ ...seg, data: { ...seg.data, text } })
+    }
+    return out
+  }
+
   // quiet：这一条是额外的（比如语音后面补发的表情），失败了不算到这一轮头上（deliver 按 failStore 里的条数判断整条有没有发出去）。
   // queueKind / queueTtlMs：网关短暂不可达时，确定没发出去的消息进入本地补发队列。
   async function sendSegments(chatId, message, note, opts = {}) {
@@ -1313,6 +1325,14 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     }
     // 钩子可能重新写入工具标记；最终网关出口仍使用同一份清洗。
     message = cleanOutboundSegments(message, cleaning)
+    // 第三道保险：ACP 协议标记在真实出口再剥一次（幂等）。
+    // cleanOutboundText 已经剥过一遍，这里存在的意义是——扩展模块的 send 钩子可能往正文里
+    // **重新写回**标记（钩子排在清洗之后），以及补发/重试路径会复用已清洗过的 message。
+    // 剥完为空就当场判失败，绝不发一条只有标记的脏消息。
+    if (cfg.chat?.acpSanitize?.enabled !== false) {
+      message = stripAcpSegments(message)
+      if (!message.length) return settleOutboundFailed(verdict)
+    }
     // 熔断：模型失控时别把整段原样交给 OneBot（2026-11-13 08:02 那 48263 字「在吗」）。
     const capped = capOutboundSegments(message)
     if (capped.trimmed) {
@@ -1765,6 +1785,101 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     }
   }
 
+  // ---------- ACP 模型兜底（默认关，chat.acpSanitize.modelFallback 打开才用） ----------
+  //
+  // 只解决「正则已经尽力、但文本里还留着标签/属性形状」的少量情况，不做全量改写。
+  // 硬约束（任何一条不满足就不改、直接用正则结果）：
+  //   · 同一聊天有冷却窗（ACP_ASK_COOLDOWN_MS），一轮里的多条分段不会各问一次；
+  //   · 文本长度 ≤ cfg.chat.acpSanitize.modelMaxChars；
+  //   · 有超时（modelTimeoutMs），超时/抛错/宿主没接 askModel → 退回正则结果；
+  //   · 模型结果必须通过 looksClean：不含标签属性形状，且保留了原文的主要字符
+  //     （防止模型顺手把正常语气也重组了——这是「伤语气」风险的工程化消解）。
+
+  /** 每个聊天上一次为 ACP 净化问模型的时间戳：限流用（一条回复的几个分段不该各问一次）。 */
+  const acpAskedAt = new Map()
+  /** 同一个聊天多久内不再重复问模型（毫秒）。一轮里的分条发送都落在这个窗口内。 */
+  const ACP_ASK_COOLDOWN_MS = 5000
+
+  /** 把标签/属性串挖掉后还剩多少「实数」字符，用来判断模型是否保留了原文内容。 */
+  function acpSolidChars (s) {
+    return String(s || '')
+      .replace(/<[^<>]*>/g, '')
+      .replace(/"[^"]*"/g, '')
+      .replace(/[\s\p{P}\p{S}]/gu, '')
+  }
+
+  /** 模型结果验收：不能更脏，且必须留住原文至少 60% 的实字。 */
+  function looksClean (before, after) {
+    const a = String(after || '').trim()
+    if (!a) return false
+    if (hasSuspectTagShape(a)) return false
+    const want = acpSolidChars(before)
+    if (!want) return true
+    const got = acpSolidChars(a)
+    if (!got) return false
+    // 逐字符比对：模型可能把整句重写，只保留「出现在原文里」的那些字来算重合度。
+    let hit = 0
+    const pool = new Map()
+    for (const ch of want) pool.set(ch, (pool.get(ch) || 0) + 1)
+    for (const ch of got) {
+      const left = pool.get(ch) || 0
+      if (left > 0) { hit++; pool.set(ch, left - 1) }
+    }
+    return hit / want.length >= 0.6
+  }
+
+  /** 带超时的模型净化；任何异常都返回 null（调用方据此保留正则结果）。 */
+  async function acpModelFallback (chatId, text, cfg, beforeClean = text) {
+    const conf = cfg.chat.acpSanitize
+    const limit = Math.max(100, Number(conf.modelMaxChars) || 800)
+    if (String(beforeClean).length > limit) return text
+    if (typeof askModel !== 'function') return text
+    // 限流（每聊天一个冷却窗）：一轮可能分多条发送，不能每条都问一次模型。
+    const now = Date.now()
+    if (now - (acpAskedAt.get(chatId) || 0) < ACP_ASK_COOLDOWN_MS) return text
+    acpAskedAt.set(chatId, now)
+    if (acpAskedAt.size > 200) acpAskedAt.clear()
+    const timeoutMs = Math.max(500, Number(conf.modelTimeoutMs) || 4000)
+    let timer
+    try {
+      // 超时后那个 call 可能还在跑并最终 reject：先挂一个空 catch，避免变成 unhandled rejection。
+      const call = Promise.resolve(askModel({
+        cfg,
+        module: 'acp-sanitize',
+        usageTask: 'acp-sanitize',
+        maxTokens: 400,
+        temperature: 0,
+        system: '你是文本净化器。用户会给你一段聊天回复，其中可能混入了传输协议标签（形如 <acp tokens="86" type="text" time="…">m01990</acp>）'
+          + '或它们的残片（="text" time="…">>、6-11-22 17:26:55">）。\n'
+          + '把这类标签、属性串、编号全部删掉，**其余内容一个字都不要改**：不改语气、不改措辞、不增删语义、不解释。\n'
+          + '删完如果什么都不剩，只输出 [沉默]。只输出净化后的正文本身。',
+        text: String(beforeClean),
+      }))
+      call.catch(() => {})
+      const out = await Promise.race([
+        call,
+        new Promise((resolve) => { timer = setTimeout(() => resolve(null), timeoutMs) }),
+      ])
+      if (out === null || out === undefined) {
+        log.debug(`${chatId}：ACP 模型兜底超时，用正则结果`)
+        return text
+      }
+      const cleaned = String(out).trim()
+      // 验收对齐的是「正则已经产出的结果」：模型改成别的语气/别的意思都要丢掉。
+      if (cleaned === '[沉默]' || !looksClean(text, cleaned)) {
+        log.debug(`${chatId}：ACP 模型兜底结果不合格，用正则结果`)
+        return text
+      }
+      log.info(`${chatId}：ACP 模型兜底生效`)
+      return cleaned
+    } catch (error) {
+      log.debug(`${chatId}：ACP 模型兜底出错，用正则结果：`, error && error.message)
+      return text
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
+
   // 拼语音正文时把非末段的收尾标点收掉再拼，避免 ``。`` + `，` 生成双标点；
   // 不在这里整段 tidy，否则会把代码示例里的字面量一起改掉。
   function joinSpoken(parts) {
@@ -1789,7 +1904,16 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       }
     }
     if (disposed) return
+    // 记下清洗前的样子：模型兜底要判断的是「原本有没有可疑标签残渣」，
+    // 而不是「清洗后还剩没剩」——正则剥干净之后，条件就永远不成立了。
+    const beforeClean = text
     text = cleanOutboundText(text, { ...cleaningFor(chatId), onPromptDecision: (allow) => { outputScope.getStore().allowPromptEcho = allow } })
+    // ACP 模型兜底（默认关）：清洗前有标签/属性残渣时，再问一次模型确认它真的干净了。
+    // 三道保险：① 只在 chat.acpSanitize.modelFallback 打开时才走；② 每个聊天有冷却窗，不会每条都问；
+    // ③ 失败/超时/模型输出更脏，一律退回上面的正则结果 —— 绝不因此卡住或丢掉这条回复。
+    if (cfg.chat?.acpSanitize?.modelFallback === true && beforeClean.trim() && hasSuspectTagShape(beforeClean)) {
+      text = await acpModelFallback(chatId, text, cfg, beforeClean)
+    }
     // 出站污染闸：模型偶尔会把思考直接写进正文（英文判断 + 中文真话），或者思考塌缩成复读。
     // 这里切掉思考前缀、拦住退化内容；拦下就当她这轮没说话，宁可沉默也不发半句思考。
     if (cfg.chat?.thinkingGuard?.enabled !== false) {
