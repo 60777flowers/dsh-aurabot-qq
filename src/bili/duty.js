@@ -17,7 +17,11 @@ import { reallySent } from '../chat/hub.js'
 
 const FACE_MAX = 2 * 1024 * 1024 // B 站头像上限（api.js 里也有一份，这里给缩图判断用）
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-const link = (bvid) => `https://www.bilibili.com/video/${bvid}`
+export const link = (bvid) => `https://www.bilibili.com/video/${bvid}`
+// QQ 里点得开的是网页播放器：点开直接播；video/ 普通链接常被拦去外部浏览器或要重新登录（#334）。
+// 记忆/流水里仍存 link() 的正式地址，便于回溯与去重。
+export const playerLink = (bvid, p = 1) =>
+  `https://www.bilibili.com/blackboard/webplayer/mbplayer.html?bvid=${bvid}&p=${p}&autoplay=true`
 
 /**
  * 「只在谷时刷」的跳过原因（纯函数，测试友好）。
@@ -270,7 +274,7 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
       // 群分享开着才让她想群里的话（关着就不往提示词里塞，省 token）
       const groupShareOn = Boolean(groupShare && c.groupShare && c.groupShare.enabled && c.groupShare.groupId && !getConfig().dryRun)
       const out = await think(`你在 B 站刷到了这几个视频：\n\n${looked.map((x, i) => `【${i + 1}】${x.digest}`).join('\n\n')}\n\n` +
-        `看完说说你的想法。对每个视频给一个对象：{"i":序号, "feeling":"一句你的真实感受", "comment":"想在视频下发的评论（像普通观众，一两句、别打广告，不想评就空字符串）", "share":"想私聊分享给${owner()}的话（觉得${owner()}会喜欢才写，不然空字符串）"` +
+        `看完说说你的想法。对每个视频给一个对象：{"i":序号, "feeling":"一句你的真实感受", "comment":"想在视频下发的评论（像普通观众，一两句、别打广告，不想评就空字符串）", "share":"想私聊分享给${owner()}的话（觉得${owner()}会喜欢才写，不然空字符串；不要自己贴 bilibili.com/video 链接，系统会自动附上能在 QQ 里直接播放的播放器链接）"` +
         (groupShareOn ? `, "shareGroup":"想发到群里跟群友一起看的话（群里说话的口吻，一两句；没什么值得说就空字符串）"` : '') +
         `, "remember":"值得记住的一件事（没有就空字符串）"}。` +
         `这次最多评论 ${commentLeft} 个。只输出 JSON 数组。`)
@@ -307,7 +311,7 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
         const share = cleanOutboundText(d.share, { warn: (message) => log.warn(`B 站分享：${message}`) }).trim()
         if (share && !isSilence(share) && c.shareToOwner && getConfig().ownerQQ) {
           // proactive：真发出去才记账（聊天流水 + 她下次在私聊里认得出自己发过什么）；试运行/排队补发不算
-          const r = await hub.sendText(`private:${getConfig().ownerQQ}`, `${share}\n${link(v.bvid)}`, undefined, undefined, undefined, { proactive: true, proactiveCause: 'bili' })
+          const r = await hub.sendText(`private:${getConfig().ownerQQ}`, `${share}\n${playerLink(v.bvid)}`, undefined, undefined, undefined, { proactive: true, proactiveCause: 'bili' })
           if (reallySent(r)) {
             shared++
             record(s, { kind: 'share', title: v.title, bvid: v.bvid, text: share })
