@@ -850,6 +850,11 @@ export function normalize(raw) {
   c.chat.seedHistoryCount = num(c.chat.seedHistoryCount, 20, 1, BIG)
   // 'auto' = 按本轮有无工具调用来决定（纯对话轮分条发、带工具的轮只发最后一段）
   c.chat.everyStep = c.chat.everyStep === 'auto' ? 'auto' : bool(c.chat.everyStep, false)
+  // 近似去重阈值：面板给的是 0–1，配置被手改出界（负数 / >1）时会让「相似度 ≥ 阈值」恒真或恒假，这里收一下。
+  const dupRaw = c.chat.dupSimilarity
+  c.chat.dupSimilarity = dupRaw === undefined || dupRaw === null || dupRaw === ''
+    ? 0.45
+    : (Number.isFinite(Number(dupRaw)) ? Math.min(1, Math.max(0, Number(dupRaw))) : 0.45)
   c.chat.rescueFromThinking = bool(c.chat.rescueFromThinking, false)
   c.chat.thinkingGuard = { enabled: bool(c.chat.thinkingGuard?.enabled, true) }
   c.chat.replyMarker = { enabled: bool(c.chat.replyMarker?.enabled, false) }
