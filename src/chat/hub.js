@@ -34,7 +34,7 @@ import { expandMentions, hasMention } from './mentions.js'
 import { cleanContent, cleanText } from '../core/text.js'
 import { createRecentMedia } from './recent-media.js'
 import { createTitleFilter } from './title-filter.js'
-import { takeInterim, reasoningOf, rescueFromThinking, mergeStepText, similarText, everyStepMode as everyStepOn } from './steps.js'
+import { takeInterim, reasoningOf, rescueFromThinking, mergeStepText, similarText, adoptInterim, everyStepMode as everyStepOn } from './steps.js'
 import { guardOutgoing, codeFenceInstruction } from './guard.js'
 import { markerInstruction, extractMarkedReply, stripMarkers, markerApplies } from './reply-marker.js'
 import { grantOwner } from '../core/workspace-move.js'
@@ -2177,6 +2177,9 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
         st.text = raw || st.text
         st.mergedText = ''
       } else {
+        // 'auto' 中途翻成并条（先说话、随后调了工具）时，把还没发出去的那段先收回来，别整段丢。
+        const adopted = adoptInterim(st, { turn: d.turn, step: d.step })
+        if (adopted) st.mergedText = mergeStepText(st.mergedText, adopted)
         if (raw) st.mergedText = mergeStepText(st.mergedText, raw)
         st.text = st.mergedText || st.text
       }

@@ -75,6 +75,24 @@ export function everyStepMode(value, st) {
 }
 
 /**
+ * 'auto' 中途翻成「并条」时，把同一轮里还没发出去的那段正文收回来。
+ *
+ * 场景：纯对话轮先说了第一段（记在 interim 里等下一段），随后这一轮调了工具，
+ * 模式从「分条」变成「并条」——并条分支不会再经过 takeInterim，那段就永远发不出去。
+ * 返回要并进 mergedText 的文本；不是同一轮、已发过、或没有待发文本时返回 ''。
+ */
+export function adoptInterim (st, { turn = 0, step = -1 } = {}) {
+  if (!st || st.interimTurn !== turn) return ''
+  const text = String(st.interimText || '').trim()
+  if (!text) return ''
+  // interimStep 记录的是「上一步发/存了什么」；当前步比它新才需要收，避免把当前段重复收一次。
+  if (!(Number(st.interimStep) < Number(step))) return ''
+  st.interimText = ''
+  st.interimStep = -1
+  return text
+}
+
+/**
  * 不分条（everyStep=false，或 'auto' 判成「这一轮调过工具」）时，把没单独发出去的段落攒起来。
  * 早先的实现是「只留最后一段」，工具轮里先说的那段就被整段吃掉了（2026-11-24 现场：
  * step5 回了提问、step6 才是结论，结果只发出 step6）。这里只做去重拼接，不改措辞。
