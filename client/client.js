@@ -2661,7 +2661,14 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h('div', { className: 'ab-grp-row' },
             h(Row, { label: '连发合并', hint: '人常常一口气发好几句。打开后ta会等对方说完再一起回，而不是一句一回。' }, f.sw('merge.enabled')),
             h(Row, { label: '合并转发', hint: '群里有人发合并转发时，她手上只有一个占位符，内容看不见。打开后消息一进来就展开存进上下文，代价是每条转发多调一次接口。' }, f.sw('forward.expandEarly')),
-            h(Row, { label: '每段都发', hint: '一轮里她分几段说，就发几条。关着只发最后一段。默认关' }, f.sw('chat.everyStep')),
+            h(Row, { label: '每段都发', hint: '一轮里她分几段说，就发几条。自动 = 纯对话轮分条，这一轮调过工具（干活）就并成一条发' },
+              f.select('chat.everyStep', [
+                { value: false, label: '只发最后一段' },
+                { value: 'auto', label: '自动（推荐）' },
+                { value: true, label: '每段都发' },
+              ])),
+            h(Row, { label: '近似去重阈值', hint: '分条时，若这一段和上一段字面重合超过这个比例，就按「同一件事说两遍」处理：后一段顶掉前一段，只发一条。0.45 是实测的中间线（真重复 0.49 / 真补充 0.03）；设 1 等于关掉' },
+              f.num('chat.dupSimilarity', { min: 0, max: 1, step: 0.05 })),
           )),
 
         // ===== 折叠区：其余所有组/设置项 =====
