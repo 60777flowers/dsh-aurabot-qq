@@ -1,4 +1,4 @@
-﻿import { identityNote, flatHistory, requestIdentity } from './identity.js'
+import { identityNote, flatHistory, requestIdentity } from './identity.js'
 import { ignoredGroupMember } from './member-filter.js'
 import { preserveReplyStickers } from './sticker-policy.js'
 // 消息中枢：QQ 会话 ↔ DSH 会话。
