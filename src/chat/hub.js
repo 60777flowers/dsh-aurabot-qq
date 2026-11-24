@@ -34,7 +34,7 @@ import { expandMentions, hasMention } from './mentions.js'
 import { cleanContent, cleanText } from '../core/text.js'
 import { createRecentMedia } from './recent-media.js'
 import { createTitleFilter } from './title-filter.js'
-import { takeInterim, reasoningOf, rescueFromThinking } from './steps.js'
+import { takeInterim, reasoningOf, rescueFromThinking, mergeStepText, similarText, everyStepMode as everyStepOn } from './steps.js'
 import { guardOutgoing, codeFenceInstruction } from './guard.js'
 import { markerInstruction, extractMarkedReply, stripMarkers, markerApplies } from './reply-marker.js'
 import { grantOwner } from '../core/workspace-move.js'
@@ -2163,17 +2163,36 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
         : ''
       // 工具调用那一轮的正文不会被当成最终回复，但慢工具等待时可以先拿它当提示。
       st.toolText = toolText
+      // chat.everyStep='auto' 的判据：这一轮出现过工具调用就不逐段发（过程话并进最终回复），
+      // 纯对话轮才分条。只看结构，不猜语义。
+      if (hasToolCall) st.sawToolCall = true
       // 最后一条 assistant 消息才是本轮回复；总是覆盖（空也覆盖），
       // 否则最后一条是空的（或只有工具调用）时会拿上一条过程性文字补发，把思考发出去。
       // 例外是开了 chat.everyStep：那时中间段已经陆续发过，这一步没说话就别把上一段盖掉，
       // 否则「说完一段又去调工具」的那段话会永远发不出去。
       st.lastTurn = d.turn
-      st.text = getConfig().chat?.everyStep ? raw || st.text : raw
+      // 分条发的时候，最后一段由 turn/end 发；不分条（含 'auto' 判成工具轮）时，
+      // 把这一轮所有没单独发出去的段落攒起来——早先「只留最后一段」会把中间那段整块丢掉。
+      if (everyStepOn(getConfig().chat?.everyStep, st)) {
+        st.text = raw || st.text
+        st.mergedText = ''
+      } else {
+        if (raw) st.mergedText = mergeStepText(st.mergedText, raw)
+        st.text = st.mergedText || st.text
+      }
       // chat.everyStep：一轮里分几段说就发几条（默认关，只发最后一段）。发的是「上一段」——
       // 此刻还不知道后面有没有话，把当前段提前发掉会让最后一段变成重复。最后一段仍由 turn/end 发。
-      if (raw && getConfig().chat?.everyStep) {
+      if (raw && everyStepOn(getConfig().chat?.everyStep, st)) {
+        // 同一轮里把同一份结果复述两遍（团队消息的结果 + 结束通知各触发一次）时，
+        // 后一段直接顶掉前一段，不再多发一条。阈值 chat.dupSimilarity，默认 0.45（实测：真重复 0.49、真补充 0.03）。
+        const dupThreshold = Number(getConfig().chat?.dupSimilarity ?? 0.45)
+        const prevSameTurn = st.interimTurn === d.turn ? String(st.interimText || '') : ''
+        const repeated = Boolean(prevSameTurn) && similarText(prevSameTurn, raw) >= dupThreshold
         const prev = takeInterim(st, { turn: d.turn, step: d.step, text: raw })
-        if (prev) {
+        if (repeated && prev) {
+          log.debug(`${chatId}：这一段和上一段重复（相似度 ≥ ${dupThreshold}），不再单发`)
+        }
+        if (prev && !repeated) {
           // 不在这里记账：deliver 会在真发出去之后自己 logChat，一条都没发成功就不记。
           // 这里再记一次会让每个中间段在聊天流水里出现两遍，发送失败时还会把没发出去的话算成说过。
           log.debug(`${chatId}：分条发出上一段（${prev.length} 字）`)
@@ -2185,6 +2204,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       return
     }
     if (event.type === 'turn/end') {
+      st.sawToolCall = false
       slowNoticeSent.delete(key)
       clearSlowNotices(key)
       const turnToken = st.turnToken
@@ -2193,6 +2213,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       const d = event.data || {}
       const completed = d.reason && d.reason.kind === 'completed'
       let text = st.lastTurn === d.turn ? st.text : ''
+      st.mergedText = '' // 本轮攒下的段落已交给 text，清掉免得带进下一轮
       let fromThinking = false
       // 整轮一段正文都没有：她可能把话全写在思考里了（Reply: 起草 → Careful: 自检 → N lines: 定稿），
       // 正文块是空的。chat.rescueFromThinking 打开时从最后一步的思考里捞回定稿；捞不到就照旧不发。

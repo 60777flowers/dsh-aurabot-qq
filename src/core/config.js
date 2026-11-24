@@ -848,7 +848,8 @@ export function normalize(raw) {
   c.chat = c.chat || {}
   c.chat.seedHistory = bool(c.chat.seedHistory, false)
   c.chat.seedHistoryCount = num(c.chat.seedHistoryCount, 20, 1, BIG)
-  c.chat.everyStep = bool(c.chat.everyStep, false)
+  // 'auto' = 按本轮有无工具调用来决定（纯对话轮分条发、带工具的轮只发最后一段）
+  c.chat.everyStep = c.chat.everyStep === 'auto' ? 'auto' : bool(c.chat.everyStep, false)
   c.chat.rescueFromThinking = bool(c.chat.rescueFromThinking, false)
   c.chat.thinkingGuard = { enabled: bool(c.chat.thinkingGuard?.enabled, true) }
   c.chat.replyMarker = { enabled: bool(c.chat.replyMarker?.enabled, false) }

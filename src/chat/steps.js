@@ -61,3 +61,57 @@ export function rescueFromThinking(thinking) {
   const cut = body.search(TRAILING_RE)
   return (cut >= 0 ? body.slice(0, cut) : body).trim()
 }
+
+/**
+ * chat.everyStep 的取值判定：
+ *   true    每段都发
+ *   false   只发最后一段
+ *   'auto'  这一轮出现过工具调用就并成一条，纯对话轮才分条
+ * 判据只看结构（本轮有没有 tool-call 块），不猜语义，所以不会因为措辞变化抖。
+ */
+export function everyStepMode(value, st) {
+  if (value === 'auto') return !(st && st.sawToolCall)
+  return Boolean(value)
+}
+
+/**
+ * 不分条（everyStep=false，或 'auto' 判成「这一轮调过工具」）时，把没单独发出去的段落攒起来。
+ * 早先的实现是「只留最后一段」，工具轮里先说的那段就被整段吃掉了（2026-11-24 现场：
+ * step5 回了提问、step6 才是结论，结果只发出 step6）。这里只做去重拼接，不改措辞。
+ */
+export function mergeStepText(prev, next) {
+  const a = String(prev || '').trim()
+  const b = String(next || '').trim()
+  if (!b) return a
+  if (!a) return b
+  if (a === b || a.endsWith(b)) return a
+  if (b.includes(a)) return b
+  return `${a}\n\n${b}`
+}
+
+/**
+ * 两段话是不是「同一件事说两遍」。
+ *
+ * 判据只看字面：去空白与标点后取二元组集合的 Jaccard。模型把同一份结果复述两遍时，
+ * 字面重合度通常在 0.7 以上；真补充（"另外还有一点"）一般在 0.2 以下。
+ * 阈值由 chat.dupSimilarity 控制，默认 0.45——2026-11-24 那对真重复实测 0.49，真补充 0.03。
+ */
+export function similarText(a, b) {
+  const norm = (x) => String(x || '').toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '')
+  const x = norm(a)
+  const y = norm(b)
+  if (!x || !y) return 0
+  if (x === y) return 1
+  const grams = (s) => {
+    const set = new Set()
+    if (s.length === 1) set.add(s)
+    for (let i = 0; i < s.length - 1; i++) set.add(s.slice(i, i + 2))
+    return set
+  }
+  const gx = grams(x)
+  const gy = grams(y)
+  let inter = 0
+  for (const g of gx) if (gy.has(g)) inter++
+  const union = gx.size + gy.size - inter
+  return union ? inter / union : 0
+}
