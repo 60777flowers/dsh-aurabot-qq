@@ -13,6 +13,9 @@ import { DIARY_AUDIENCES } from '../features/qzone-audience.js'
 import { DEFAULT_TIER_DAYS } from '../features/memory-rules.js'
 import { defaultEmotions, normalizeEmotions } from '../features/mood-emotions.js'
 
+// 识图模型的思考强度只认这三档（和面板「思考强度」的选项一致）
+const VISION_EFFORTS = ['low', 'high', 'max']
+
 export const DEFAULTS = {
   enabled: false, // 总开关：关着一句都不发
   dryRun: true, // 试运行：只记日志不真发
@@ -73,7 +76,9 @@ export const DEFAULTS = {
     httpToken: '',
     wsToken: '',
   },
-  model: { provider: '', model: '', reasoningEffort: 'low', vision: 'auto' }, // 留空 = 跟随 DSH 默认；vision: auto/on/off
+  // 留空 = 跟随 DSH 默认；vision: auto/on/off（聊天模型自己能不能收图片）；
+  // visionModel: 单独选的识图模型 —— 配了它以后图片先交给它看，聊天模型只收文字描述
+  model: { provider: '', model: '', reasoningEffort: 'low', vision: 'auto', visionModel: { provider: '', model: '' }, visionReasoningEffort: 'low' },
   // 按聊天选模型（主人在面板「模型」页设）：私聊 QQ 号 > 群号 > 所有私聊 / 所有群默认 > 上面的全局模型；没写的一级退到下一级
   chatEfforts: {}, // QQ 聊天单独选择的思考档位
   chatModels: { privateDefault: { provider: '', model: '', reasoningEffort: '' }, groupDefault: { provider: '', model: '', reasoningEffort: '' }, privates: {}, groups: {} },
@@ -542,6 +547,13 @@ export function normalize(raw) {
   if (c.workspaceDir && !/^([a-zA-Z]:[\\/]|\/)/.test(c.workspaceDir)) c.workspaceDir = ''
   // 视觉能力：auto = 问 DSH 的模型元数据；on / off = 主人手动声明（覆盖元数据）
   c.model.vision = c.model.vision === 'on' || c.model.vision === 'off' ? c.model.vision : 'auto'
+  // 识图模型：{ provider, model } 两个都填了才算；坏数据 / 只填一半一律当没配
+  const vm = isObj(c.model.visionModel) ? c.model.visionModel : {}
+  const vmProvider = typeof vm.provider === 'string' ? vm.provider.trim().slice(0, 120) : ''
+  const vmModel = typeof vm.model === 'string' ? vm.model.trim().slice(0, 200) : ''
+  c.model.visionModel = vmProvider && vmModel ? { provider: vmProvider, model: vmModel } : { provider: '', model: '' }
+  // 识图模型的思考强度和聊天模型分开设：只认「低 / 高 / 最高」三档，坏数据一律回到默认「低」
+  c.model.visionReasoningEffort = VISION_EFFORTS.includes(c.model.visionReasoningEffort) ? c.model.visionReasoningEffort : 'low'
   c.setupDone = bool(c.setupDone, false)
   c.ownerLevel = LEVELS.includes(c.ownerLevel) ? c.ownerLevel : 'full'
   c.longTasks = bool(c.longTasks, true)
