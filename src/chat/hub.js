@@ -2544,7 +2544,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
   async function quoteImages(q, take = 2, route = null) {
     if (!q?.ok || take <= 0 || !route) return []
     const segs = [...q.images, ...q.stickers].slice(0, take)
-    if (!segs.length || route.mode === 'none') return []
+    if (!segs.length) return []
     const got = await imagesOf({ stickers: [], images: segs })
     if (!got.length) return []
     if (route.mode === 'describe') {
