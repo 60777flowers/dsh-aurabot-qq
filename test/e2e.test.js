@@ -723,23 +723,25 @@ test('空间日记：手动写一篇（仅自己可见），配今天画的图�
   const r = result.json()
   assert.equal(r.ok, true, r.message)
   assert.equal(r.images, 1, '今天画了图，日记应该配一张')
-  const q = mock.sent('send_qzone_msg')[0]
-  assert.equal(q.params.ugc_right, 64)
-  assert.match(q.params.content, /白米饭/)
-  assert.equal(q.params.images.length, 1, '说说带了一张图')
-  assert.match(q.params.images[0], /^base64:\/\//)
+  const q = mock.qzone.get(r.tid)
+  assert.ok(q, '返回的日记 ID 应指向本次发布的内容')
+  assert.equal(q.ugc_right, 64)
+  assert.match(q.content, /白米饭/)
+  assert.equal(q.images.length, 1, '说说带了一张图')
+  assert.match(q.images[0], /^base64:\/\//)
   assert.deepEqual(sent, [], '日记那一轮没转发到聊天里')
   const d = (await fake.call('/qzone/delete', { tid: r.tid })).json()
   assert.equal(d.ok, true)
-  assert.equal(mock.qzone.size, 0)
+  assert.equal(mock.qzone.has(r.tid), false)
 
   // 面板关掉「日记配图」：只发文字
   await fake.call('/save', { diary: { attachImage: false } })
   const r2 = (await api.hub.capture(() => fake.call('/diary/run', { visibility: 'self' }))).result.json()
   assert.equal(r2.ok, true, r2.message)
   assert.equal(r2.images, 0)
-  const q2 = mock.sent('send_qzone_msg')[1]
-  assert.equal(q2.params.images, undefined, '关掉后不带图')
+  const q2 = mock.qzone.get(r2.tid)
+  assert.ok(q2, '应保存这次发布的纯文字日记')
+  assert.equal(q2.images, undefined, '关掉后不带图')
   await fake.call('/qzone/delete', { tid: r2.tid })
 
   // 配图发不出去（空间不认这张图）：不能憋住整篇日记，退回只发文字
@@ -749,8 +751,9 @@ test('空间日记：手动写一篇（仅自己可见），配今天画的图�
     const r3 = (await api.hub.capture(() => fake.call('/diary/run', { visibility: 'self' }))).result.json()
     assert.equal(r3.ok, true, '配图失败也要把日记发出去')
     assert.equal(r3.images, 0, '最后没配成图')
-    const q3 = mock.sent('send_qzone_msg')[2]
-    assert.equal(q3.params.images, undefined, '退回只发文字的说说')
+    const q3 = mock.qzone.get(r3.tid)
+    assert.ok(q3, '应保存配图失败后发布的日记')
+    assert.equal(q3.images, undefined, '退回只发文字的说说')
     await fake.call('/qzone/delete', { tid: r3.tid })
   } finally {
     mock.state.failQzoneImage = false
