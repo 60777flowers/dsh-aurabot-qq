@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const REPO = new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')
-const { visionModelOf, canUnderstandImages, askModel, clearVisionCache } = await import(`file:///${REPO}/src/core/llm.js`)
+const { visionModelOf, canUnderstandImages, askModel, clearVisionCache, clearReasoningCache } = await import(`file:///${REPO}/src/core/llm.js`)
 const { normalize, mergeFromPanel } = await import(`file:///${REPO}/src/core/config.js`)
 
 // ---------- 纯函数 / askModel ----------
@@ -18,6 +18,14 @@ test('配置：识图模型只认完整的 {provider, model}', () => {
   assert.deepEqual(normalize({ model: { visionModel: 'p::m' } }).model.visionModel, { provider: '', model: '' }, '字符串坏数据当没配')
   assert.deepEqual(visionModelOf({ model: { visionModel: { provider: 'p', model: 'm' } } }), { provider: 'p', model: 'm' })
   assert.equal(visionModelOf(normalize({})), null, '没配 = 跟随聊天模型')
+})
+
+test('配置：识图思考强度单独存，只认低 / 高 / 最高三档', () => {
+  assert.equal(normalize({}).model.visionReasoningEffort, 'low', '默认「低」，和原来的行为一致')
+  assert.equal(normalize({ model: { reasoningEffort: 'max' } }).model.visionReasoningEffort, 'low', '聊天模型改档不影响识图模型')
+  assert.equal(normalize({ model: { visionReasoningEffort: 'max' } }).model.visionReasoningEffort, 'max')
+  assert.equal(normalize({ model: { visionReasoningEffort: 'HIGH' } }).model.visionReasoningEffort, 'low', '大小写 / 坏值回到默认')
+  assert.equal(normalize({ model: { visionReasoningEffort: 3 } }).model.visionReasoningEffort, 'low', '非字符串回到默认')
 })
 
 test('配了识图模型就算「能看图」', async () => {
@@ -44,6 +52,37 @@ test('askModel 只在带图时改用识图模型', async () => {
   assert.ok(calls[1].messages[0].content.some((c) => c.type === 'image'), '识图模型要真的收到图片')
 })
 
+test('识图模型的「识图思考强度」独立于聊天模型的「思考强度」；模型不支持时自动省略', async () => {
+  const calls = []
+  const meta = {
+    'vision-high': { inputModalities: ['text', 'image'], reasoning: { efforts: [{ id: 'low' }, { id: 'high' }, { id: 'max' }], defaultEffort: 'low' } },
+    'vision-blind': { inputModalities: ['text', 'image'] }, // 没有推理元数据
+  }
+  const dsh = {
+    attachments: { admitPromptContent: async (c) => c },
+    llm: {
+      resolveModelInfo: async (p, m) => meta[m] || { inputModalities: ['text'] },
+      async *stream (p) { calls.push(p); yield { type: 'text-delta', text: '看到了' }; yield { type: 'finish', reason: { kind: 'stop' } } },
+    },
+  }
+  const images = [{ data: 'AA==', mediaType: 'image/png' }]
+  // 聊天模型选「最高」、识图模型单独选「高」：识图按自己的档位走
+  clearReasoningCache()
+  await askModel(dsh, { cfg: { model: { provider: 'p', model: 'chat', reasoningEffort: 'max', visionReasoningEffort: 'high', visionModel: { provider: 'p', model: 'vision-high' } } }, text: '看图', images })
+  assert.equal(calls.at(-1).model, 'vision-high')
+  assert.equal(calls.at(-1).reasoningEffort, 'high', '识图模型用「识图思考强度」，不跟聊天模型的档位')
+
+  // 反过来：聊天的「低」、识图的「最高」——识图档位也不该被聊天模型带偏
+  clearReasoningCache()
+  await askModel(dsh, { cfg: { model: { provider: 'p', model: 'chat', reasoningEffort: 'low', visionReasoningEffort: 'max', visionModel: { provider: 'p', model: 'vision-high' } } }, text: '看图', images })
+  assert.equal(calls.at(-1).reasoningEffort, 'max', '识图档位独立于聊天模型的「思考强度」')
+
+  clearReasoningCache()
+  await askModel(dsh, { cfg: { model: { provider: 'p', model: 'chat', reasoningEffort: 'max', visionReasoningEffort: 'low', visionModel: { provider: 'p', model: 'vision-blind' } } }, text: '看图', images })
+  assert.equal(calls.at(-1).model, 'vision-blind')
+  assert.equal('reasoningEffort' in calls.at(-1), false, '模型没有推理元数据就不传档位')
+})
+
 test('面板保存：识图模型写进去、没动它时保留', () => {
   const base = normalize({})
   const saved = mergeFromPanel(base, { model: { visionModel: { provider: 'fake', model: 'm-see' } } })
@@ -51,6 +90,10 @@ test('面板保存：识图模型写进去、没动它时保留', () => {
   const again = mergeFromPanel(saved, { model: { provider: 'p', model: 'chat' } })
   assert.deepEqual(again.model.visionModel, { provider: 'fake', model: 'm-see' }, '改聊天模型不该把识图模型弄丢')
   assert.deepEqual(mergeFromPanel(saved, { model: { visionModel: { provider: '', model: '' } } }).model.visionModel, { provider: '', model: '' }, '能改回跟随聊天模型')
+  // 识图思考强度跟着面板一起存，改聊天模型 / 改识图模型都不该把它弄丢
+  const savedEffort = mergeFromPanel(base, { model: { visionReasoningEffort: 'high' } })
+  assert.equal(savedEffort.model.visionReasoningEffort, 'high')
+  assert.equal(mergeFromPanel(savedEffort, { model: { provider: 'p', model: 'chat', visionModel: { provider: 'fake', model: 'm-see' } } }).model.visionReasoningEffort, 'high', '改模型不该把识图思考强度弄丢')
 })
 
 // ---------- 真跑一遍 hub ----------
