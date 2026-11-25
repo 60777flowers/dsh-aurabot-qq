@@ -2765,7 +2765,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       // 旁听只走现有文字流水 → 记忆整理；不展开转发、不识图/听音、不运行消息钩子或命令。
       // 头衔过滤、人格隔离、调试模式和清空记忆的保护仍由上方检查及 logChat 负责。
       if (shouldObserveGroup(cfg, msg) && msg.text.trim()) {
-        logChat(msg.chatId, msg.nickname, msg.text, msg.userId, { at: now, images: msg.images, mid: msg.messageId })
+        logChat(msg.chatId, msg.nickname, msg.text, msg.userId, { at: now, interaction: msg.mentioned || sentIds.has(msg.replyId) ? [msg.userId] : [], images: msg.images, mid: msg.messageId })
       }
       log.debug(`忽略 ${msg.chatId}（${allowed.reason}）`)
       return

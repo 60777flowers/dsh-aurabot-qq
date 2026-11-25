@@ -835,6 +835,36 @@ export function checkAbstractText (text, sourceTexts = []) {
   return { ok: true, text: t }
 }
 
+// 对单日流水做只读选择。返回原始下标的掩码；整理进度、聊天缓冲沿用物理行号。
+export function extractionMask(rows, cfg) {
+  const keep = new Uint8Array(rows.length), groups = new Map()
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i], id = r.chatId || ''
+    if (!id.startsWith('group:')) { keep[i] = 1; continue }
+    const mode = cfg.memory?.groupExtraction?.[id.slice(6)]
+    if (mode === 'all') { keep[i] = 1; continue }
+    if (r.forgottenAt || r.kind === 'seen') continue
+    let g = groups.get(id)
+    if (!g) { g = { prev: [], times: [], busy: false, clock: 0 }; groups.set(id, g) }
+    const at = Number(r.t) || 0
+    if (mode === 'auto') {
+      g.clock = Math.max(g.clock, at)
+      while (g.times.length && g.times[0] <= g.clock - 3600000) g.times.shift()
+      g.times.push(g.clock)
+      if (g.times.length > 80) { g.times.shift(); g.busy = true }
+      else if (g.times.length <= 40) g.busy = false
+      if (!g.busy) keep[i] = 1
+    }
+    if (r.direct === true || r.interaction?.length || (r.who === 'bot' && !r.uid) || (r.uid && String(r.uid) === String(cfg.ownerQQ))) {
+      keep[i] = 1
+      for (const j of g.prev) if (at > 0 && rows[j].t > 0 && at >= rows[j].t && at - rows[j].t <= 120000) keep[j] = 1
+    }
+    g.prev.push(i)
+    if (g.prev.length > 5) g.prev.shift()
+  }
+  return keep
+}
+
 /**
  * directory：这个人格的记忆放在哪（记忆库、向量索引、召回日志），默认数据目录根下（见 personas.js 的 personaDataDir）。
  * blocked(qq)：别的人格里设了「不再记住」的人，这里也不记。
@@ -2833,8 +2863,12 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
     const { ownerQQ, ownerName, botQQ } = getConfig()
     return digest({ rows, ownerQQ, ownerName, botQQ, selfName: selfName(getConfig()) })
   }
+  function gistRows(rows) {
+    const keep = extractionMask(rows, getConfig())
+    return rows.filter((_, i) => keep[i])
+  }
   function currentChat(day, chatId, signature, version) {
-    return getConfig().memory.gistEnabled !== false && version === forgetVersion && chatSignature(hub.chatLogOf(day).filter((l) => l.chatId === chatId)) === signature
+    return getConfig().memory.gistEnabled !== false && version === forgetVersion && chatSignature(gistRows(hub.chatLogOf(day).filter((l) => l.chatId === chatId))) === signature
   }
 
   function safeGistText(text) {
@@ -2910,9 +2944,14 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
       if (!groups.has(id)) groups.set(id, [])
       groups.get(id).push(line)
     }
-    for (const [chatId, rows] of groups) {
+    for (const [chatId, raw] of groups) {
+      // 已完成的梗概不因升级被改写。分段缓存只复用选入内容相同的结果。
+      const done = load().gistDone?.[day]?.[chatId]
+      if (done && done === chatSignature(raw)) continue
+      const rows = gistRows(raw)
+      if (!rows.length) continue
       const signature = chatSignature(rows)
-      if (load().gistDone?.[day]?.[chatId] === signature) continue
+      if (done === signature) continue
       const owner = String(getConfig().ownerQQ || '')
       const ownerNames = chatId.startsWith('group:') && owner ? rows.filter((l) => String(l.uid || '') === owner).map((l) => String(l.who || '')).filter((name) => name && name !== owner) : []
       const talk = rows.filter((l) => l.kind !== 'seen' && !l.forgottenAt && rememberedRow(l) && l.text && !parseMemoryCommand(l.text) && !String(l.text).startsWith('【系统'))
@@ -3162,6 +3201,51 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
     }
   }
 
+  // 只在面板请求时读取。沿用本人格的流水和整理进度；不碰模型、配额、进度或记忆内容。
+  async function backlog() {
+    const state = load(), cfg = getConfig().memory, today = dayKey()
+    const sessions = hub.sessions?.() || {}, chats = new Map()
+    let total = 0, pending = 0, outOfScope = 0, oldest = '', batches = 0
+    for (const day of hub.chatLogDays().filter(d => d <= today).sort()) {
+      await new Promise(resolve => setImmediate(resolve))
+      const rows = hub.chatLogOf(day), progress = state.processed?.[day]
+      const keep = extractionMask(rows, getConfig())
+      // 旧版纯数字进度和整理器一样从头算。chats 的序号包括后来忘掉的行。
+      const offset = progress?.offset || 0, end = progress?.end || 0
+      const seen = new Map(), windowCounts = new Map(), idle = progress?.idle || []
+      let range = 0, windowEnd = end > offset ? end : offset + EXTRACT_WINDOW
+      for (let i = 0; i < rows.length; i++) {
+        if (i >= windowEnd) { windowCounts.clear(); windowEnd += EXTRACT_WINDOW }
+        const row = rows[i], id = row.chatId
+        if (!id || id.startsWith('system:')) continue
+        let done = i < offset
+        if (!done && i < end) {
+          const n = seen.get(id) || 0
+          seen.set(id, n + 1)
+          done = n < (progress.chats?.[id] || 0)
+        }
+        if (row.forgottenAt || !rememberedRow(row, state)) continue
+        if (!keep[i]) { outOfScope++; continue }
+        total++
+        while (range < idle.length && idle[range][1] <= i) range++
+        if (done || (range < idle.length && idle[range][0] <= i)) continue
+        pending++
+        if (!oldest) oldest = day
+        const n = windowCounts.get(id) || 0
+        if (n % EXTRACT_LINES === 0) batches++
+        windowCounts.set(id, n + 1)
+        let chat = chats.get(id)
+        if (!chat) {
+          const name = (id.startsWith('group:') && hub.groupNames?.get(id.slice(6))) || sessions[id]?.title || (id === 'qzone' ? 'QQ 空间' : id)
+          chat = { id, name, pending: 0 }; chats.set(id, chat)
+        }
+        chat.pending++
+      }
+    }
+    return { at: Date.now(), total, pending, outOfScope, oldest, batches, used: state.extractBatches?.day === today ? state.extractBatches.count : 0,
+      limit: cfg.extractDailyBatches ?? 24, chats: [...chats.values()].sort((a, b) => b.pending - a.pending || a.id.localeCompare(b.id)) }
+  }
+
   /**
    * 整理临时记忆。
    * @param {{includeToday?:boolean, background?:boolean}} o includeToday：连今天的也提炼（手动整理时），但今天的流水不删（写日记还要用）；
@@ -3186,6 +3270,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
         if (day > today || (day === today && !o.includeToday)) continue
         const snapshotVersion = forgetVersion
         const all = structuredClone(hub.chatLogOf(day))
+        const keep = extractionMask(all, getConfig())
         const saved = (load().processed || {})[day]
         // 旧版只记全天行数，无法知道其中哪些内容被跳过；保守地从头补提炼。
         let done = saved && typeof saved === 'object' ? saved.offset : 0
@@ -3211,7 +3296,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
             let n = progress.chats[chatId] || 0
             while (n < lines.length) {
               if (snapshotVersion !== forgetVersion) throw new Error('聊天中有新的忘记请求，稍后重新提炼')
-              while (n < lines.length && (lines[n].line.forgottenAt || isIdleDone(progress, lines[n].index))) n++
+              while (n < lines.length && (!keep[lines[n].index] || lines[n].line.forgottenAt || isIdleDone(progress, lines[n].index))) n++
               if (n >= lines.length) break
               if (batches >= EXTRACT_LIMIT) { stopped = true; break }
               // issue #376：她正在回话/跑工具时先让路，别抢同一个模型端点把她的一轮挤死。
@@ -3221,7 +3306,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
               let end = n
               while (end < lines.length && part.length < EXTRACT_LINES) {
                 const entry = lines[end]
-                if (!entry.line.forgottenAt && !isIdleDone(progress, entry.index)) part.push(entry)
+                if (keep[entry.index] && !entry.line.forgottenAt && !isIdleDone(progress, entry.index)) part.push(entry)
                 end++
               }
               const version = forgetVersion
@@ -3420,6 +3505,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
       for (const day of hub.chatLogDays()) {
         if (day > dayKey()) continue
         const all = hub.chatLogOf(day)
+        const keep = extractionMask(all, getConfig())
         const saved = state.processed?.[day]
         const progress = saved && typeof saved === 'object' ? saved : { offset: 0, end: 0, chats: {} }
         const seen = {}
@@ -3432,7 +3518,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
           const position = seen[chatId] || 0
           if (i < (progress.end || 0)) seen[chatId] = position + 1
           if (i < (progress.end || 0) && position < (progress.chats?.[chatId] || 0)) continue
-          if (l.forgottenAt || isIdleDone(progress, i)) continue
+          if (!keep[i] || l.forgottenAt || isIdleDone(progress, i)) continue
           if (!pending.has(chatId)) pending.set(chatId, new Map())
           const days = pending.get(chatId)
           if (!days.has(day)) days.set(day, [])
@@ -3889,6 +3975,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
     },
     // 星图点「还记得」时用：整理一份命中，让她真的复习一次（会涨 hitDays / 刷新 lastHit）
     touch,
+    backlog,
     stats: () => {
       const state = load()
       const items = state.items

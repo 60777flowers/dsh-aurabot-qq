@@ -2528,7 +2528,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
 
     function GroupOverrides({ draft, setDraft, setSection }) {
       const overrides = draft.group.overrides || {}
-      const groupIds = [...new Set([...draft.allow.groups, ...(draft.group.moduleOnlyGroups || []), ...Object.keys(overrides), ...(draft.memory.passiveGroups || [])])]
+      const groupIds = [...new Set([...draft.allow.groups, ...(draft.group.moduleOnlyGroups || []), ...Object.keys(overrides), ...Object.keys(draft.memory.groupExtraction || {}), ...(draft.memory.passiveGroups || [])])]
       const [newGid, setNewGid] = useState('')
       const [selected, setSelected] = useState('')
       const selectedId = groupIds.includes(selected) ? selected : groupIds[0]
@@ -2582,6 +2582,12 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
                       setDraft(setPath(draft, 'memory.passiveGroups', on ? [...new Set([...ids, gid])] : ids.filter(x => x !== gid)))
                     } })) : null),
                 mode !== 'chat' ? h('div', { className: 'ab-note' }, mode === 'modules' ? '群消息只交给模块；是否回应仍看各模块的开关、权限和时段。AI 聊天设置暂不生效。' : '群消息不触发模块或 AI。' + (!draft.enabled ? '总开关已关闭，旁听暂不记录。' : draft.debug ? '调试模式不记录记忆。' : !draft.memory.enabled ? '记忆已关闭，旁听暂不记录。' : '开启旁听只记新文字，不回复；记忆整理可能产生费用。')) : h('p', { className: 'ab-muted ab-small' }, '被 @、引用或叫名字时按规则回复，仍受总开关、暂停和次数限制。'),
+                h(Row, { label: '长期记忆整理', hint: '相关对话包括主人发言、与她的互动和紧邻前文。群聊上下文不变。' }, h(Select, { ariaLabel: '群 ' + gid + ' 长期记忆整理', value: draft.memory.groupExtraction?.[gid] || 'related',
+                  options: [{ value: 'related', label: '只整理相关对话（默认）' }, { value: 'all', label: '整理全部对话' }, { value: 'auto', label: '按群消息量自动切换' }], onChange: value => {
+                    const modes = { ...draft.memory.groupExtraction }; if (value === 'related') delete modes[gid]; else modes[gid] = value
+                    setDraft(setPath(draft, 'memory.groupExtraction', modes))
+                  } })),
+                draft.memory.groupExtraction?.[gid] === 'auto' && h('p', { className: 'ab-muted ab-small' }, '当日近一小时超过 80 行，只整理相关对话；降至 40 行及以下恢复全部。'),
                 h('details', { key: gid + ':' + mode, open: mode === 'chat' ? true : undefined },
                   h('summary', { style: { cursor: 'pointer', margin: '12px 0' } }, mode === 'chat' ? 'AI 聊天设置' : 'AI 聊天设置（开启 AI 聊天后生效）'),
                 ...[['proactiveEnabled', '没人叫时主动插话'], ['engagedEnabled', '聊起来后继续回应']].map(([key, label]) =>
@@ -5150,6 +5156,36 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             : h(StarMap, { toast }))
     }
 
+    function MemoryBacklog() {
+      const [data, setData] = useState(null), [error, setError] = useState(''), [all, setAll] = useState(false)
+      async function refresh() {
+        setError('')
+        const r = await get('/memory/backlog')
+        if (!r.ok || !Array.isArray(r.chats)) { setError(r.message || '读取失败，请重试'); return }
+        setData(r)
+      }
+      const num = n => n.toLocaleString('zh-CN')
+      function label(c) {
+        const id = c.id.replace(/^(?:group|private):/, ''), name = c.name
+        if (name === c.id || name === id) return (c.id.startsWith('group:') ? '群 ' : c.id.startsWith('private:') ? '私聊 ' : '') + id
+        return h(Fragment, null, name, !name.endsWith(id) && h('small', { className: 'ab-muted' }, ' · ' + id))
+      }
+      return h('section', { 'aria-label': '整理进度', style: { margin: '12px 0' } },
+        h('div', { className: 'ab-flex' }, h('strong', null, '整理进度'), h('div', { className: 'ab-spacer' }),
+          h(Btn, { small: true, onClick: refresh }, data ? '刷新进度' : '查看待整理流水')),
+        !data && !error && h('div', { className: 'ab-muted ab-small' }, '只看进度，不会启动整理。'),
+        error && h('p', { role: 'alert' }, error),
+        data && h('div', { style: { marginTop: 8 } },
+          h('b', null, data.pending ? '待整理 ' + num(data.pending) + ' 行' : '没有待整理流水'),
+          h('span', { className: 'ab-muted ab-small' }, ' · 今日已用 ' + num(data.used) + ' / ' + num(data.limit) + ' 批'),
+          data.total > 0 && h('progress', { max: data.total, value: data.total - data.pending, 'aria-label': '纳入整理的流水已处理比例', style: { width: '100%', display: 'block', margin: '6px 0' } }),
+          h('div', { className: 'ab-small ab-muted' }, '纳入整理的流水已处理 ' + num(data.total - data.pending) + ' / ' + num(data.total) + ' 行' + (data.outOfScope ? ' · 不纳入整理 ' + num(data.outOfScope) + ' 行' : '') + (data.oldest ? ' · 最早待整理 ' + data.oldest : '') + ' · ' + new Date(data.at).toLocaleTimeString() + ' 更新'),
+          (all ? data.chats : data.chats.slice(0, 5)).map(c => h('div', { key: c.id, style: { display: 'flex', gap: 8, justifyContent: 'space-between', marginTop: 7 } },
+            h('span', { style: { minWidth: 0, overflowWrap: 'anywhere' } }, label(c)),
+            h('b', { style: { whiteSpace: 'nowrap' } }, num(c.pending) + ' 行'))),
+          data.chats.length > 5 && h(Btn, { small: true, onClick: () => setAll(!all) }, all ? '收起会话' : '查看全部 ' + data.chats.length + ' 个会话')))
+    }
+
     function MemoryPage({ st, draft, setDraft, toast }) {
       const f = useField(draft, setDraft)
       const [mem, setMem] = useState(null)
@@ -5201,6 +5237,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             h('div', { className: 'ab-card ab-stat' }, h('div', { className: 'n' }, stats ? stats.count : '–'), h('div', { className: 'l' }, '条长期记忆')),
             h('div', { className: 'ab-card ab-stat' }, h('div', { className: 'n' }, stats ? stats.auto : '–'), h('div', { className: 'l' }, '条来自每日整理' + (stats && stats.outdated ? '（另有 ' + stats.outdated + ' 条已过时）' : ''))),
             h('div', { className: 'ab-card ab-stat' }, h('div', { className: 'n', style: { fontSize: 16, paddingTop: 6 } }, last ? new Date(last.at).toLocaleString() : '还没整理过'), h('div', { className: 'l' }, '上次整理'))),
+          h(MemoryBacklog, { key: st.persona?.current || 'current' }),
           h('div', { className: 'ab-grp-row' },
             h(Row, { label: '每天自动整理两次', hint: '把临时记忆（聊天流水）提炼成长期记忆、相处经验和说话方式；第二次只处理新聊天，过了一天的流水整理完清空；各会话自己的上下文不受影响' },
               f.sw('memory.dailyConsolidate'), h('span', { className: 'ab-muted' }, '每天'),
@@ -10256,6 +10293,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         if (changed(rest.group, baseline.group)) { body.group = rest.group; expected.group = baseline.group }
         if (changed(rest.memory, baseline.memory)) {
           const mem = clone(rest.memory || {})
+          if (changed(mem.groupExtraction, baseline.memory?.groupExtraction)) expected.groupExtraction = baseline.memory?.groupExtraction || {}
+          else delete mem.groupExtraction
           if (changed(mem.passiveGroups, baseline.memory?.passiveGroups)) expected.passiveGroups = baseline.memory?.passiveGroups
           else delete mem.passiveGroups
           if (Object.keys(mem).length) body.memory = mem
@@ -10450,7 +10489,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         const base = draftBaseRef.current || cfg
         if (id.startsWith('ext:')) { const k = id.slice(4); return JSON.stringify((draft.ext || {})[k]) !== JSON.stringify((base.ext || {})[k]) }
         // 「聊天」页的旁听名单存于 memory，也需要显示未保存标记。
-        if (id === 'group' && (JSON.stringify(draft.memory?.passiveGroups) !== JSON.stringify(base.memory?.passiveGroups) || JSON.stringify(draft.allow?.groups) !== JSON.stringify(base.allow?.groups))) return true
+        if (id === 'group' && (JSON.stringify(draft.memory?.groupExtraction) !== JSON.stringify(base.memory?.groupExtraction) || JSON.stringify(draft.memory?.passiveGroups) !== JSON.stringify(base.memory?.passiveGroups) || JSON.stringify(draft.allow?.groups) !== JSON.stringify(base.allow?.groups))) return true
         // 「生图」页也管着 dsh-image 模块的设置。
         if (id === 'imagegen' && JSON.stringify((draft.ext || {})['dsh-image']) !== JSON.stringify((base.ext || {})['dsh-image'])) return true
         return (TAB_KEYS[id] || []).some((k) => JSON.stringify(draft[k]) !== JSON.stringify(base[k]))
