@@ -1,3 +1,4 @@
+import { normalizePools, maskPools, restorePoolKeys } from '../voice/key-pool.mjs'
 import { normalizeMemberFilter } from '../chat/member-filter.js'
 // 插件配置：默认值 + 归一化 + 读写。配置文件 ~/.dsh/plugins-data/aurabot/config.json
 
@@ -125,6 +126,8 @@ export const DEFAULTS = {
     enabled: true,
     // auto = 先 edge-tts，不行用 Windows 语音；edge / windows / cosyvoice / gptsovits / volcano / breeze / minimax / http = 指定引擎（失败都会退回 Windows 语音）
     engine: 'auto',
+    fishApiKey: '',
+    fishReferenceId: '',
     cosyvoice: { url: 'http://127.0.0.1:50000', mode: 'sft', spkId: '中文女', instruct: '', sampleRate: 22050 },
     gptsovits: { url: 'http://127.0.0.1:9880', refAudio: '', promptText: '', promptLang: 'zh', textLang: 'zh' },
     // 通用 HTTP 引擎：GET 时地址里带 {text}；POST 时填接口地址，请求头一行一个，请求体里 {text} 自动替换（已做 JSON 转义）
@@ -172,6 +175,7 @@ export const DEFAULTS = {
   stickers: {
     enabled: true,
     faces: true, // 回复里能夹 QQ 自带的小黄脸（<face:名字>）
+    autoAppend: true, // 纯文字回复是否按概率自动补图；默认保留原行为
     autoChance: 0.35, // 自动配表情的概率；limitTagged 开启时也限制回复自带的表情
     limitTagged: false, // 升级保持原行为；开启后按 autoChance 限制回复中的表情，不再叠加心情倍率
     keywordExemption: false, // 实验性：正文命中配图关键词时保留已有表情，只在 limitTagged 开启时生效
@@ -342,7 +346,11 @@ export const DEFAULTS = {
   //   或者思考塌缩成「做。做。做。…」。开着就切掉思考前缀、拦住退化内容；拦下就当她这轮没说话（默认开）。
   // replyMarker：代码注入格式要求，模型必须用 ⟦REPLY⟧ 包住要发的话；没有标记就要求重写一次，
   //   重写后仍然没有就不发。默认关：打开会改变所有会话的输出格式，先在面板/配置里手动开。
-  chat: { seedHistory: false, seedHistoryCount: 20, everyStep: false, rescueFromThinking: false, turnTimeoutMinutes: 30, thinkingGuard: { enabled: true }, replyMarker: { enabled: false } },
+  // acpSanitize：DSH 上下文代理的 ACP 包装标记（<acp tokens="…" …>mNNNNN</acp>）被模型复述时漏进正文。
+  //   enabled：正则剥离，默认开——纯字符串处理，零延迟零成本，必须默认生效；
+  //   modelFallback：正则剥完仍像有标签残渣时，再问一次模型兜底改写（要花 token 与延迟，默认关）；
+  //   modelMaxChars / modelTimeoutMs：兜底的文本长度上限与单次超时；超时或失败一律退回正则结果。
+  chat: { seedHistory: false, seedHistoryCount: 20, everyStep: false, rescueFromThinking: false, turnTimeoutMinutes: 30, thinkingGuard: { enabled: true }, replyMarker: { enabled: false }, acpSanitize: { enabled: true, modelFallback: false, modelMaxChars: 800, modelTimeoutMs: 4000 } },
   // 原话档案独立于摘要记忆；默认关闭，由使用者明确开启并管理保留期限。
   conversationContext: { enabled: false },
   memory: {
@@ -357,6 +365,8 @@ export const DEFAULTS = {
     gistEnabled: true, gistDays: 180, impressionDays: 365, gistDailyBatches: 6, tierDays: { ...DEFAULT_TIER_DAYS },
     extractIdleMinutes: 30, extractMinLines: 20, extractDailyBatches: 24, capacity: { auto: 2000, event: 600, diary: 400 }, eventExpireDays: 90, vector: {
       enabled: false,
+      // mode 不写进 DEFAULTS：它是派生值（见下方 normalize 的 defineProperty），
+      // 写进来会变成「用户显式选择」，害得老客户端只传地址时切不到在线服务（#520）。
       // provider 只影响面板预置的地址/模型；请求统一走 OpenAI 兼容的 {baseUrl}/embeddings
       provider: 'siliconflow',
       baseUrl: '',
@@ -432,8 +442,7 @@ export const DEFAULTS = {
   modules: {},
   safeMode: false, // 安全模式：自己写的模块一个都不加载（排查问题用）
   ext: {}, // 自己写的模块的设置：{ 模块id: {...} }
-  // token 用量与花费：面板「概览」里看。pricing 留空就用内置价目表（DeepSeek 官方价 + 其它厂商按 LiteLLM 价 ×7.2）；
-  // 要覆盖就写 { models: { "我的模型": { match: "^my-llm-", in: 2, out: 8, cached: 0.5 } } }（元/百万 tokens）
+  // 自定义渠道费率按渠道和完整模型名匹配，与内置的官方美元参考价分开。
   usage: { pricing: {} },
   // 联动：让别的程序、DSH 里别的会话和插件也能用她
   bridge: {
@@ -679,6 +688,7 @@ export function normalize(raw) {
   asrApi.baseUrl = asrApi.baseUrl.replace(/\/+$/, '')
   asrApi.prefer = ['qq', 'cloud'].includes(asrApi.prefer) ? asrApi.prefer : 'qq'
   c.voice.http.fallback = ['edge', 'text'].includes(c.voice.http.fallback) ? c.voice.http.fallback : 'windows'
+  c.stickers.autoAppend = bool(c.stickers.autoAppend, true)
   c.stickers.autoChance = num(c.stickers.autoChance, 0.35, 0, 1)
   c.stickers.limitTagged = bool(c.stickers.limitTagged, false)
   c.stickers.keywordExemption = bool(c.stickers.keywordExemption, false)
@@ -840,10 +850,23 @@ export function normalize(raw) {
   c.chat = c.chat || {}
   c.chat.seedHistory = bool(c.chat.seedHistory, false)
   c.chat.seedHistoryCount = num(c.chat.seedHistoryCount, 20, 1, BIG)
-  c.chat.everyStep = bool(c.chat.everyStep, false)
+  // 'auto' = 按本轮有无工具调用来决定（纯对话轮分条发、带工具的轮只发最后一段）
+  c.chat.everyStep = c.chat.everyStep === 'auto' ? 'auto' : bool(c.chat.everyStep, false)
+  // 近似去重阈值：面板给的是 0–1，配置被手改出界（负数 / >1）时会让「相似度 ≥ 阈值」恒真或恒假，这里收一下。
+  const dupRaw = c.chat.dupSimilarity
+  c.chat.dupSimilarity = dupRaw === undefined || dupRaw === null || dupRaw === ''
+    ? 0.45
+    : (Number.isFinite(Number(dupRaw)) ? Math.min(1, Math.max(0, Number(dupRaw))) : 0.45)
   c.chat.rescueFromThinking = bool(c.chat.rescueFromThinking, false)
   c.chat.thinkingGuard = { enabled: bool(c.chat.thinkingGuard?.enabled, true) }
   c.chat.replyMarker = { enabled: bool(c.chat.replyMarker?.enabled, false) }
+  // ACP 标记净化：enabled 默认开（零成本正则）；modelFallback 默认关（要花 token 与延迟）。
+  c.chat.acpSanitize = {
+    enabled: bool(c.chat.acpSanitize?.enabled, true),
+    modelFallback: bool(c.chat.acpSanitize?.modelFallback, false),
+    modelMaxChars: Math.round(num(c.chat.acpSanitize?.modelMaxChars, 800, 100, 4000)),
+    modelTimeoutMs: Math.round(num(c.chat.acpSanitize?.modelTimeoutMs, 4000, 500, 15000)),
+  }
   c.chat.turnTimeoutMinutes = num(c.chat.turnTimeoutMinutes, 30, 0, 180)
   c.memory.recallCount = num(c.memory.recallCount, 6, 0, BIG)
   // 总数护栏：0 表示不限制（直接 recallCount + 联想 assoc.recall）；设了就封顶，防止上下文爆掉
@@ -899,13 +922,20 @@ export function normalize(raw) {
   const declaredMode = String(rawVec.mode || '').trim().toLowerCase()
   // mode 是**派生值**（本地小模型 / 在线服务），不是用户直接填的配置项：
   // 定义成不可枚举属性，这样 Object.entries / deepEqual 看不到它（升级兼容测试要求
-  // 配置结构和 DEFAULTS 完全一致），但 cfg.memory.vector.mode 仍能正常读。
+  // 配置结构和 DEFAULTS 完全一致），也不会被写进配置文件「变成用户显式选择」，
+  // 但 cfg.memory.vector.mode 仍能正常读。
+  // rawVec.modeExplicit === false 表示这是 normalize 出来的对象（不是用户原始输入）：
+  // 再 normalize 时不要把派生 mode 误当成显式选择（#520 旧客户端兼容）。
+  const explicitMode = (declaredMode === 'remote' || declaredMode === 'local') && rawVec.modeExplicit !== false
   Object.defineProperty(vector, 'mode', {
-    value: declaredMode === 'remote' || declaredMode === 'local' ? declaredMode : (vector.baseUrl ? 'remote' : 'local'),
+    value: explicitMode ? declaredMode : (vector.baseUrl ? 'remote' : 'local'),
     enumerable: false,
     writable: true,
     configurable: true,
   })
+  // 区分「用户明确选了 local/remote」和「没写 mode、按 baseUrl 推出来的默认」。
+  // 前者在 partial 保存时必须保留；后者要让老客户端只传 baseUrl 仍能切到 remote（#520 兼容）。
+  Object.defineProperty(vector, 'modeExplicit', { value: explicitMode, enumerable: false, writable: true, configurable: true })
   if (!isObj(c.memory.rerank)) c.memory.rerank = structuredClone(DEFAULTS.memory.rerank)
   const rerank = c.memory.rerank
   rerank.enabled = bool(rerank.enabled, false)
@@ -959,7 +989,10 @@ export function normalize(raw) {
   g.burstMax = num(g.burstMax, 8, 1, BIG)
   g.engagedMax = num(g.engagedMax, 6, 0, BIG)
   g.burstWindowSec = num(g.burstWindowSec, 120, 1, BIG)
-  if (!['auto', 'edge', 'windows', 'cosyvoice', 'gptsovits', 'http', 'volcano', 'breeze', 'minimax'].includes(c.voice.engine)) c.voice.engine = 'auto'
+  if (c.voice.keyPools) c.voice.keyPools = normalizePools(c.voice.keyPools)
+  c.voice.fishApiKey = String(c.voice.fishApiKey || '').trim()
+  c.voice.fishReferenceId = String(c.voice.fishReferenceId || '').trim()
+  if (!['auto', 'edge', 'windows', 'cosyvoice', 'gptsovits', 'http', 'volcano', 'breeze', 'minimax', 'fish-free'].includes(c.voice.engine)) c.voice.engine = 'auto'
   c.voice.songVoice = String(c.voice.songVoice || '').slice(0, 120)
   c.voice.songPitch = Math.max(-24, Math.min(24, Math.round(Number(c.voice.songPitch) || 0)))
   c.voice.cosyvoice.sampleRate = num(c.voice.cosyvoice.sampleRate, 22050, 8000, 48000)
@@ -1024,7 +1057,10 @@ export function normalize(raw) {
     .slice(0, 20)
   if (!isObj(c.imageGen.codex)) c.imageGen.codex = { ...DEFAULTS.imageGen.codex }
   const igx = c.imageGen.codex
-  igx.model = ['gpt-image-2', 'gpt-image-2.5-flare', 'gpt-image-2.5-sunburst'].includes(igx.model) ? igx.model : 'gpt-image-2'
+  // 只校验格式，不再按固定白名单改写：#256 —— 预设之外的合法模型名要原样保留，
+  // 服务端到底支不支持由实际请求结果说话（静默换成别的模型比报错更难查）。
+  igx.model = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,79}$/.test(String(igx.model || '').trim())
+    ? String(igx.model).trim() : DEFAULTS.imageGen.codex.model
   igx.quality = ['auto', 'low', 'medium', 'high', 'xhigh', 'max'].includes(igx.quality) ? igx.quality : 'auto'
   igx.background = ['auto', 'transparent', 'opaque'].includes(igx.background) ? igx.background : 'auto'
   if (!c.imageGen.custom || typeof c.imageGen.custom !== 'object') c.imageGen.custom = { ...DEFAULTS.imageGen.custom }
@@ -1083,8 +1119,15 @@ export function normalize(raw) {
   }
   if (!isObj(c.ext)) c.ext = {}
   for (const k of Object.keys(c.ext)) if (!isObj(c.ext[k])) delete c.ext[k] // 传 null = 删掉这个模块的设置
+  // 兼容自驱引擎旧面板 bug（#512）：设置被写进 ext.autotelic[""]，把空键里的值并回父级。
+  const autotelicExt = c.ext.autotelic
+  if (isObj(autotelicExt) && isObj(autotelicExt[''])) {
+    const legacy = autotelicExt['']
+    delete autotelicExt['']
+    for (const [k, v] of Object.entries(legacy)) if (!Object.hasOwn(autotelicExt, k)) autotelicExt[k] = v
+  }
   c.safeMode = bool(c.safeMode, false)
-  // 花费估算的价格表：手动填了就用手填的（手填的部分覆盖内置价），没填就用内置 DeepSeek 价
+  // 花费估算的价格表：仅用于渠道估算；留空不影响官方参考费用
   if (!isObj(c.usage)) c.usage = { pricing: {} }
   if (!isObj(c.usage.pricing)) c.usage.pricing = {}
   c.bridge.dshTools = bool(c.bridge.dshTools, false)
@@ -1095,7 +1138,7 @@ export function normalize(raw) {
 }
 
 // 面板里不回传原文的字段：路径（几层都行）
-const SECRETS = [['snowluma', 'webuiPassword'], ['snowluma', 'httpToken'], ['snowluma', 'wsToken'], ['imageGen', 'apiKey'], ['imageGen', 'minimax', 'apiKey'], ['voice', 'asrApi', 'apiKey'], ['memory', 'vector', 'apiKey'], ['memory', 'rerank', 'apiKey'], ['song', 'neteaseCookie'], ['bili', 'cookie'], ['bili', 'sessdata'], ['bili', 'biliJct'], ['heybox', 'cookie'], ['bridge', 'token'], ['video', 'minimax', 'apiKey'], ['video', 'custom', 'headers'], ['voice', 'volcano', 'apiKey'], ['voice', 'breeze', 'key'], ['voice', 'breeze', 'password'], ['voice', 'minimax', 'apiKey'], ['backup', 'remote', 'token'], ['backup', 'remote', 'webdav', 'password']]
+const SECRETS = [['voice', 'fishApiKey'], ['snowluma', 'webuiPassword'], ['snowluma', 'httpToken'], ['snowluma', 'wsToken'], ['imageGen', 'apiKey'], ['imageGen', 'minimax', 'apiKey'], ['voice', 'asrApi', 'apiKey'], ['memory', 'vector', 'apiKey'], ['memory', 'rerank', 'apiKey'], ['song', 'neteaseCookie'], ['bili', 'cookie'], ['bili', 'sessdata'], ['bili', 'biliJct'], ['heybox', 'cookie'], ['bridge', 'token'], ['video', 'minimax', 'apiKey'], ['video', 'custom', 'headers'], ['voice', 'volcano', 'apiKey'], ['voice', 'breeze', 'key'], ['voice', 'breeze', 'password'], ['voice', 'minimax', 'apiKey'], ['backup', 'remote', 'token'], ['backup', 'remote', 'webdav', 'password']]
 // 扩展模块设置里的密码类字段（模块加载时登记）：['ext', 模块id, 字段]
 const extraSecrets = new Map()
 export function registerSecretField(path) { extraSecrets.set(path.join('\u0000'), path) }
@@ -1191,14 +1234,32 @@ export function ownerAuthorizationRevision(cfg) {
     && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u.test(binding.revision) ? binding.revision : ''
 }
 
+// vector.mode 是 normalize 里的不可枚举派生值；JSON.stringify 会丢掉它，
+// 面板切「本地/在线」就永远写不进 config.json（#520）。落盘前复制一份并把它变成可枚举字段。
+function withVectorMode(c) {
+  const mode = c?.memory?.vector?.mode
+  // 只持久化用户显式选择过的 mode；默认 local 是从空 baseUrl 推出来的派生值，写盘后会
+  // 在下次 load 被误当成 modeExplicit=true，导致旧客户端只传 baseUrl 永远切不到在线（#520）。
+  if (!mode || c?.memory?.vector?.modeExplicit !== true) return c
+  return { ...c, memory: { ...c.memory, vector: { ...c.memory.vector, mode } } }
+}
+
 export function saveConfig(cfg, previous = loadConfig()) {
-  const c = normalize(cfg)
+  // 非枚举的 vector.mode 经 spread/structuredClone 会丢；调用方没显式带 mode 时，
+  // 沿用上一份权威配置的 mode，避免一次无关保存把「本地」又推回 baseUrl 推断的 remote（#520 复审）。
+  const input = (() => {
+    const hasMode = cfg?.memory?.vector && Object.hasOwn(cfg.memory.vector, 'mode')
+    const prevMode = previous?.memory?.vector?.mode
+    if (hasMode || !prevMode || previous?.memory?.vector?.modeExplicit !== true) return cfg
+    return { ...(cfg || {}), memory: { ...(cfg?.memory || {}), vector: { ...(cfg?.memory?.vector || {}), mode: prevMode } } }
+  })()
+  const c = normalize(input)
   // Only the previous authoritative configuration can carry an authorization forward.
   if (c.ownerQQ) {
     const revision = c.ownerQQ === previous.ownerQQ ? ownerAuthorizationRevision(previous) : ''
     c.ownerAuthorization = { owner: c.ownerQQ, revision: revision || randomUUID() }
   } else delete c.ownerAuthorization
-  writeJson(FILE(), c)
+  writeJson(FILE(), withVectorMode(c))
   return c
 }
 
@@ -1215,7 +1276,8 @@ export function configRevision() { return configRevisionCounter }
  */
 export function commitConfig(cfg, previous = loadConfig()) {
   const c = saveConfig(cfg, previous)
-  if (previous && JSON.stringify(c) === JSON.stringify(previous)) return previous
+  // JSON.stringify 看不到不可枚举的 vector.mode；比较时要把它带上，否则只切本地/在线会被当成没变化。
+  if (previous && JSON.stringify(withVectorMode(c)) === JSON.stringify(withVectorMode(previous))) return previous
   configRevisionCounter++
   return c
 }
@@ -1223,6 +1285,11 @@ export function commitConfig(cfg, previous = loadConfig()) {
 /** 给面板看的版本：密码 / token 不回传原文，只告诉有没有填。 */
 export function publicConfig(cfg) {
   const c = structuredClone(cfg)
+  maskPools(c.voice?.keyPools)
+  // vector.mode 回传面板（#520）：面板切到「在线服务」后重载又回退「本地模型」。
+  // 现在 mode 是 normalize 里直接赋值的常规字段，structuredClone 已能带上；这行留着兜住
+  // 旧配置里从派生值过来的情形，不额外造字段。
+  if (c.memory?.vector && cfg?.memory?.vector?.mode) c.memory.vector.mode = cfg.memory.vector.mode
   delete c.ownerAuthorization
   // 面板上的「试运行」只表示「试运行但不调试」：调试开着时它显示为关
   c.dryRun = Boolean(c.dryRun && !c.debug)
@@ -1243,6 +1310,17 @@ export function publicConfig(cfg) {
 /** 面板保存时：没改的密码字段（空串）保留原值。 */
 export function mergeFromPanel(current, incoming) {
   const next = deepMerge(current, incoming || {})
+  if (incoming?.voice?.keyPools) {
+    next.voice.keyPools = { ...next.voice.keyPools }
+    restorePoolKeys(next.voice.keyPools, current.voice?.keyPools, incoming.voice.keyPools)
+  }
+  // 面板局部保存不带 vector 时用上一份 mode 补回，否则 baseUrl 会把用户选中的 local
+  // 在 normalize 里重新推成 remote（#520）。
+  const incomingMode = incoming?.memory?.vector?.mode
+  const keepMode = incomingMode === 'local' || incomingMode === 'remote'
+    ? incomingMode
+    : (current?.memory?.vector?.modeExplicit === true ? current.memory.vector.mode : '')
+  if (next.memory?.vector && keepMode) next.memory.vector.mode = keepMode
   // 面板明确带了非空 chatEfforts（面板上改过单个聊天的档位）就以面板为准；
   // 没带或带的是空对象（旧版面板 / 面板没动过）时保留当前值——QQ 里 /effort 设过的不被清掉。
   const incomingEfforts = incoming && incoming.chatEfforts

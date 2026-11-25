@@ -134,7 +134,7 @@ export default {
       })]
       tools.push(defineTool({
         name: 'qq_send_card',
-        description: '向当前聊天发送分享、音乐、位置、联系人、骰子或猜拳。音乐的 music_type、联系人的 contact_type 对应卡片里的 type。',
+        description: '向当前聊天发送网页分享卡片、音乐、位置、联系人、骰子或猜拳。对方要的是图片时，在回复里用 ![说明](图片直链) 贴图；只有来源网页就发网页链接。音乐的 music_type、联系人的 contact_type 对应卡片里的 type。',
         properties: {
           type: str('share / music / location / contact / dice / rps'),
           url: str('分享或自定义音乐的链接'), title: str('分享、音乐或位置的标题'),
@@ -152,7 +152,8 @@ export default {
             const cfg = api.config()
             return { ok: false, message: !cfg.enabled ? '总开关关着，没发' : cfg.dryRun ? '试运行，只记了日志，没真发' : '卡片没发出去' }
           }
-          return { ok: true, message: '卡片发出去了' }
+          return { ok: true, message: card.segment.type === 'share' && card.segment.data.image
+            ? '已发送网页分享卡片，封面没有作为单独的图片发送。' : '卡片发出去了' }
         },
       }))
       // 跨天搜聊天流水：只读。qq_chat_history 只能翻当前聊天最近 50 条，
@@ -195,9 +196,13 @@ export default {
       // 读文件：别人发来的内容不可信，只有主人开口才读
       tools.push(defineTool({
         name: 'qq_read_file',
-        description: '读这个聊天里别人发来的文本文件（txt、md、json、日志、代码等，2MB 以内）。只有主人让你看的时候才用。name 填文件名，不填就读最新的一个。',
+        description: '读取当前聊天的文本文件，或查看以文件形式发送的 JPG、PNG 图片（2MB 以内）。只有主人让你看的时候才用。name 填文件名，不填就读最新的一个。',
         properties: { name: str('可选：文件名，不填就读最新的') },
         required: [],
+        render: (_args, value) => {
+          const text = { type: 'text', text: (value.ok ? '' : '✗ ') + value.message }
+          return value.ok && value.image?.attachment ? [text, value.image] : [text]
+        },
         execute: async ({ name }) => {
           if (level !== 'full' && !hub.turnSendersAllOwner?.(sessionId)) return { ok: false, message: '只有主人让看时才能读文件' }
           const list = hub.recentFiles(chat.chatId)
@@ -205,7 +210,7 @@ export default {
           const want = String(name || '').trim()
           const file = want ? list.findLast((f) => f.name === want) || list.findLast((f) => f.name.includes(want)) : list.at(-1)
           if (!file) return { ok: false, message: `没找到「${want}」，最近的文件有：${list.map((f) => f.name).join('、')}` }
-          return readQqFile({ onebot, chat, file })
+          return readQqFile({ onebot, chat, file, dsh: api.dsh, canPreview: () => hub.canSeeImages(chat) })
         },
       }))
       // 发文件/发图：主人私聊（full）和群聊都挂；群里只有「这一轮说话的人全是主人」才放行（#169）。

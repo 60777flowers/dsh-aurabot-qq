@@ -16,7 +16,7 @@ import { ownerAuthorizationRevision } from '../core/config.js'
 import { dataDir, readJson, writeJson } from '../core/store.js'
 import { isDefiniteFailure } from '../onebot/client.js'
 import { parseMessageEvent, gifFrames, segmentsOf } from './inbound.js'
-import { parseReply, bubbleDelay, wantsVoice, itemsToLine, cleanOutboundText, cleanOutboundSegments, capOutboundSegments, clockLabel } from './reply.js'
+import { parseReply, bubbleDelay, wantsVoice, itemsToLine, cleanOutboundText, cleanOutboundSegments, capOutboundSegments, clockLabel, tidyPunctuation, stripAcpLeak, hasSuspectTagShape } from './reply.js'
 import { decideGroupReply, engagedHint, pickAutoReply, pickDirectRequester, policyFor, sameNameNote, topicRelevance } from './group-policy.js'
 import { checkAllowed, groupResponseMode, shouldObserveGroup, levelFor, presetFor, isOwner, groupOwnerTools } from './access.js'
 import { fetchImage, segmentBytes } from '../core/net.js'
@@ -34,9 +34,9 @@ import { expandMentions, hasMention } from './mentions.js'
 import { cleanContent, cleanText } from '../core/text.js'
 import { createRecentMedia } from './recent-media.js'
 import { createTitleFilter } from './title-filter.js'
-import { takeInterim, reasoningOf, rescueFromThinking } from './steps.js'
+import { takeInterim, reasoningOf, rescueFromThinking, mergeStepText, similarText, adoptInterim, everyStepMode as everyStepOn } from './steps.js'
 import { guardOutgoing, codeFenceInstruction } from './guard.js'
-import { markerInstruction, extractMarkedReply, stripMarkers } from './reply-marker.js'
+import { markerInstruction, extractMarkedReply, stripMarkers, markerApplies } from './reply-marker.js'
 import { grantOwner } from '../core/workspace-move.js'
 import { withPromptCapture, currentPromptSources, memoryPromptRanges } from '../security/leak-guard.js'
 import { noticeText } from './notices.js'
@@ -113,7 +113,31 @@ export function reallySent (r) {
   return Boolean(r) && r.message_id !== undefined && !String(r.message_id).startsWith('sim-')
 }
 
-export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, buildTools, contextProviders, onActivity, memoryScore, onMemoryCommand, onCommand, isMuted, dislikes, random = Math.random, moodEffects, localApi, hooks, availableModels, toolsGeneration, capabilitiesOf }) {
+/**
+ * 聊天流水里的图片：只留能长期重建下载地址的稳定字段。
+ * 图片段自带的 url 里含 rkey，一小时左右就过期，光存 url 等于没存；
+ * 换成文件 id 之后随时能用网关当前的 rkey 拼回来（qq_api_call 的 get_msg 会现取现用）。
+ */
+function chatImageRefs(segs, cap = 4) {
+  const out = []
+  for (const s of Array.isArray(segs) ? segs : []) {
+    if (s?.type !== 'image') continue
+    const d = s.data ?? {}
+    let appid = ''
+    let fileid = ''
+    try {
+      const u = new URL(String(d.url ?? ''))
+      appid = u.searchParams.get('appid') ?? ''
+      fileid = u.searchParams.get('fileid') ?? ''
+    } catch (error) {}
+    if (!appid || !fileid) continue
+    out.push({ appid, fileid, ...(d.file ? { file: String(d.file).slice(0, 80) } : {}) })
+    if (out.length >= cap) break
+  }
+  return out
+}
+
+export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, buildTools, contextProviders, onActivity, memoryScore, onMemoryCommand, onCommand, isMuted, dislikes, random = Math.random, moodEffects, localApi, hooks, availableModels, toolsGeneration, capabilitiesOf, askModel }) {
   const archives = new Map()
   let forgottenRules = null
   const forgottenFile = () => join(dataDir('conversation-context'), 'forgotten.json')
@@ -130,7 +154,13 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       && (chatId === 'private:' + r.qq || (chatId.startsWith('group:') && message.role === 'user' && message.speakerId === r.qq))
       && (!r.query || matchesMemoryKeyword(message.text, r.query)))
   const conversationArchive = (namespace = String(getConfig().persona?.current || 'default')) => {
-    if (!archives.has(namespace)) archives.set(namespace, createConversationArchive({ directory: dataDir('conversation-context'), namespace, visible: conversationVisible }))
+    // visibleKey：忘了谁 / 清了谁的记忆都会改变可见性，切块缓存要跟着整份重建。
+    if (!archives.has(namespace)) archives.set(namespace, createConversationArchive({
+      directory: dataDir('conversation-context'),
+      namespace,
+      visible: conversationVisible,
+      visibleKey: () => conversationRules().length + '|' + JSON.stringify(memoryCutoffs(namespace)),
+    }))
     return archives.get(namespace)
   }
   // 心情对行为的影响（表情 / 语音概率、回复快慢、插话积极程度），没接就是 1
@@ -495,7 +525,37 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     }
   }
   const sentIds = new Set()
-  const stats = { received: 0, sent: 0, voice: 0, stickers: 0, errors: 0, day: new Date().toDateString() }
+  // #254：概览「今日统计」重启后归零。计数按日期落盘，同一天重启继续累计，跨天自动重置。
+  // 只在脏了的时候节流写盘（默认 5 秒），不占收发主链路。
+  const statsFile = dataDir('stats.json')
+  const emptyStats = (day) => ({ received: 0, sent: 0, voice: 0, stickers: 0, errors: 0, day })
+  const stats = (() => {
+    const today = new Date().toDateString()
+    try {
+      const saved = readJson(statsFile, null)
+      if (saved && typeof saved === 'object' && saved.day === today) {
+        const next = emptyStats(today)
+        for (const k of ['received', 'sent', 'voice', 'stickers', 'errors']) {
+          const n = Number(saved[k])
+          if (Number.isFinite(n) && n >= 0) next[k] = Math.floor(n)
+        }
+        return next
+      }
+    } catch (error) { log.debug('今日统计读不出来，从零开始：', error.message) }
+    return emptyStats(today)
+  })()
+  let statsDirty = false
+  let statsTimer = null
+  function saveStats(force = false) {
+    if (!statsDirty && !force) return
+    statsDirty = false
+    try { writeJson(statsFile, stats) } catch (error) { log.debug('今日统计写盘失败：', error.message) }
+  }
+  function scheduleStatsSave() {
+    if (statsTimer) return
+    statsTimer = setTimeout(() => { statsTimer = null; saveStats() }, 5000)
+    statsTimer.unref?.()
+  }
   let selfId = ''
   let lastChatAt = 0
   let lastOwnerChatAt = 0
@@ -504,13 +564,15 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
 
   function bump(k) {
     const d = new Date().toDateString()
-    if (stats.day !== d) Object.assign(stats, { received: 0, sent: 0, voice: 0, stickers: 0, errors: 0, day: d })
+    if (stats.day !== d) Object.assign(stats, emptyStats(d))
     stats[k]++
+    statsDirty = true
+    scheduleStatsSave()
   }
 
   // ---------- 聊天流水（给空间日记、主动搭话、面板用） ----------
   let chatLogRevision = 0
-  function logChat(chatId, who, text, uid = '', { via, at, interaction, originId, proactive } = {}) {
+  function logChat(chatId, who, text, uid = '', { via, at, interaction, originId, proactive, images, mid } = {}) {
     // 模块「模拟测试」的 simulation 上下文：只回放给面板看，不能写真实聊天流水。
     // 否则 private:10001 这类模拟会话会进短时记忆和人物记忆，删掉又出现。
     if (simulationStore.getStore() || isBeforeMemoryReset(String(chatId), uid, at ?? Date.now())) return false
@@ -531,7 +593,8 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       const dir = chatDir()
       mkdirSync(dir, { recursive: true })
       const forgotten = String(chatId).startsWith('private:') && getConfig().memory?.enabled && getConfig().memory?.instantCommands !== false && parseMemoryCommand(text)?.action === 'forget'
-      const row = { t: timestamp, chatId, who, ...(uid ? { uid: String(uid) } : {}), text: redact(String(text).slice(0, 500)), ...(via ? { via } : {}), ...(proactive ? { proactive } : {}), ...(interaction?.length ? { interaction: [...new Set(interaction.map(String))] } : {}), ...(forgotten ? { forgottenAt: Date.now() } : {}) }
+      const pics = chatImageRefs(images)
+      const row = { t: timestamp, chatId, who, ...(uid ? { uid: String(uid) } : {}), text: redact(String(text).slice(0, 500)), ...(mid ? { mid: String(mid) } : {}), ...(pics.length ? { images: pics } : {}), ...(via ? { via } : {}), ...(proactive ? { proactive } : {}), ...(interaction?.length ? { interaction: [...new Set(interaction.map(String))] } : {}), ...(forgotten ? { forgottenAt: Date.now() } : {}) }
       appendFileSync(join(dir, `${day}.jsonl`), JSON.stringify(row) + '\n', 'utf8')
       chatLogRevision++
       try { hooks?.journal?.({ ...row, ...(originId ? { originId } : {}) }) } catch (error) { log.warn('流水通知失败：', error.message) }
@@ -1193,7 +1256,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
           const parts = []
           // 正文标记：代码注入，不改人格文件。模型必须用 ⟦REPLY⟧ 包住要发的话。
           try {
-            if (getConfig().chat?.replyMarker?.enabled === true) parts.push(markerInstruction())
+            if (markerApplies(getConfig(), chat && chat.chatId)) parts.push(markerInstruction())
             // 贴代码要加围栏：guard 对 ``` 整段豁免，模型得知道包起来才不会被当成超长思考。
             if (getConfig().chat?.thinkingGuard?.enabled !== false) parts.push(codeFenceInstruction())
           } catch (error) {}
@@ -1245,6 +1308,18 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     }
   }
 
+  // 真实出口的 ACP 标记兜底：只动 text 段，引用/@/媒体段原样保留。
+  // 剥完变空的 text 段直接丢掉（不能留一条空气泡）；全空就返回 []，由调用方判失败。
+  function stripAcpSegments (message) {
+    const out = []
+    for (const seg of message) {
+      if (seg.type !== 'text') { out.push(seg); continue }
+      const text = stripAcpLeak(String(seg.data?.text || ''))
+      if (text) out.push({ ...seg, data: { ...seg.data, text } })
+    }
+    return out
+  }
+
   // quiet：这一条是额外的（比如语音后面补发的表情），失败了不算到这一轮头上（deliver 按 failStore 里的条数判断整条有没有发出去）。
   // queueKind / queueTtlMs：网关短暂不可达时，确定没发出去的消息进入本地补发队列。
   async function sendSegments(chatId, message, note, opts = {}) {
@@ -1288,6 +1363,14 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     }
     // 钩子可能重新写入工具标记；最终网关出口仍使用同一份清洗。
     message = cleanOutboundSegments(message, cleaning)
+    // 第三道保险：ACP 协议标记在真实出口再剥一次（幂等）。
+    // cleanOutboundText 已经剥过一遍，这里存在的意义是——扩展模块的 send 钩子可能往正文里
+    // **重新写回**标记（钩子排在清洗之后），以及补发/重试路径会复用已清洗过的 message。
+    // 剥完为空就当场判失败，绝不发一条只有标记的脏消息。
+    if (cfg.chat?.acpSanitize?.enabled !== false) {
+      message = stripAcpSegments(message)
+      if (!message.length) return settleOutboundFailed(verdict)
+    }
     // 熔断：模型失控时别把整段原样交给 OneBot（2026-11-13 08:02 那 48263 字「在吗」）。
     const capped = capOutboundSegments(message)
     if (capped.trimmed) {
@@ -1400,7 +1483,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     return sendSegments(chatId, [...quote(replyId), ...mention(userId, segs), ...segs], (replyId ? '[引用] ' : '') + text.slice(0, 60), verdict ? { ...opts, outboundVerdict: verdict } : opts)
   }
 
-  async function sendVoice(chatId, text, replyId, userId) {
+  async function sendVoice(chatId, text, replyId, userId, opts = {}) {
     text = cleanOutboundText(text, cleaningFor(chatId))
     if (!text.trim()) return false
     let b64, engine, extras
@@ -1427,6 +1510,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
         if (extras && getConfig().voice.emojiSeparate !== false) {
           // 补发是额外的一条：失败只记日志，不算这一轮发失败（不然语音明明发出去了也会被当成没发）
           try {
+            if (getConfig().enabled && !getConfig().dryRun && !opts.simulate) await pause(1200)
             const sent = await sendText(chatId, extras, undefined, undefined, undefined, { quiet: true })
             log.debug(sent ? `语音后面补发了一条表情：${chatId}` : '表情没补发出去（不影响语音条）')
           } catch (error) {
@@ -1739,6 +1823,111 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     }
   }
 
+  // ---------- ACP 模型兜底（默认关，chat.acpSanitize.modelFallback 打开才用） ----------
+  //
+  // 只解决「正则已经尽力、但文本里还留着标签/属性形状」的少量情况，不做全量改写。
+  // 硬约束（任何一条不满足就不改、直接用正则结果）：
+  //   · 同一聊天有冷却窗（ACP_ASK_COOLDOWN_MS），一轮里的多条分段不会各问一次；
+  //   · 文本长度 ≤ cfg.chat.acpSanitize.modelMaxChars；
+  //   · 有超时（modelTimeoutMs），超时/抛错/宿主没接 askModel → 退回正则结果；
+  //   · 模型结果必须通过 looksClean：不含标签属性形状，且保留了原文的主要字符
+  //     （防止模型顺手把正常语气也重组了——这是「伤语气」风险的工程化消解）。
+
+  /** 每个聊天上一次为 ACP 净化问模型的时间戳：限流用（一条回复的几个分段不该各问一次）。 */
+  const acpAskedAt = new Map()
+  /** 同一个聊天多久内不再重复问模型（毫秒）。一轮里的分条发送都落在这个窗口内。 */
+  const ACP_ASK_COOLDOWN_MS = 5000
+
+  /** 把标签/属性串挖掉后还剩多少「实数」字符，用来判断模型是否保留了原文内容。 */
+  function acpSolidChars (s) {
+    return String(s || '')
+      .replace(/<[^<>]*>/g, '')
+      .replace(/"[^"]*"/g, '')
+      .replace(/[\s\p{P}\p{S}]/gu, '')
+  }
+
+  /** 模型结果验收：不能更脏，且必须留住原文至少 60% 的实字。 */
+  function looksClean (before, after) {
+    const a = String(after || '').trim()
+    if (!a) return false
+    if (hasSuspectTagShape(a)) return false
+    const want = acpSolidChars(before)
+    if (!want) return true
+    const got = acpSolidChars(a)
+    if (!got) return false
+    // 逐字符比对：模型可能把整句重写，只保留「出现在原文里」的那些字来算重合度。
+    let hit = 0
+    const pool = new Map()
+    for (const ch of want) pool.set(ch, (pool.get(ch) || 0) + 1)
+    for (const ch of got) {
+      const left = pool.get(ch) || 0
+      if (left > 0) { hit++; pool.set(ch, left - 1) }
+    }
+    return hit / want.length >= 0.6
+  }
+
+  /** 带超时的模型净化；任何异常都返回 null（调用方据此保留正则结果）。 */
+  async function acpModelFallback (chatId, text, cfg, beforeClean = text) {
+    const conf = cfg.chat.acpSanitize
+    const limit = Math.max(100, Number(conf.modelMaxChars) || 800)
+    if (String(beforeClean).length > limit) return text
+    if (typeof askModel !== 'function') return text
+    // 限流（每聊天一个冷却窗）：一轮可能分多条发送，不能每条都问一次模型。
+    const now = Date.now()
+    if (now - (acpAskedAt.get(chatId) || 0) < ACP_ASK_COOLDOWN_MS) return text
+    acpAskedAt.set(chatId, now)
+    if (acpAskedAt.size > 200) acpAskedAt.clear()
+    const timeoutMs = Math.max(500, Number(conf.modelTimeoutMs) || 4000)
+    let timer
+    try {
+      // 超时后那个 call 可能还在跑并最终 reject：先挂一个空 catch，避免变成 unhandled rejection。
+      const call = Promise.resolve(askModel({
+        cfg,
+        module: 'acp-sanitize',
+        usageTask: 'acp-sanitize',
+        maxTokens: 400,
+        temperature: 0,
+        system: '你是文本净化器。用户会给你一段聊天回复，其中可能混入了传输协议标签（形如 <acp tokens="86" type="text" time="…">m01990</acp>）'
+          + '或它们的残片（="text" time="…">>、6-11-22 17:26:55">）。\n'
+          + '把这类标签、属性串、编号全部删掉，**其余内容一个字都不要改**：不改语气、不改措辞、不增删语义、不解释。\n'
+          + '删完如果什么都不剩，只输出 [沉默]。只输出净化后的正文本身。',
+        text: String(beforeClean),
+      }))
+      call.catch(() => {})
+      const out = await Promise.race([
+        call,
+        new Promise((resolve) => { timer = setTimeout(() => resolve(null), timeoutMs) }),
+      ])
+      if (out === null || out === undefined) {
+        log.debug(`${chatId}：ACP 模型兜底超时，用正则结果`)
+        return text
+      }
+      const cleaned = String(out).trim()
+      // 验收对齐的是「正则已经产出的结果」：模型改成别的语气/别的意思都要丢掉。
+      if (cleaned === '[沉默]' || !looksClean(text, cleaned)) {
+        log.debug(`${chatId}：ACP 模型兜底结果不合格，用正则结果`)
+        return text
+      }
+      log.info(`${chatId}：ACP 模型兜底生效`)
+      return cleaned
+    } catch (error) {
+      log.debug(`${chatId}：ACP 模型兜底出错，用正则结果：`, error && error.message)
+      return text
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
+
+  // 拼语音正文时把非末段的收尾标点收掉再拼，避免 ``。`` + `，` 生成双标点；
+  // 不在这里整段 tidy，否则会把代码示例里的字面量一起改掉。
+  function joinSpoken(parts) {
+    const list = (parts || []).map((v) => String(v || '').trim()).filter(Boolean)
+    if (list.length <= 1) return list[0] || ''
+    // 段间插入逗号后再统一收双标点：代码段里的「x。」只去掉 join 出来的逗号，
+    // 不会像逐段剪尾那样把代码自己的句号剪掉。
+    return tidyPunctuation(list.join('，'))
+  }
+
   async function deliverTurn(chatId, text, opts = {}) {
     if (disposed) return
     const cfg = getConfig()
@@ -1753,7 +1942,16 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       }
     }
     if (disposed) return
+    // 记下清洗前的样子：模型兜底要判断的是「原本有没有可疑标签残渣」，
+    // 而不是「清洗后还剩没剩」——正则剥干净之后，条件就永远不成立了。
+    const beforeClean = text
     text = cleanOutboundText(text, { ...cleaningFor(chatId), onPromptDecision: (allow) => { outputScope.getStore().allowPromptEcho = allow } })
+    // ACP 模型兜底（默认关）：清洗前有标签/属性残渣时，再问一次模型确认它真的干净了。
+    // 三道保险：① 只在 chat.acpSanitize.modelFallback 打开时才走；② 每个聊天有冷却窗，不会每条都问；
+    // ③ 失败/超时/模型输出更脏，一律退回上面的正则结果 —— 绝不因此卡住或丢掉这条回复。
+    if (cfg.chat?.acpSanitize?.modelFallback === true && beforeClean.trim() && hasSuspectTagShape(beforeClean)) {
+      text = await acpModelFallback(chatId, text, cfg, beforeClean)
+    }
     // 出站污染闸：模型偶尔会把思考直接写进正文（英文判断 + 中文真话），或者思考塌缩成复读。
     // 这里切掉思考前缀、拦住退化内容；拦下就当她这轮没说话，宁可沉默也不发半句思考。
     if (cfg.chat?.thinkingGuard?.enabled !== false) {
@@ -1782,15 +1980,17 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       stickersFiltered = true
       return list.filter((i) => i.kind !== 'sticker')
     }
+    // 含代码块的回复不走自动语音：代码字面量不能被语音兜底/自动语音的重拼改坏。
+    const hasCodeBlock = /```|~~~/.test(text)
     // 对方明确要语音、她却只打了字：整段改成语音发（模型偶尔会忘，这里兜底）
-    if (!interim && opts.wantVoice && cfg.voice.enabled && !items.some((i) => i.kind === 'voice')) {
-      const spoken = items.filter((i) => i.kind === 'text').map((i) => i.value).join('，')
+    if (!interim && !hasCodeBlock && opts.wantVoice && cfg.voice.enabled && !items.some((i) => i.kind === 'voice')) {
+      const spoken = joinSpoken(items.filter((i) => i.kind === 'text').map((i) => i.value))
       if (spoken && spoken.length <= 300) items = [{ kind: 'voice', value: spoken }, ...items.filter((i) => i.kind !== 'text')]
     }
     // 短回复按概率整条变语音
     const texts = items.filter((i) => i.kind === 'text')
-    if (!interim && cfg.voice.enabled && items.length === texts.length && texts.length > 0) {
-      const all = texts.map((t) => t.value).join('，')
+    if (!interim && !hasCodeBlock && cfg.voice.enabled && items.length === texts.length && texts.length > 0) {
+      const all = joinSpoken(texts.map((t) => t.value))
       if (all.length <= cfg.voice.autoMaxChars && Math.random() < cfg.voice.autoChance * mood().voice) items = [{ kind: 'voice', value: all }]
     }
     items = limitReplyStickers(items)
@@ -1805,10 +2005,12 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       if (items.length > 3) items = items.slice(0, 3)
     }
     // 按概率补一张表情（群里已经有两条以上就不补了）
-    if (!interim && cfg.stickers.enabled && !items.some((i) => i.kind === 'sticker') && !(inGroup && items.length >= 2) && allowReplySticker()) {
+    if (!interim && cfg.stickers.enabled && cfg.stickers.autoAppend !== false && !items.some((i) => i.kind === 'sticker') && !(inGroup && items.length >= 2) && allowReplySticker()) {
       const pick = stickers.pickForReply(texts.map((t) => t.value).join(' '))
       if (pick) items.push({ kind: 'sticker', value: pick })
     }
+    const beforeHook = new Set(items)
+    const beforeValues = new Map(items.map((it) => [it, (it.kind === 'text' || it.kind === 'voice') ? it.value : undefined]))
     if (hooks?.items) {
       try {
         const next = await hooks.items(items, { chatId, text, userText: opts.userText || '' })
@@ -1819,6 +2021,12 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       }
     }
     items = limitReplyStickers(items)
+    // 模块通过 items 钩子追加或原地改写过的文字也走同一份标点清洗；原有气泡已在 parseReply 里处理过。
+    items = items.map((it) => {
+      if (it.kind !== 'text' && it.kind !== 'voice') return it
+      const changed = !beforeHook.has(it) || beforeValues.get(it) !== it.value
+      return changed ? { ...it, value: tidyPunctuation(it.value) } : it
+    })
     // 钩子改写后仍走同一个清洗，保留每条的语音/引用元数据。
     items = cleanOutboundSegments(items.map((item) => ({
       type: ['text', 'voice'].includes(item.kind) ? 'text' : item.kind,
@@ -1835,6 +2043,10 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     const failures = []
     const interacted = new Set()
     const sentTexts = [] // 实际成功发出的文字/语音正文：桥接与返回值只认这些，没发出去的话不能算说过
+    // 实际发出去的条目（#349）：流水只能记这些。以前这里用的是「打算发的全部 items」，
+    // 网关在中间断掉时后半截其实没发出去，流水却把全文记成「她说过的话」，
+    // 事后既查不出哪段丢了，读 saidElsewhere / lastBotToOwner 的路径也会以为话说完了。
+    const sentItems = []
     await failStore.run(failures, async () => {
       for (let i = 0; i < items.length; i++) {
         if (disposed) return
@@ -1849,8 +2061,12 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
         const sentBefore = outputScope.getStore().sent
         if (it.kind === 'text') await sendText(chatId, it.value, replyId, missedAt, userId)
         else if (it.kind === 'voice') {
-          if (cfg.voice.enabled) await sendVoice(chatId, it.value, replyId, userId)
+          const asVoice = cfg.voice.enabled
+          if (asVoice) await sendVoice(chatId, it.value, replyId, userId, opts)
           else await sendText(chatId, it.value, replyId, missedAt, userId)
+          // 手机客户端渲染媒体比文字慢，紧跟着发配文会被压到语音条上面。语音发完先停一下再发下一条（#546）。
+          const next = items[i + 1]
+          if (asVoice && !opts.simulate && next && (next.kind === 'text' || next.kind === 'image' || next.kind === 'sticker')) await pause(1200)
         } else if (it.kind === 'sticker') await sendSticker(chatId, it.value, replyId, userId)
         else if (it.kind === 'poke') { if (!opts.simulate) await pokeBack(chatId) }
         else if (it.kind === 'image') {
@@ -1860,6 +2076,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
         if (outputScope.getStore().sent > sentBefore) {
           if (selected?.uid) interacted.add(String(selected.uid))
           if ((it.kind === 'text' || it.kind === 'voice') && String(it.value || '').trim()) sentTexts.push(it.value)
+          sentItems.push(it)
         }
         if (i < items.length - 1 && !opts.simulate) await pause(bubbleDelay(items[i + 1].kind === 'text' ? items[i + 1].value : '') * mood().delay)
       }
@@ -1880,14 +2097,21 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     if (sentTexts.length && typeof opts.onDelivered === 'function') {
       try { opts.onDelivered() } catch (error) { log.warn('发送回执处理出错：', error.message) }
     }
-    const said = itemsToLine(items, (q) => stickers.match(q))
-    logChat(chatId, 'bot', said, '', { interaction: [...interacted] })
+    // #349：只把真的发出去的条目记成「她说过的话」。一条都没发出去时上面已经 return，这里不会再写空流水。
+    const said = itemsToLine(sentItems, (q) => stickers.match(q))
+    if (said) logChat(chatId, 'bot', said, '', { interaction: [...interacted] })
+    // 部分失败要留痕：主人只看到「话说了一半」时，至少能在日志里看到少了几段。
+    const unattempted = items.length - sentItems.length
+    if (failures.length && unattempted > 0) {
+      log.warn(`${chatId}：这一轮有 ${unattempted}/${items.length} 段没发出去（${failures[0]}），流水只记了实际发出的 ${sentItems.length} 段`)
+    }
     // 不是这个聊天自己那一轮发的（主人在私聊里让她去群里说、扩展模块代发）：记下来，下次这个聊天交给她时告诉她自己说过什么。
     // 只记实际发出去的文本（sentTexts），且试运行（dryRun）没真发也不记——她没说出口的话不能算说过（#211 review）。
     if (!opts.own && sentTexts.length && !cfg.dryRun) saidElsewhere.set(chatId, [...(saidElsewhere.get(chatId) || []), { at: Date.now(), text: sentTexts.join(' ').slice(0, 300) }].slice(-5))
     lastChatAt = Date.now()
     if (chatId.startsWith('private:')) lastPrivateAt.set(chatId.slice(8), Date.now())
-    if (chatId === `private:${cfg.ownerQQ}`) lastBotToOwner = { at: Date.now(), text: items.filter((i) => i.kind === 'text' || i.kind === 'voice').map((i) => i.value).join('\n') }
+    // #349：同上，只记真发出去的，别让没送到的后半截冒充「她刚跟主人说过」。
+    if (chatId === `private:${cfg.ownerQQ}`) lastBotToOwner = { at: Date.now(), text: sentItems.filter((i) => i.kind === 'text' || i.kind === 'voice').map((i) => i.value).join('\n') }
     onActivity?.({ kind: 'out', chatId, reply: text, userText: opts.userText || '' })
     return { missedAt, failed: failures.length, errors: failures, sent: sentTexts.join(' '), ...receipt }
   }
@@ -1939,17 +2163,39 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
         : ''
       // 工具调用那一轮的正文不会被当成最终回复，但慢工具等待时可以先拿它当提示。
       st.toolText = toolText
+      // chat.everyStep='auto' 的判据：这一轮出现过工具调用就不逐段发（过程话并进最终回复），
+      // 纯对话轮才分条。只看结构，不猜语义。
+      if (hasToolCall) st.sawToolCall = true
       // 最后一条 assistant 消息才是本轮回复；总是覆盖（空也覆盖），
       // 否则最后一条是空的（或只有工具调用）时会拿上一条过程性文字补发，把思考发出去。
       // 例外是开了 chat.everyStep：那时中间段已经陆续发过，这一步没说话就别把上一段盖掉，
       // 否则「说完一段又去调工具」的那段话会永远发不出去。
       st.lastTurn = d.turn
-      st.text = getConfig().chat?.everyStep ? raw || st.text : raw
+      // 分条发的时候，最后一段由 turn/end 发；不分条（含 'auto' 判成工具轮）时，
+      // 把这一轮所有没单独发出去的段落攒起来——早先「只留最后一段」会把中间那段整块丢掉。
+      if (everyStepOn(getConfig().chat?.everyStep, st)) {
+        st.text = raw || st.text
+        st.mergedText = ''
+      } else {
+        // 'auto' 中途翻成并条（先说话、随后调了工具）时，把还没发出去的那段先收回来，别整段丢。
+        const adopted = adoptInterim(st, { turn: d.turn, step: d.step })
+        if (adopted) st.mergedText = mergeStepText(st.mergedText, adopted)
+        if (raw) st.mergedText = mergeStepText(st.mergedText, raw)
+        st.text = st.mergedText || st.text
+      }
       // chat.everyStep：一轮里分几段说就发几条（默认关，只发最后一段）。发的是「上一段」——
       // 此刻还不知道后面有没有话，把当前段提前发掉会让最后一段变成重复。最后一段仍由 turn/end 发。
-      if (raw && getConfig().chat?.everyStep) {
+      if (raw && everyStepOn(getConfig().chat?.everyStep, st)) {
+        // 同一轮里把同一份结果复述两遍（团队消息的结果 + 结束通知各触发一次）时，
+        // 后一段直接顶掉前一段，不再多发一条。阈值 chat.dupSimilarity，默认 0.45（实测：真重复 0.49、真补充 0.03）。
+        const dupThreshold = Number(getConfig().chat?.dupSimilarity ?? 0.45)
+        const prevSameTurn = st.interimTurn === d.turn ? String(st.interimText || '') : ''
+        const repeated = Boolean(prevSameTurn) && similarText(prevSameTurn, raw) >= dupThreshold
         const prev = takeInterim(st, { turn: d.turn, step: d.step, text: raw })
-        if (prev) {
+        if (repeated && prev) {
+          log.debug(`${chatId}：这一段和上一段重复（相似度 ≥ ${dupThreshold}），不再单发`)
+        }
+        if (prev && !repeated) {
           // 不在这里记账：deliver 会在真发出去之后自己 logChat，一条都没发成功就不记。
           // 这里再记一次会让每个中间段在聊天流水里出现两遍，发送失败时还会把没发出去的话算成说过。
           log.debug(`${chatId}：分条发出上一段（${prev.length} 字）`)
@@ -1961,6 +2207,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       return
     }
     if (event.type === 'turn/end') {
+      st.sawToolCall = false
       slowNoticeSent.delete(key)
       clearSlowNotices(key)
       const turnToken = st.turnToken
@@ -1969,6 +2216,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       const d = event.data || {}
       const completed = d.reason && d.reason.kind === 'completed'
       let text = st.lastTurn === d.turn ? st.text : ''
+      st.mergedText = '' // 本轮攒下的段落已交给 text，清掉免得带进下一轮
       let fromThinking = false
       // 整轮一段正文都没有：她可能把话全写在思考里了（Reply: 起草 → Careful: 自检 → N lines: 定稿），
       // 正文块是空的。chat.rescueFromThinking 打开时从最后一步的思考里捞回定稿；捞不到就照旧不发。
@@ -1982,7 +2230,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       }
       // 正文标记：代码注入的格式要求。模型必须用 ⟦REPLY⟧ 包住要发的话。
       // 没有标记就要求重写一次；重写后仍然没有，这轮不发（宁可沉默也不发思考）。
-      if (text && completed && getConfig().chat?.replyMarker?.enabled === true) {
+      if (text && completed && markerApplies(getConfig(), chatId)) {
         const marked = extractMarkedReply(text)
         if (marked.found) {
           text = stripMarkers(marked.text)
@@ -2469,7 +2717,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       // 旁听只走现有文字流水 → 记忆整理；不展开转发、不识图/听音、不运行消息钩子或命令。
       // 头衔过滤、人格隔离、调试模式和清空记忆的保护仍由上方检查及 logChat 负责。
       if (shouldObserveGroup(cfg, msg) && msg.text.trim()) {
-        logChat(msg.chatId, msg.nickname, msg.text, msg.userId, { at: now })
+        logChat(msg.chatId, msg.nickname, msg.text, msg.userId, { at: now, images: msg.images, mid: msg.messageId })
       }
       log.debug(`忽略 ${msg.chatId}（${allowed.reason}）`)
       return
@@ -2481,7 +2729,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     if (disposed || wasCleared()) return
     const interaction = msg.kind === 'private' || msg.mentioned || quotedBot ? [msg.userId] : []
     const originId = chatMessageOrigin(msg.chatId, msg.messageId, 'in', cfg.botQQ)?.originId
-    const logIncoming = (text = msg.text) => logChat(msg.chatId, msg.nickname, text, msg.userId, { interaction, at: now, originId })
+    const logIncoming = (text = msg.text) => logChat(msg.chatId, msg.nickname, text, msg.userId, { interaction, at: now, originId, images: msg.images, mid: msg.messageId })
     // 合并转发：一进来就展开并写回缓冲，哪怕这条不交给她——否则群里回头问她「上面那条转发说了啥」，她只看得见占位符。
     // 默认关：开着就是每来一条转发多调一次 get_forward_msg，接口慢的时候会拖慢这一轮。
     if (cfg.forward?.expandEarly && msg.forwards?.length) {
@@ -2831,7 +3079,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     // 时间戳可能同一毫秒：直接取上一轮之后的消息，避免紧接着到达的消息丢失。
     const fresh = buf.filter((x) => !x.fed).slice(-20)
     const older = buf.filter((x) => x.fed).slice(-8)
-    // 这一段里还没转完的群语音：等它一下，免得交给她时那条还是「（图片/表情）」（#197）
+    // 这一段里还没转完的群语音：等它一下，免得交给她时那条只有空正文（#197）
     const pendingVoices = fresh.filter((x) => x.voicePromise && !x.voiceText).map((x) => x.voicePromise)
     if (pendingVoices.length) await Promise.all(pendingVoices)
     for (const x of buf) x.fed = true
@@ -2852,7 +3100,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       need.forEach((x, i) => { x.quote = infos[i] })
     }
     const atLabel = (x) => x.at ? '@了你' : (x.atTargets?.length ? '@了' + x.atTargets.map((t) => `${t.name}(${t.qq})`).join('、') : '')
-    const line = (x) => `[${clockLabel(x.t)}] ${x.nick}(${x.uid})${atLabel(x)}：${x.text || '（图片/表情）'}${x.quote ? ' ' + quoteInline(x.quote) : ''}`
+    const line = (x) => `[${clockLabel(x.t)}] ${x.nick}(${x.uid})${atLabel(x)}${x.text ? '：' + x.text : ''}${x.quote ? ' ' + quoteInline(x.quote) : ''}`
     // 新消息带编号，她想专门回某一条时可以引用；编号 → QQ 消息 ID 记下来，发的时候换成引用
     const refs = {}
     const numbered = fresh.map((x, i) => {
@@ -3321,8 +3569,10 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     }
     if (senderId) addSender(senderId)
     for (const s of opts.extraSenders || []) addSender(s)
-    // 群聊本机工具按「这一轮说话的人」开合：全是主人就放开，掺了别人就收回去
-    if (chat.kind === 'group') applyGroupGate(key, turnSendersAllOwner(sessionId))
+    // 群聊本机工具按「这一轮说话的人」开合：全是主人就放开，掺了别人就收回去。
+    // 必须把本轮这份 st 递进去：turnState.set(key, st) 在下面，这之前 map 里还没有这一轮，
+    // 让判定自己去查会读到上一轮（新会话则是空），首条消息就被锁成「不是主人」。
+    if (chat.kind === 'group') applyGroupGate(key, turnSendersAllOwner(sessionId, st))
     // 排队消息的直接请求者不能给正在执行的上一轮借权。
     if (!opts.steer) {
       if (queuedNextTurn) st.pendingDirectRequester = opts.directRequester || null
@@ -3716,8 +3966,8 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     return [...(turnState.get(sessionKey(sessionId))?.senders || [])]
   }
 
-  function turnSendersAllOwner(sessionId) {
-    const st = turnState.get(sessionKey(sessionId))
+  function turnSendersAllOwner(sessionId, state) {
+    const st = state || turnState.get(sessionKey(sessionId))
     if (st && st.directOwner) return true // 主人在 DSH 面板里直接打字
     if (!st || !st.senders.size) return ownerPrivateChat(sessionId)
     return [...st.senders].every((u) => isOwner(getConfig(), u))
@@ -4027,6 +4277,9 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
   function dispose() {
     if (disposed) return
     disposed = true
+    // 卸载前把没落盘的今日统计补一次，别让最后几秒的计数白丢（#254）。
+    if (statsTimer) { clearTimeout(statsTimer); statsTimer = null }
+    saveStats(true)
     // 三审 #177：常驻的子智能体父级 agent 一并置空——插件重装/重启后下次 spawn 重新建，
     // 别攥着旧句柄不放（旧的父会话交给 DSH 自己的会话回收去清）。
     subagentParentAgent = null
