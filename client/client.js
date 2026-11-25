@@ -7888,9 +7888,15 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         const r = await post(path, body)
         toast(r.message || okMsg, r.ok === false ? 'err' : 'ok')
         if (r.list) setModules(r.list)
+        if (r.modules) setModules(r.modules)
         if (r.prompt && r.ok) copy(r.prompt, toast)
         reload()
         return r
+      }
+      const remove = async (path, action) => {
+        if (!confirm(`${action}「${m.name}」？` + (m.builtin ? '删掉后会用回内置版本。' : ''))) return
+        const purge = confirm('把它的数据和设置也清掉吗？确定=一起清掉；取消=留着')
+        await act(path, { id: m.id, purge }, action === '卸载' ? '卸载好了' : m.builtin ? '副本删掉了，现在用内置的' : '删掉了')
       }
       const what = [m.tools.length ? '工具：' + m.tools.join('、') : '', m.commands.length ? '命令：' + m.commands.map((c) => '/' + c).join(' ') : ''].filter(Boolean).join('　')
       const errs = (m.error ? [{ label: '加载', message: m.error }] : []).concat(m.errors || [])
@@ -7908,7 +7914,9 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             m.builtin && !m.hasUser ? h(Btn, { small: true, onClick: () => act('/modules/fork', { id: m.id }, '复制好了'), title: '把这个内置模块的源码复制到 modules/' + m.id + '/，改了就替换内置的' }, '复制一份来改') : null,
             m.hasUser ? h(Btn, { small: true, onClick: () => post('/modules/open?id=' + encodeURIComponent(m.id)).then((r) => toast(r.message)) }, '打开文件夹') : null,
             m.hasUser ? h(Btn, { small: true, onClick: () => get('/modules/prompt?id=' + encodeURIComponent(m.id)).then((r) => copy(r.prompt, toast, '复制好了，粘给 DSH，把【】里那句换成你想要的')) }, '复制给 DSH 的话') : null,
-            m.hasUser && !m.safeSkipped ? h(Btn, { small: true, onClick: () => act('/modules/reload', { id: m.id }, '重新加载好了') }, '重新加载') : null)),
+            m.hasUser && !m.safeSkipped ? h(Btn, { small: true, onClick: () => act('/modules/reload', { id: m.id }, '重新加载好了') }, '重新加载') : null,
+            m.hasUser && m.community ? h(Btn, { small: true, kind: 'danger', onClick: () => remove('/modules/community/remove', '卸载'), title: '从市场卸载，源码和本地改动会归档到 modules/.trash' }, '卸载') : null,
+            m.hasUser && !m.community ? h(Btn, { small: true, kind: 'danger', onClick: () => remove('/modules/remove', m.builtin ? '删除副本' : '删除'), title: m.builtin ? '删掉你复制 / 改的版本，之后用回内置模块' : '删掉 modules/' + m.id + ' 和它的缓存' }, m.builtin ? '删除副本' : '删除') : null)),
         h('div', { className: 'side' },
           h(Switch, { on: m.enabled, onChange: (v) => setMod({ enabled: v }), title: m.enabled ? '关掉这个模块' : '打开这个模块' }),
           m.builtin && m.hasUser ? h('label', { className: 'ab-small ab-muted', style: { display: 'flex', alignItems: 'center', gap: 6 } }, '用内置的', h(Switch, { on: m.useBuiltin, onChange: (v) => setMod({ useBuiltin: v }) })) : null))
