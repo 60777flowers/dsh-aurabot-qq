@@ -2659,6 +2659,11 @@ export function apply(ctx) {
     const b = await readBody(req)
     return { ...(await mods.remove(String(b.id || ''), { purge: b.purge === true })), list: mods.status() }
   })
+  // 批量更新已安装且有可用新版的市场模块。
+  route('/modules/community/update-all', async (req, res) => {
+    if (req.method !== 'POST') return send(res, 405, { ok: false, message: '请使用 POST' })
+    return { ...(await community.updateAll()), modules: mods.status() }
+  })
   // 模块市场地址：换索引源（自建索引 / 国内镜像 / 内网部署）用。留空 = 回到内置 GitHub 地址；
   // 只收 http/https，别把 file:// 之类塞进来当下载源。单一真相在 ext.market.registryUrl，
   // community.js 读取时按 config > AURABOT_REGISTRY_URL > 内置默认 的优先级解析。
